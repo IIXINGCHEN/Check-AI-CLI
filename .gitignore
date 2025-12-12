@@ -1,0 +1,14 @@
+# 备份文件
+*.backup
+*.bak
+*.old
+
+# 临时文件
+*.tmp
+*.temp
+*.swp
+*~
+
+# 测试输出
+test-output.txt
+*.log
