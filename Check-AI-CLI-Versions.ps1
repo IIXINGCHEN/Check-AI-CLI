@@ -1,4 +1,4 @@
-﻿$ErrorActionPreference = 'Stop'
+$ErrorActionPreference = 'Stop'
 
 # 中文注释: 兼容入口, 实际脚本在 scripts 目录
 $target = Join-Path $PSScriptRoot 'scripts\Check-AI-CLI-Versions.ps1'

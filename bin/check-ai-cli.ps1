@@ -1,4 +1,4 @@
-﻿$ErrorActionPreference = 'Stop'
+$ErrorActionPreference = 'Stop'
 
 # 中文注释: 命令入口, 用于 PATH 场景下直接运行
 $binDir = Split-Path -Parent $MyInvocation.MyCommand.Path

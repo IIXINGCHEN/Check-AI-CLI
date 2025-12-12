@@ -1,4 +1,4 @@
-﻿$ErrorActionPreference = 'Stop'
+$ErrorActionPreference = 'Stop'
 
 # 中文注释: 这个脚本用于支持 `irm ... | iex` 一行命令安装/更新本仓库脚本文件
 # 中文注释: 可用环境变量控制:
