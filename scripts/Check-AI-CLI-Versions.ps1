@@ -22,6 +22,20 @@ function Write-Success([string]$Message) { Write-Host "[SUCCESS] $Message" -Fore
 function Write-Warn([string]$Message) { Write-Host "[WARNING] $Message" -ForegroundColor Yellow }
 function Write-Fail([string]$Message) { Write-Host "[ERROR] $Message" -ForegroundColor Red }
 
+# Some installer scripts rely on PowerShell progress output (Write-Progress / Invoke-WebRequest).
+# If user's $ProgressPreference is set to SilentlyContinue, downloads may look "stuck".
+function Get-QuietProgressMode() {
+  $v = $env:CHECK_AI_CLI_QUIET_PROGRESS
+  if ([string]::IsNullOrWhiteSpace($v)) { return $false }
+  return $v.Trim() -eq '1'
+}
+
+function Invoke-WithTempProgressPreference([string]$Mode, [scriptblock]$Action) {
+  $prev = $ProgressPreference
+  $ProgressPreference = $Mode
+  try { & $Action } finally { $ProgressPreference = $prev }
+}
+
 # Fetch text content, return $null on failure
 function Get-Text([string]$Uri) {
   try {
@@ -132,7 +146,9 @@ function Update-Factory() {
   Write-Info "Updating Factory CLI (Droid)..."
   $script = Get-Text 'https://app.factory.ai/cli/windows'
   if (-not $script) { throw "Failed to download installer script." }
-  Invoke-Expression $script
+  $mode = 'Continue'
+  if (Get-QuietProgressMode) { $mode = 'SilentlyContinue' }
+  Invoke-WithTempProgressPreference $mode { Invoke-Expression $script }
 }
 
 # Install/update Claude Code
@@ -140,7 +156,9 @@ function Update-Claude() {
   Write-Info "Updating Claude Code..."
   $script = Get-Text 'https://claude.ai/install.ps1'
   if (-not $script) { throw "Failed to download installer script." }
-  Invoke-Expression $script
+  $mode = 'Continue'
+  if (Get-QuietProgressMode) { $mode = 'SilentlyContinue' }
+  Invoke-WithTempProgressPreference $mode { Invoke-Expression $script }
 }
 
 # Install/update OpenAI Codex (Windows defaults to npm)
