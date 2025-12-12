@@ -30,6 +30,14 @@ powershell -ExecutionPolicy Bypass -File ".\Check-AI-CLI-Versions.ps1"
 powershell -ExecutionPolicy Bypass -File "G:\wwwroot\CRS\code\USA\droid2api-v3\shell\Check-AI-CLI-Versions.ps1"
 ```
 
+### Windows (无需 clone, 一行命令安装到当前目录)
+```powershell
+irm https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main/install.ps1 | iex
+
+# 备用写法 (同样是 raw 内容)
+irm https://github.com/IIXINGCHEN/Check-AI-CLI/raw/main/install.ps1 | iex
+```
+
 ### macOS / Linux
 ```bash
 # 方法 1: 添加执行权限后运行
@@ -41,6 +49,31 @@ bash check-ai-cli-versions.sh
 
 # 方法 3: 从任意位置运行
 bash /path/to/check-ai-cli-versions.sh
+```
+
+### macOS / Linux (无需 clone, 一行命令安装到当前目录)
+```bash
+curl -fsSL https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main/install.sh | bash
+
+# 备用写法 (同样是 raw 内容)
+curl -fsSL https://github.com/IIXINGCHEN/Check-AI-CLI/raw/main/install.sh | bash
+```
+
+### 中国大陆网络较慢时, 推荐使用代理环境变量
+
+#### PowerShell
+```powershell
+$ProgressPreference = 'SilentlyContinue'
+$env:HTTP_PROXY  = 'http://127.0.0.1:7890'
+$env:HTTPS_PROXY = 'http://127.0.0.1:7890'
+irm https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main/install.ps1 | iex
+```
+
+#### Bash
+```bash
+export HTTP_PROXY="http://127.0.0.1:7890"
+export HTTPS_PROXY="http://127.0.0.1:7890"
+curl -fsSL https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main/install.sh | bash
 ```
 
 ## 📖 功能特性
