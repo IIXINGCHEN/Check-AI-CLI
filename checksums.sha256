@@ -1,7 +1,7 @@
 # SHA256 checksums for Check-AI-CLI
 # Format: <sha256>  <relative-path>
 753946e5f5e043b231e90d0004f760ab540f191708d4d0f6375c5446f484f402  bin/check-ai-cli
-a50855be94bf8c90751b5a2b1061fd04891c23b80d748b550749f93e3b40c9a8  bin/check-ai-cli.cmd
+f8f722ff059fa91b21e832e9303059eef126303857f26038bdb2ab7ec24ec668  bin/check-ai-cli.cmd
 ed7f75b4bb1ae9de99d6ff7423d22261652292b35c21102e84a6f7228855322f  bin/check-ai-cli.ps1
 37485844b418572a68b7734a690200b93d21c8f68141c16b93bd17011a8f1c96  scripts/Check-AI-CLI-Versions.ps1
 ed467c705e27a71c6b11d19e3bb04c134edc27200eb290784578278ab13ce040  scripts/check-ai-cli-versions.sh
