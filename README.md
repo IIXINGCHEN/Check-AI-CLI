@@ -120,6 +120,18 @@ curl -fsSL https://github.com/IIXINGCHEN/Check-AI-CLI/raw/main/install.sh | bash
 ./bin/check-ai-cli
 ```
 
+### macOS / Linux (安全稳定推荐设置)
+```bash
+# 推荐: 用代理加速, 不改下载源
+export HTTP_PROXY="http://127.0.0.1:7890"
+export HTTPS_PROXY="http://127.0.0.1:7890"
+
+# 推荐: 固定到 tag 或 commit, 避免 main 变动
+export CHECK_AI_CLI_REF="main"
+
+curl -fsSL https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main/install.sh | bash
+```
+
 ### 中国大陆网络较慢时, 推荐使用代理环境变量
 
 #### PowerShell
