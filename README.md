@@ -48,6 +48,30 @@ irm https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main/install.ps1 |
 check-ai-cli
 ```
 
+### 安全与稳定(推荐设置)
+
+#### 推荐: 使用代理加速, 不改下载源
+```powershell
+$ProgressPreference = 'SilentlyContinue'
+$env:HTTP_PROXY  = 'http://127.0.0.1:7890'
+$env:HTTPS_PROXY = 'http://127.0.0.1:7890'
+irm https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main/install.ps1 | iex
+```
+
+#### 推荐: 固定版本(避免 main 变动)
+```powershell
+# 你可以固定到 tag 或 commit SHA
+$env:CHECK_AI_CLI_REF = 'main'
+irm https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main/install.ps1 | iex
+```
+
+#### 不推荐: 使用第三方镜像(必须显式允许)
+```powershell
+$env:CHECK_AI_CLI_RAW_BASE = 'YOUR_MIRROR_RAW_BASE'
+$env:CHECK_AI_CLI_ALLOW_UNTRUSTED_MIRROR = '1'
+irm https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main/install.ps1 | iex
+```
+
 ### macOS / Linux
 ```bash
 # 方法 1: 添加执行权限后运行

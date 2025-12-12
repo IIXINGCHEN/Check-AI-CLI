@@ -12,10 +12,43 @@ function Write-Success([string]$Message) { Write-Host "[SUCCESS] $Message" -Fore
 function Write-Warn([string]$Message) { Write-Host "[WARNING] $Message" -ForegroundColor Yellow }
 function Write-Fail([string]$Message) { Write-Host "[ERROR] $Message" -ForegroundColor Red }
 
+function Get-AllowUntrustedMirrorFlag() {
+  $v = $env:CHECK_AI_CLI_ALLOW_UNTRUSTED_MIRROR
+  if ([string]::IsNullOrWhiteSpace($v)) { return $false }
+  return $v.Trim() -eq '1'
+}
+
+function Get-RequestedRef() {
+  $v = $env:CHECK_AI_CLI_REF
+  if ([string]::IsNullOrWhiteSpace($v)) { return 'main' }
+  return $v.Trim()
+}
+
+function Get-GitHubRawBase([string]$Ref) {
+  return "https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/$Ref"
+}
+
+function Test-IsTrustedBase([string]$Base) {
+  $b = $Base.TrimEnd('/')
+  if ($b.StartsWith('https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/', [StringComparison]::OrdinalIgnoreCase)) { return $true }
+  if ($b.StartsWith('https://github.com/IIXINGCHEN/Check-AI-CLI/raw/', [StringComparison]::OrdinalIgnoreCase)) { return $true }
+  return $false
+}
+
+function Require-TrustedBase([string]$Base) {
+  if (Test-IsTrustedBase $Base) { return }
+  if (Get-AllowUntrustedMirrorFlag) { return }
+  throw "Untrusted mirror base. Set CHECK_AI_CLI_ALLOW_UNTRUSTED_MIRROR=1 to allow: $Base"
+}
+
 function Get-BaseUrl() {
   $envBase = $env:CHECK_AI_CLI_RAW_BASE
-  if (-not [string]::IsNullOrWhiteSpace($envBase)) { return $envBase.TrimEnd('/') }
-  return 'https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main'
+  if (-not [string]::IsNullOrWhiteSpace($envBase)) {
+    $base = $envBase.TrimEnd('/')
+    Require-TrustedBase $base
+    return $base
+  }
+  return (Get-GitHubRawBase (Get-RequestedRef))
 }
 
 function Get-InstallDir() {
@@ -59,9 +92,46 @@ function Ensure-Directory([string]$Path) {
   New-Item -ItemType Directory -Path $Path | Out-Null
 }
 
-function Download-File([string]$Url, [string]$OutFile) {
+function Get-RetryCount() {
+  $v = $env:CHECK_AI_CLI_RETRY
+  if ([string]::IsNullOrWhiteSpace($v)) { return 3 }
+  $n = 0
+  if (-not [int]::TryParse($v.Trim(), [ref]$n)) { return 3 }
+  if ($n -lt 1) { return 1 }
+  if ($n -gt 10) { return 10 }
+  return $n
+}
+
+function Get-TempFilePath([string]$OutFile) {
+  return "$OutFile.download"
+}
+
+function Test-NonEmptyFile([string]$Path) {
+  if (-not (Test-Path -LiteralPath $Path)) { return $false }
+  $len = (Get-Item -LiteralPath $Path).Length
+  return $len -gt 0
+}
+
+function Download-ToFile([string]$Url, [string]$OutFile) {
   $headers = @{ 'User-Agent' = 'check-ai-cli-installer' }
   Invoke-WebRequest -Uri $Url -Headers $headers -UseBasicParsing -OutFile $OutFile | Out-Null
+}
+
+function Download-FileWithRetry([string]$Url, [string]$OutFile) {
+  $tries = Get-RetryCount
+  $tmp = Get-TempFilePath $OutFile
+  for ($i = 1; $i -le $tries; $i++) {
+    try {
+      if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
+      Download-ToFile $Url $tmp
+      if (-not (Test-NonEmptyFile $tmp)) { throw "Downloaded file is empty." }
+      Move-Item -LiteralPath $tmp -Destination $OutFile -Force
+      return
+    } catch {
+      if ($i -eq $tries) { throw }
+      Start-Sleep -Seconds 2
+    }
+  }
 }
 
 function Get-FilesToInstall() {
@@ -78,15 +148,31 @@ function Install-OneFile([string]$Base, [string]$Dir, [string]$File) {
   $url = "$Base/$File"
   $out = Join-Path $Dir $File
   Write-Info "Downloading: $File"
-  Download-File $url $out
+  Download-FileWithRetry $url $out
+}
+
+function Normalize-Dir([string]$Dir) {
+  $full = [IO.Path]::GetFullPath($Dir)
+  return $full.TrimEnd('\')
+}
+
+function Path-ContainsDir([string]$PathValue, [string]$Dir) {
+  $needle = (Normalize-Dir $Dir).ToLowerInvariant()
+  foreach ($p in @($PathValue -split ';')) {
+    if ([string]::IsNullOrWhiteSpace($p)) { continue }
+    try {
+      if ((Normalize-Dir $p).ToLowerInvariant() -eq $needle) { return $true }
+    } catch { }
+  }
+  return $false
 }
 
 function Add-ToPath([string]$Dir, [string]$Scope) {
   $target = [EnvironmentVariableTarget]::$Scope
   $current = [Environment]::GetEnvironmentVariable('Path', $target)
-  $items = @($current -split ';') | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
-  if ($items -contains $Dir) { return }
-  $newPath = ($items + $Dir) -join ';'
+  if (Path-ContainsDir $current $Dir) { return }
+  $normalized = Normalize-Dir $Dir
+  $newPath = "$current;$normalized"
   [Environment]::SetEnvironmentVariable('Path', $newPath, $target)
   $env:Path = $newPath
 }
@@ -103,7 +189,10 @@ function Print-NextSteps([string]$Dir) {
 
 function Print-ChinaTip() {
   Write-Host "Tip:"
-  Write-Host "  Set `$env:CHECK_AI_CLI_RAW_BASE to use a mirror base."
+  Write-Host "  Prefer HTTP_PROXY/HTTPS_PROXY for speed in mainland China."
+  Write-Host "  Set `$env:CHECK_AI_CLI_REF to pin a tag/commit for stability."
+  Write-Host "  Set `$env:CHECK_AI_CLI_RAW_BASE only if you trust the mirror."
+  Write-Host "  Set `$env:CHECK_AI_CLI_ALLOW_UNTRUSTED_MIRROR = '1' to bypass mirror check."
   Write-Host "  Set `$ProgressPreference = 'SilentlyContinue' to speed up downloads."
   Write-Host ""
 }
