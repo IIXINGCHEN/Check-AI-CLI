@@ -1,9 +1,9 @@
 # SHA256 checksums for Check-AI-CLI
 # Format: <sha256>  <relative-path>
 753946e5f5e043b231e90d0004f760ab540f191708d4d0f6375c5446f484f402  bin/check-ai-cli
-f8f722ff059fa91b21e832e9303059eef126303857f26038bdb2ab7ec24ec668  bin/check-ai-cli.cmd
+f8e46914d083c77fd55dadcf5c60800b8f9846b3b015afc8599c5e3badf99bc1  bin/check-ai-cli.cmd
 ed7f75b4bb1ae9de99d6ff7423d22261652292b35c21102e84a6f7228855322f  bin/check-ai-cli.ps1
-37485844b418572a68b7734a690200b93d21c8f68141c16b93bd17011a8f1c96  scripts/Check-AI-CLI-Versions.ps1
+0a2582413e0a24b707590940d9f6548d58409bd667bf9887eb6f5296709c7fcc  scripts/Check-AI-CLI-Versions.ps1
 ed467c705e27a71c6b11d19e3bb04c134edc27200eb290784578278ab13ce040  scripts/check-ai-cli-versions.sh
 b044a421e5c34064fb5513002f8eee0f044d1eacb70e12fa5b625d99ce2def58  scripts/Check-FactoryCLI-Version.ps1
 deb721720c57813e2a9f9005c871f5f23e618a6691fd9196a75bfa86d2047a0a  uninstall.ps1
