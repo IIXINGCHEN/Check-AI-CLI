@@ -380,6 +380,37 @@ chmod +x check-ai-cli-versions.sh
 bash check-ai-cli-versions.sh
 ```
 
+### 问题：缺少 sha256sum/shasum (校验工具)
+
+**错误信息**:
+```
+sha256 tool not found
+```
+
+**原因**:
+- `install.sh` 会对下载文件做 SHA256 校验, 没有 `sha256sum` 或 `shasum` 会直接失败, 这是为了安全稳定.
+
+**解决方案**:
+```bash
+# macOS (Homebrew)
+brew install coreutils
+
+# Debian/Ubuntu
+sudo apt-get update && sudo apt-get install -y coreutils
+
+# Fedora/RHEL
+sudo dnf install -y coreutils
+
+# CentOS/RHEL (旧版)
+sudo yum install -y coreutils
+
+# Alpine
+sudo apk add coreutils
+
+# Arch
+sudo pacman -S coreutils
+```
+
 ## Self Check (Offline)
 
 ### PowerShell

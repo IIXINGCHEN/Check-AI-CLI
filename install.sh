@@ -90,6 +90,29 @@ sha256_file() {
   return 1
 }
 
+sha256_tool_exists() {
+  command_exists sha256sum && return 0
+  command_exists shasum && return 0
+  return 1
+}
+
+print_sha256_help() {
+  log_err "sha256 tool not found. Need sha256sum or shasum."
+  if command_exists brew; then log_info "macOS: brew install coreutils"; return 0; fi
+  if command_exists apt-get; then log_info "Debian/Ubuntu: sudo apt-get update && sudo apt-get install -y coreutils"; return 0; fi
+  if command_exists dnf; then log_info "Fedora/RHEL: sudo dnf install -y coreutils"; return 0; fi
+  if command_exists yum; then log_info "CentOS/RHEL: sudo yum install -y coreutils"; return 0; fi
+  if command_exists apk; then log_info "Alpine: sudo apk add coreutils"; return 0; fi
+  if command_exists pacman; then log_info "Arch: sudo pacman -S coreutils"; return 0; fi
+  log_info "Install coreutils via your package manager."
+}
+
+require_sha256_tool() {
+  sha256_tool_exists && return 0
+  print_sha256_help
+  return 1
+}
+
 list_manifest_paths() {
   local manifest="$1"
   awk 'NF>=2 && $1 !~ /^#/ {print $2}' "$manifest"
@@ -106,7 +129,7 @@ verify_hash() {
   expected="$(get_expected_hash "$manifest" "$path")"
   [ -n "$expected" ] || { log_err "Missing checksum: $path"; return 1; }
   actual="$(sha256_file "$file" 2>/dev/null | tr '[:upper:]' '[:lower:]')"
-  [ -n "$actual" ] || { log_err "sha256 tool not found."; return 1; }
+  [ -n "$actual" ] || { log_err "Failed to calculate sha256: $path"; return 1; }
   [ "$actual" = "$expected" ] || { log_err "Checksum mismatch: $path"; return 1; }
 }
 
@@ -170,6 +193,7 @@ main() {
   trap 'rm -rf "$stage" >/dev/null 2>&1 || true' EXIT
 
   download_manifest "$stage" || { log_err "Failed to download checksums.sha256"; exit 1; }
+  require_sha256_tool || exit 1
   download_all "$stage" || { log_err "Download failed."; exit 1; }
   verify_all "$stage" || { log_err "Checksum verification failed."; exit 1; }
   deploy_all "$stage" "$INSTALL_DIR" || { log_err "Deploy failed."; exit 1; }
