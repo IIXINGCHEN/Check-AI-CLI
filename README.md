@@ -38,6 +38,16 @@ irm https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main/install.ps1 |
 irm https://github.com/IIXINGCHEN/Check-AI-CLI/raw/main/install.ps1 | iex
 ```
 
+### Windows (安装到固定目录并加入 PATH)
+```powershell
+# 目标目录: C:\Program Files\Tools\Check-AI-CLI
+# 需要管理员权限: 请用管理员 PowerShell 运行
+irm https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main/install.ps1 | iex
+
+# 安装完成后, 直接执行
+check-ai-cli
+```
+
 ### macOS / Linux
 ```bash
 # 方法 1: 添加执行权限后运行
