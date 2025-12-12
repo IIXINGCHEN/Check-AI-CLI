@@ -1,4 +1,18 @@
-﻿$ErrorActionPreference = 'Stop'
+﻿param(
+  [switch]$Auto
+)
+
+$ErrorActionPreference = 'Stop'
+
+# 中文注释: 自动模式, 未安装则安装, 非最新则更新, 不再询问 Y/N
+function Get-AutoMode() {
+  if ($Auto) { return $true }
+  $v = $env:CHECK_AI_CLI_AUTO
+  if ([string]::IsNullOrWhiteSpace($v)) { return $false }
+  return $v.Trim() -eq '1'
+}
+
+$script:AutoMode = Get-AutoMode
 
 # 中文注释: 统一输出格式, 便于扫读
 function Write-Info([string]$Message) { Write-Host "[INFO] $Message" -ForegroundColor Cyan }
@@ -105,6 +119,7 @@ function Get-LatestGeminiVersion() {
 
 # 中文注释: 统一的升级确认交互
 function Confirm-Yes([string]$Prompt) {
+  if ($script:AutoMode) { return $true }
   $ans = Read-Host $Prompt
   if ([string]::IsNullOrWhiteSpace($ans)) { return $false }
   return $ans.Trim().ToUpperInvariant().StartsWith('Y')
@@ -166,8 +181,12 @@ function Try-Update([scriptblock]$DoUpdate) {
 }
 
 function Handle-UpdateFlow([string]$Latest, [string]$Local, [scriptblock]$DoUpdate) {
-  if (-not $Latest) { return }
-  if (-not $Local) { if (Confirm-Yes "Install now? (Y/N)") { Try-Update $DoUpdate }; return }
+  if (-not $Local) {
+    if (-not $Latest) { Write-Warn "Latest version unknown. Installing anyway." }
+    if (Confirm-Yes "Install now? (Y/N)") { Try-Update $DoUpdate }
+    return
+  }
+  if (-not $Latest) { Write-Warn "Latest version unknown. Skipping update check." ; return }
   $cmp = Compare-Version $Local $Latest
   if ($cmp -eq 0) { Write-Success "Already up to date." ; return }
   if ($cmp -eq 1) { Write-Warn "Local version is newer than latest source." ; return }

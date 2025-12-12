@@ -29,6 +29,10 @@ powershell -ExecutionPolicy Bypass -File ".\Check-AI-CLI-Versions.ps1"
 
 # 方法 3: 从任意位置运行
 powershell -ExecutionPolicy Bypass -File "G:\wwwroot\CRS\code\USA\droid2api-v3\shell\Check-AI-CLI-Versions.ps1"
+
+# 自动模式: 未安装自动安装, 非最新自动更新
+$env:CHECK_AI_CLI_AUTO = '1'
+.\Check-AI-CLI-Versions.ps1 -Auto
 ```
 
 ### Windows (无需 clone, 一行命令安装到当前目录)
@@ -78,6 +82,9 @@ irm https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main/install.ps1 |
 # 方法 1: 添加执行权限后运行
 chmod +x check-ai-cli-versions.sh
 ./check-ai-cli-versions.sh
+
+# 自动模式: 未安装自动安装, 非最新自动更新
+CHECK_AI_CLI_AUTO=1 ./check-ai-cli-versions.sh --yes
 
 # 方法 2: 使用 bash 直接运行
 bash check-ai-cli-versions.sh

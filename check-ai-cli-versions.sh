@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -u
 
+# 中文注释: 自动模式, 未安装则安装, 非最新则更新, 不再询问 Y/N
+AUTO_MODE="${CHECK_AI_CLI_AUTO:-0}"
+if [ "${1:-}" = "--yes" ] || [ "${1:-}" = "-y" ]; then
+  AUTO_MODE="1"
+fi
+
 # 中文注释: 颜色输出(不依赖外部工具)
 COLOR_INFO='\033[36m'
 COLOR_OK='\033[32m'
@@ -81,6 +87,10 @@ get_latest_gemini() {
 
 confirm_yes() {
   local prompt="$1"
+  if [ "$AUTO_MODE" = "1" ]; then
+    echo "$prompt" >/dev/null 2>&1 || true
+    return 0
+  fi
   read -r -p "$prompt" ans || true
   case "${ans:-}" in
     Y|y|YES|yes) return 0 ;;
@@ -136,8 +146,12 @@ print_versions() {
 
 handle_update_flow() {
   local latest="$1" localv="$2" update_fn="$3"
-  [ -n "$latest" ] || return 0
-  if [ -z "$localv" ]; then confirm_yes "Install now? (Y/N): " && "$update_fn"; return 0; fi
+  if [ -z "$localv" ]; then
+    [ -n "$latest" ] || log_warn "Latest version unknown. Installing anyway."
+    confirm_yes "Install now? (Y/N): " && "$update_fn"
+    return 0
+  fi
+  [ -n "$latest" ] || { log_warn "Latest version unknown. Skipping update check."; return 0; }
   local cmp
   cmp="$(compare_semver "$localv" "$latest" || true)"
   [ "$cmp" = "0" ] && log_ok "Already up to date." && return 0
