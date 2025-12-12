@@ -1,6 +1,6 @@
 # AI CLI 工具版本检查器
 
-一键检查和更新三大 AI 编程助手的完整解决方案！
+一键检查和更新四大 AI 编程助手的完整解决方案！
 
 ## 🎯 支持的工具
 
@@ -9,6 +9,7 @@
 | **Factory CLI (Droid)** | Factory.ai 的 AI 开发代理 | https://factory.ai |
 | **Claude Code** | Anthropic 的终端 AI 编程工具 | https://code.claude.com |
 | **OpenAI Codex** | OpenAI 的轻量级编程代理 | https://developers.openai.com/codex |
+| **Gemini CLI** | Google 的 Gemini CLI 工具 | https://github.com/google-gemini/gemini-cli |
 
 ## 📦 脚本文件
 
@@ -121,6 +122,7 @@ curl -fsSL https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main/instal
 - **Factory CLI**: 官方安装脚本
 - **Claude Code**: Google Cloud Storage + npm 备用
 - **OpenAI Codex**: GitHub Releases API + npm 备用
+- **Gemini CLI**: npm registry
 
 ### 🎨 交互式界面
 - 彩色输出，清晰易读
@@ -261,6 +263,27 @@ npm install -g @openai/codex
 npm install -g @openai/codex
 ```
 
+### Gemini CLI
+
+#### Windows
+```powershell
+npm install -g @google/gemini-cli
+```
+
+#### macOS
+```bash
+# 方法 1: Homebrew (推荐)
+brew install gemini-cli
+
+# 方法 2: npm
+npm install -g @google/gemini-cli
+```
+
+#### Linux
+```bash
+npm install -g @google/gemini-cli
+```
+
 ## 🛠️ 故障排除
 
 ### 问题：PowerShell 执行策略错误
@@ -361,6 +384,7 @@ sudo pacman -S nodejs npm
 | Factory CLI | app.factory.ai/cli/install.sh | app.factory.ai/cli/windows |
 | Claude Code | GCS claude-code-releases/stable | registry.npmjs.org |
 | OpenAI Codex | api.github.com/repos/openai/codex | registry.npmjs.org |
+| Gemini CLI | registry.npmjs.org/@google/gemini-cli | github.com/google-gemini/gemini-cli |
 
 ## 🎯 高级用法
 

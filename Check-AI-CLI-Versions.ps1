@@ -96,6 +96,13 @@ function Get-LatestCodexVersion() {
   return Get-SemVer ([string]$json.tag_name)
 }
 
+# 中文注释: 从 npm registry 获取 Gemini CLI 最新版本
+function Get-LatestGeminiVersion() {
+  $json = Get-Json 'https://registry.npmjs.org/@google/gemini-cli/latest'
+  if (-not $json) { return $null }
+  return Get-SemVer ([string]$json.version)
+}
+
 # 中文注释: 统一的升级确认交互
 function Confirm-Yes([string]$Prompt) {
   $ans = Read-Host $Prompt
@@ -125,6 +132,14 @@ function Update-Codex() {
   $npm = Get-Command npm -ErrorAction SilentlyContinue
   if (-not $npm) { throw "npm not found. Install Node.js first." }
   & npm install -g '@openai/codex'
+}
+
+# 中文注释: Gemini CLI 安装/更新(优先 npm)
+function Update-Gemini() {
+  Write-Info "Updating Gemini CLI..."
+  $npm = Get-Command npm -ErrorAction SilentlyContinue
+  if (-not $npm) { throw "npm not found. Install Node.js first." }
+  & npm install -g '@google/gemini-cli@latest'
 }
 
 function Write-ToolHeader([string]$Title) {
@@ -170,7 +185,7 @@ function Show-Banner() {
   Write-Host ""
   Write-Host "==============================================="
   Write-Host " AI CLI Version Checker"
-  Write-Host " Factory CLI (Droid) | Claude Code | OpenAI Codex"
+  Write-Host " Factory CLI (Droid) | Claude Code | OpenAI Codex | Gemini CLI"
   Write-Host "==============================================="
   Write-Host ""
 }
@@ -180,8 +195,9 @@ function Ask-Selection() {
   Write-Host "  [1] Factory CLI (Droid)"
   Write-Host "  [2] Claude Code"
   Write-Host "  [3] OpenAI Codex"
+  Write-Host "  [4] Gemini CLI"
   Write-Host "  [A] Check all (default)"
-  $s = Read-Host "Enter choice (1/2/3/A)"
+  $s = Read-Host "Enter choice (1/2/3/4/A)"
   if ([string]::IsNullOrWhiteSpace($s)) { return 'A' }
   return $s.Trim().ToUpperInvariant()
 }
@@ -197,4 +213,7 @@ if ($sel -eq '2' -or $sel -eq 'A') {
 }
 if ($sel -eq '3' -or $sel -eq 'A') {
   Check-OneTool "OpenAI Codex" { Get-LatestCodexVersion } { Get-LocalCommandVersion @('codex') } { Update-Codex }
+}
+if ($sel -eq '4' -or $sel -eq 'A') {
+  Check-OneTool "Gemini CLI" { Get-LatestGeminiVersion } { Get-LocalCommandVersion @('gemini') } { Update-Gemini }
 }

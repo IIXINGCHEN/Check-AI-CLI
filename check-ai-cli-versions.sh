@@ -53,6 +53,7 @@ get_local_version() {
 get_local_factory() { get_local_version factory || get_local_version droid || true; }
 get_local_claude() { get_local_version claude || get_local_version claude-code || true; }
 get_local_codex() { get_local_version codex || true; }
+get_local_gemini() { get_local_version gemini || true; }
 
 get_latest_factory() {
   local text
@@ -70,6 +71,12 @@ get_latest_codex() {
   local text
   text="$(fetch_text 'https://api.github.com/repos/openai/codex/releases/latest' || true)"
   extract_semver "$(echo "$text" | grep -Eo '\"tag_name\"[[:space:]]*:[[:space:]]*\"[^\"]+\"' | head -n 1)"
+}
+
+get_latest_gemini() {
+  local text
+  text="$(fetch_text 'https://registry.npmjs.org/@google/gemini-cli/latest' || true)"
+  extract_semver "$(echo "$text" | grep -Eo '\"version\"[[:space:]]*:[[:space:]]*\"[^\"]+\"' | head -n 1)"
 }
 
 confirm_yes() {
@@ -100,6 +107,17 @@ update_codex() {
   if command_exists brew; then brew install --cask codex && return 0; fi
   if command_exists npm; then npm install -g '@openai/codex' && return 0; fi
   log_err "brew/npm not found."
+  return 1
+}
+
+update_gemini() {
+  log_info "Updating Gemini CLI..."
+  if command_exists npm; then npm install -g '@google/gemini-cli@latest' && return 0; fi
+  if command_exists brew; then
+    brew list --formula gemini-cli >/dev/null 2>&1 && brew upgrade gemini-cli && return 0
+    brew install gemini-cli && return 0
+  fi
+  log_err "npm/brew not found."
   return 1
 }
 
@@ -142,7 +160,7 @@ show_banner() {
   echo ""
   echo "==============================================="
   echo " AI CLI Version Checker"
-  echo " Factory CLI (Droid) | Claude Code | OpenAI Codex"
+  echo " Factory CLI (Droid) | Claude Code | OpenAI Codex | Gemini CLI"
   echo "==============================================="
   echo ""
 }
@@ -152,8 +170,9 @@ ask_selection() {
   echo "  [1] Factory CLI (Droid)"
   echo "  [2] Claude Code"
   echo "  [3] OpenAI Codex"
+  echo "  [4] Gemini CLI"
   echo "  [A] Check all (default)"
-  read -r -p "Enter choice (1/2/3/A): " choice || true
+  read -r -p "Enter choice (1/2/3/4/A): " choice || true
   echo "${choice:-A}" | tr '[:lower:]' '[:upper:]'
 }
 
@@ -168,4 +187,7 @@ if [ "$sel" = "2" ] || [ "$sel" = "A" ]; then
 fi
 if [ "$sel" = "3" ] || [ "$sel" = "A" ]; then
   check_tool "OpenAI Codex" get_latest_codex get_local_codex update_codex
+fi
+if [ "$sel" = "4" ] || [ "$sel" = "A" ]; then
+  check_tool "Gemini CLI" get_latest_gemini get_local_gemini update_gemini
 fi
