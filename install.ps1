@@ -1,11 +1,11 @@
 $ErrorActionPreference = 'Stop'
 
-# 中文注释: 这个脚本用于支持 `irm ... | iex` 一行命令安装/更新本仓库脚本文件
-# 中文注释: 可用环境变量控制:
-# 中文注释: - CHECK_AI_CLI_RAW_BASE: raw 文件基础地址(用于镜像加速)
-# 中文注释: - CHECK_AI_CLI_INSTALL_DIR: 安装目录(默认 Program Files)
-# 中文注释: - CHECK_AI_CLI_PATH_SCOPE: CurrentUser 或 Machine(默认 Machine)
-# 中文注释: - CHECK_AI_CLI_RUN: 1 表示安装后立即运行
+# This script supports "irm ... | iex" one-liner install/update for this repo's files
+# Env vars:
+# - CHECK_AI_CLI_RAW_BASE: raw base URL (mirror)
+# - CHECK_AI_CLI_INSTALL_DIR: install directory (default Program Files)
+# - CHECK_AI_CLI_PATH_SCOPE: CurrentUser or Machine (default Machine)
+# - CHECK_AI_CLI_RUN: set to 1 to run after install
 
 function Write-Info([string]$Message) { Write-Host "[INFO] $Message" -ForegroundColor Cyan }
 function Write-Success([string]$Message) { Write-Host "[SUCCESS] $Message" -ForegroundColor Green }

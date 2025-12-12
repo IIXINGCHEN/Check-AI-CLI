@@ -1,6 +1,6 @@
 $ErrorActionPreference = 'Stop'
 
-# 中文注释: 命令入口, 用于 PATH 场景下直接运行
+# Entrypoint for PATH usage
 $binDir = $PSScriptRoot
 if (-not $binDir) {
   $invPath = $MyInvocation.MyCommand.Path

@@ -1,9 +1,9 @@
 $ErrorActionPreference = 'Stop'
 
-# 中文注释: 卸载脚本, 默认卸载 Program Files 安装目录, 并从 PATH 移除 bin 目录
-# 中文注释: 环境变量:
-# 中文注释: - CHECK_AI_CLI_INSTALL_DIR: 安装目录(默认 Program Files)
-# 中文注释: - CHECK_AI_CLI_PATH_SCOPE: CurrentUser 或 Machine(默认 Machine)
+# Uninstall script: removes install dir (Program Files by default) and removes bin from PATH
+# Env vars:
+# - CHECK_AI_CLI_INSTALL_DIR: install directory (default Program Files)
+# - CHECK_AI_CLI_PATH_SCOPE: CurrentUser or Machine (default Machine)
 
 function Write-Info([string]$Message) { Write-Host "[INFO] $Message" -ForegroundColor Cyan }
 function Write-Success([string]$Message) { Write-Host "[SUCCESS] $Message" -ForegroundColor Green }

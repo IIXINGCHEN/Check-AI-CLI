@@ -4,10 +4,10 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-# 中文注释: 自动生成 checksums.sha256, 避免手工计算出错
-# 中文注释: 用法:
-# 中文注释: - 生成并写入文件: .\tools\Update-Checksums.ps1
-# 中文注释: - 仅检查是否匹配: .\tools\Update-Checksums.ps1 -Check
+# Auto-generate checksums.sha256 to avoid manual mistakes
+# Usage:
+# - Generate and write file: .\tools\Update-Checksums.ps1
+# - Check only: .\tools\Update-Checksums.ps1 -Check
 
 function Write-Info([string]$Message) { Write-Host "[INFO] $Message" -ForegroundColor Cyan }
 function Write-Success([string]$Message) { Write-Host "[SUCCESS] $Message" -ForegroundColor Green }

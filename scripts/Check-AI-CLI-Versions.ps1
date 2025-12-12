@@ -4,9 +4,9 @@
 
 $ErrorActionPreference = 'Stop'
 
-# 中文注释: 主脚本已移动到 scripts 目录, 便于结构化管理
+# Main script lives under scripts/ for clearer structure
 
-# 中文注释: 自动模式, 未安装则安装, 非最新则更新, 不再询问 Y/N
+# Auto mode: install if missing, update if outdated, no Y/N prompts
 function Get-AutoMode() {
   if ($Auto) { return $true }
   $v = $env:CHECK_AI_CLI_AUTO
@@ -16,13 +16,13 @@ function Get-AutoMode() {
 
 $script:AutoMode = Get-AutoMode
 
-# 中文注释: 统一输出格式, 便于扫读
+# Consistent output formatting
 function Write-Info([string]$Message) { Write-Host "[INFO] $Message" -ForegroundColor Cyan }
 function Write-Success([string]$Message) { Write-Host "[SUCCESS] $Message" -ForegroundColor Green }
 function Write-Warn([string]$Message) { Write-Host "[WARNING] $Message" -ForegroundColor Yellow }
 function Write-Fail([string]$Message) { Write-Host "[ERROR] $Message" -ForegroundColor Red }
 
-# 中文注释: 获取文本内容, 失败时返回 $null
+# Fetch text content, return $null on failure
 function Get-Text([string]$Uri) {
   try {
     $headers = @{ 'User-Agent' = 'ai-cli-version-checker' }
@@ -33,7 +33,7 @@ function Get-Text([string]$Uri) {
   }
 }
 
-# 中文注释: 获取 JSON, 失败时返回 $null
+# Fetch JSON, return $null on failure
 function Get-Json([string]$Uri) {
   try {
     $headers = @{ 'User-Agent' = 'ai-cli-version-checker' }
@@ -44,7 +44,7 @@ function Get-Json([string]$Uri) {
   }
 }
 
-# 中文注释: 从字符串中提取 x.y.z 版本号
+# Extract x.y.z from arbitrary text
 function Get-SemVer([string]$Text) {
   if ([string]::IsNullOrWhiteSpace($Text)) { return $null }
   $m = [regex]::Match($Text, '(\d+)\.(\d+)\.(\d+)')
@@ -52,7 +52,7 @@ function Get-SemVer([string]$Text) {
   return "$($m.Groups[1].Value).$($m.Groups[2].Value).$($m.Groups[3].Value)"
 }
 
-# 中文注释: 将版本号拆分为 3 段整数, 用于比较
+# Split version into integer parts for comparison
 function Get-VersionParts([string]$Version) {
   $v = Get-SemVer $Version
   if (-not $v) { return $null }
@@ -60,7 +60,7 @@ function Get-VersionParts([string]$Version) {
   return @([int]$p[0], [int]$p[1], [int]$p[2])
 }
 
-# 中文注释: 比较版本号, 返回 -1/0/1, 无法比较返回 $null
+# Compare versions: returns -1/0/1, or $null if not comparable
 function Compare-Version([string]$Current, [string]$Latest) {
   $a = Get-VersionParts $Current
   $b = Get-VersionParts $Latest
@@ -72,7 +72,7 @@ function Compare-Version([string]$Current, [string]$Latest) {
   return 0
 }
 
-# 中文注释: 获取本地命令版本, 不存在或失败返回 $null
+# Get local command version, return $null if missing or failed
 function Get-LocalCommandVersion([string[]]$CommandNames) {
   foreach ($name in $CommandNames) {
     $cmd = Get-Command $name -ErrorAction SilentlyContinue
@@ -89,7 +89,7 @@ function Get-LocalCommandVersion([string[]]$CommandNames) {
   return $null
 }
 
-# 中文注释: 从 Factory Windows 安装脚本中提取最新版本
+# Extract latest Factory CLI version from its Windows installer script
 function Get-LatestFactoryVersion() {
   $text = Get-Text 'https://app.factory.ai/cli/windows'
   if (-not $text) { return $null }
@@ -98,28 +98,28 @@ function Get-LatestFactoryVersion() {
   return Get-SemVer $m.Groups[1].Value
 }
 
-# 中文注释: 从 npm registry 获取 Claude Code 最新版本(备用方案)
+# Get latest Claude Code version from npm registry (fallback source)
 function Get-LatestClaudeVersion() {
   $json = Get-Json 'https://registry.npmjs.org/@anthropic-ai/claude-code/latest'
   if (-not $json) { return $null }
   return Get-SemVer ([string]$json.version)
 }
 
-# 中文注释: 从 GitHub Releases API 获取 Codex 最新版本
+# Get latest Codex version from GitHub Releases API
 function Get-LatestCodexVersion() {
   $json = Get-Json 'https://api.github.com/repos/openai/codex/releases/latest'
   if (-not $json) { return $null }
   return Get-SemVer ([string]$json.tag_name)
 }
 
-# 中文注释: 从 npm registry 获取 Gemini CLI 最新版本
+# Get latest Gemini CLI version from npm registry
 function Get-LatestGeminiVersion() {
   $json = Get-Json 'https://registry.npmjs.org/@google/gemini-cli/latest'
   if (-not $json) { return $null }
   return Get-SemVer ([string]$json.version)
 }
 
-# 中文注释: 统一的升级确认交互
+# Standard yes/no confirmation prompt
 function Confirm-Yes([string]$Prompt) {
   if ($script:AutoMode) { return $true }
   $ans = Read-Host $Prompt
@@ -127,7 +127,7 @@ function Confirm-Yes([string]$Prompt) {
   return $ans.Trim().ToUpperInvariant().StartsWith('Y')
 }
 
-# 中文注释: Factory CLI 安装/更新
+# Install/update Factory CLI
 function Update-Factory() {
   Write-Info "Updating Factory CLI (Droid)..."
   $script = Get-Text 'https://app.factory.ai/cli/windows'
@@ -135,7 +135,7 @@ function Update-Factory() {
   Invoke-Expression $script
 }
 
-# 中文注释: Claude Code 安装/更新
+# Install/update Claude Code
 function Update-Claude() {
   Write-Info "Updating Claude Code..."
   $script = Get-Text 'https://claude.ai/install.ps1'
@@ -143,7 +143,7 @@ function Update-Claude() {
   Invoke-Expression $script
 }
 
-# 中文注释: OpenAI Codex 安装/更新(Windows 默认 npm)
+# Install/update OpenAI Codex (Windows defaults to npm)
 function Update-Codex() {
   Write-Info "Updating OpenAI Codex..."
   $npm = Get-Command npm -ErrorAction SilentlyContinue
@@ -151,7 +151,7 @@ function Update-Codex() {
   & npm install -g '@openai/codex'
 }
 
-# 中文注释: Gemini CLI 安装/更新(优先 npm)
+# Install/update Gemini CLI (prefers npm)
 function Update-Gemini() {
   Write-Info "Updating Gemini CLI..."
   $npm = Get-Command npm -ErrorAction SilentlyContinue

@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# 中文注释: 这个脚本用于支持 curl | bash 一行命令安装/更新本仓库脚本文件
-# 中文注释: 环境变量:
-# 中文注释: - CHECK_AI_CLI_REF: 固定 tag/commit/main, 默认 main
-# 中文注释: - CHECK_AI_CLI_RAW_BASE: raw 文件基础地址(镜像加速). 默认仅信任 GitHub 官方 raw
-# 中文注释: - CHECK_AI_CLI_ALLOW_UNTRUSTED_MIRROR: 1 表示允许非官方镜像
-# 中文注释: - CHECK_AI_CLI_INSTALL_DIR: 安装目录, 默认当前目录
-# 中文注释: - CHECK_AI_CLI_RETRY: 下载重试次数, 默认 3
+# This script supports "curl | bash" to install/update this repo's files
+# Env vars:
+# - CHECK_AI_CLI_REF: pin tag/commit/main, default main
+# - CHECK_AI_CLI_RAW_BASE: raw base URL (mirror). Default trusts GitHub official raw only
+# - CHECK_AI_CLI_ALLOW_UNTRUSTED_MIRROR: set to 1 to allow untrusted mirrors
+# - CHECK_AI_CLI_INSTALL_DIR: install directory, default current dir
+# - CHECK_AI_CLI_RETRY: download retry count, default 3
 
 REF="${CHECK_AI_CLI_REF:-main}"
 RAW_BASE="${CHECK_AI_CLI_RAW_BASE:-}"

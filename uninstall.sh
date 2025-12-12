@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# 中文注释: 卸载脚本, 删除安装目录(默认当前目录), 不自动修改 PATH
-# 中文注释: 环境变量:
-# 中文注释: - CHECK_AI_CLI_INSTALL_DIR: 安装目录, 默认当前目录
+# Uninstall script: removes install dir (default current dir), does not edit PATH automatically
+# Env vars:
+# - CHECK_AI_CLI_INSTALL_DIR: install directory, default current dir
 
 INSTALL_DIR="${CHECK_AI_CLI_INSTALL_DIR:-.}"
 
@@ -28,4 +28,3 @@ main() {
 }
 
 main
-

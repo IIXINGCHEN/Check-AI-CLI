@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 set -u
 
-# 中文注释: 自动模式, 未安装则安装, 非最新则更新, 不再询问 Y/N
+# Auto mode: install if missing, update if outdated, no Y/N prompts
 AUTO_MODE="${CHECK_AI_CLI_AUTO:-0}"
 if [ "${1:-}" = "--yes" ] || [ "${1:-}" = "-y" ]; then
   AUTO_MODE="1"
 fi
 
-# 中文注释: 颜色输出(不依赖外部工具)
+# Colored output (no external deps)
 COLOR_INFO='\033[36m'
 COLOR_OK='\033[32m'
 COLOR_WARN='\033[33m'
@@ -19,15 +19,15 @@ log_ok() { echo -e "${COLOR_OK}[SUCCESS] $*${COLOR_RESET}"; }
 log_warn() { echo -e "${COLOR_WARN}[WARNING] $*${COLOR_RESET}"; }
 log_err() { echo -e "${COLOR_ERR}[ERROR] $*${COLOR_RESET}"; }
 
-# 中文注释: 判断命令是否存在
+# Check if command exists
 command_exists() { command -v "$1" >/dev/null 2>&1; }
 
-# 中文注释: 从任意文本中提取 x.y.z
+# Extract x.y.z from arbitrary text
 extract_semver() {
   echo "$*" | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1
 }
 
-# 中文注释: 比较两个 x.y.z, 输出 -1/0/1, 无法比较输出空
+# Compare two x.y.z versions: prints -1/0/1, prints empty if not comparable
 compare_semver() {
   local a b a1 a2 a3 b1 b2 b3
   a="$(extract_semver "$1")"
@@ -42,7 +42,7 @@ compare_semver() {
   echo 0
 }
 
-# 中文注释: 尽量用 curl, 没有则用 wget
+# Prefer curl, fallback to wget
 fetch_text() {
   local url="$1"
   if command_exists curl; then curl -fsSL "$url" 2>/dev/null || return 1; fi
