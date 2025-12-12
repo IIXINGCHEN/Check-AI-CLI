@@ -1,6 +1,6 @@
 @echo off
-REM 中文注释: CMD 入口, 让 PATH 下可以直接执行 check-ai-cli
+REM 中文注释: 兼容入口, 实际命令入口在 bin 目录
 setlocal
-set "SCRIPT_DIR=%~dp0"
-powershell -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_DIR%check-ai-cli.ps1"
+set "ROOT=%~dp0"
+call "%ROOT%bin\check-ai-cli.cmd" %*
 

@@ -136,18 +136,25 @@ function Download-FileWithRetry([string]$Url, [string]$OutFile) {
 
 function Get-FilesToInstall() {
   return @(
-    'Check-AI-CLI-Versions.ps1',
-    'Check-FactoryCLI-Version.ps1',
-    'check-ai-cli.ps1',
-    'check-ai-cli.cmd',
-    'check-ai-cli-versions.sh'
+    @{ Remote = 'scripts/Check-AI-CLI-Versions.ps1'; Local = 'scripts\Check-AI-CLI-Versions.ps1' },
+    @{ Remote = 'scripts/Check-FactoryCLI-Version.ps1'; Local = 'scripts\Check-FactoryCLI-Version.ps1' },
+    @{ Remote = 'scripts/check-ai-cli-versions.sh'; Local = 'scripts\check-ai-cli-versions.sh' },
+    @{ Remote = 'bin/check-ai-cli.ps1'; Local = 'bin\check-ai-cli.ps1' },
+    @{ Remote = 'bin/check-ai-cli.cmd'; Local = 'bin\check-ai-cli.cmd' }
   )
 }
 
-function Install-OneFile([string]$Base, [string]$Dir, [string]$File) {
-  $url = "$Base/$File"
-  $out = Join-Path $Dir $File
-  Write-Info "Downloading: $File"
+function Ensure-ParentDirectory([string]$Path) {
+  $parent = Split-Path -Parent $Path
+  if ([string]::IsNullOrWhiteSpace($parent)) { return }
+  Ensure-Directory $parent
+}
+
+function Install-OneFile([string]$Base, [string]$InstallDir, [hashtable]$Entry) {
+  $url = "$Base/$($Entry.Remote)"
+  $out = Join-Path $InstallDir $Entry.Local
+  Ensure-ParentDirectory $out
+  Write-Info "Downloading: $($Entry.Remote)"
   Download-FileWithRetry $url $out
 }
 
@@ -181,9 +188,9 @@ function Print-NextSteps([string]$Dir) {
   Write-Host ""
   Write-Host "Next:"
   Write-Host "  check-ai-cli"
-  Write-Host "  check-ai-cli.ps1"
   Write-Host "  cd `"$Dir`""
-  Write-Host "  .\\Check-AI-CLI-Versions.ps1"
+  Write-Host "  .\\bin\\check-ai-cli.cmd"
+  Write-Host "  .\\scripts\\Check-AI-CLI-Versions.ps1"
   Write-Host ""
 }
 
@@ -201,11 +208,12 @@ function Install-All([string]$Dir, [string]$Scope, [bool]$Run) {
   $base = Get-BaseUrl
   $files = Get-FilesToInstall
   foreach ($f in $files) { Install-OneFile $base $Dir $f }
-  Add-ToPath $Dir $Scope
+  $binDir = Join-Path $Dir 'bin'
+  Add-ToPath $binDir $Scope
   Write-Success "Installed to: $Dir"
   Print-NextSteps $Dir
   Print-ChinaTip
-  if ($Run) { & (Join-Path $Dir 'check-ai-cli.ps1') }
+  if ($Run) { & (Join-Path $Dir 'bin\check-ai-cli.ps1') }
 }
 
 function Set-QuietProgress([string]$Mode) {

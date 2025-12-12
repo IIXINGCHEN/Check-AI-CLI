@@ -13,9 +13,23 @@
 
 ## 📦 脚本文件
 
-- `Check-AI-CLI-Versions.ps1` - Windows PowerShell 版本
-- `check-ai-cli-versions.sh` - macOS/Linux Bash 版本
-- `Check-FactoryCLI-Version.ps1` - Windows 版本（仅 Factory CLI）
+- `install.ps1` - Windows 一键安装器(支持 PATH)
+- `install.sh` - macOS/Linux 一键安装器
+- `scripts/` - 版本检查脚本(主逻辑)
+- `bin/` - 命令入口(用于 PATH)
+
+## 目录结构
+
+- `scripts/Check-AI-CLI-Versions.ps1` - Windows PowerShell 版本(主脚本)
+- `scripts/Check-FactoryCLI-Version.ps1` - Windows 版本(仅 Factory CLI)
+- `scripts/check-ai-cli-versions.sh` - macOS/Linux Bash 版本
+- `bin/check-ai-cli.cmd` - Windows PATH 命令入口
+- `bin/check-ai-cli.ps1` - PowerShell PATH 命令入口
+
+## 兼容入口
+
+- `Check-AI-CLI-Versions.ps1` - 兼容旧路径, 会转发到 `scripts/Check-AI-CLI-Versions.ps1`
+- `check-ai-cli-versions.sh` - 兼容旧路径, 会转发到 `scripts/check-ai-cli-versions.sh`
 
 ## 🚀 快速使用
 
@@ -35,22 +49,24 @@ $env:CHECK_AI_CLI_AUTO = '1'
 .\Check-AI-CLI-Versions.ps1 -Auto
 ```
 
-### Windows (无需 clone, 一行命令安装到当前目录)
+### Windows (无需 clone, 一行命令安装到默认目录并加入 PATH)
 ```powershell
+# 默认安装目录: C:\Program Files\Tools\Check-AI-CLI
+# 需要管理员权限: 请用管理员 PowerShell 运行
 irm https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main/install.ps1 | iex
 
 # 备用写法 (同样是 raw 内容)
 irm https://github.com/IIXINGCHEN/Check-AI-CLI/raw/main/install.ps1 | iex
-```
-
-### Windows (安装到固定目录并加入 PATH)
-```powershell
-# 目标目录: C:\Program Files\Tools\Check-AI-CLI
-# 需要管理员权限: 请用管理员 PowerShell 运行
-irm https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main/install.ps1 | iex
 
 # 安装完成后, 直接执行
 check-ai-cli
+```
+
+### Windows (安装到自定义目录, 不需要管理员权限)
+```powershell
+$env:CHECK_AI_CLI_INSTALL_DIR = (Get-Location).Path
+$env:CHECK_AI_CLI_PATH_SCOPE = 'CurrentUser'
+irm https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main/install.ps1 | iex
 ```
 
 ### 安全与稳定(推荐设置)
@@ -99,6 +115,9 @@ curl -fsSL https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main/instal
 
 # 备用写法 (同样是 raw 内容)
 curl -fsSL https://github.com/IIXINGCHEN/Check-AI-CLI/raw/main/install.sh | bash
+
+# 安装完成后, 直接执行
+./bin/check-ai-cli
 ```
 
 ### 中国大陆网络较慢时, 推荐使用代理环境变量

@@ -24,12 +24,12 @@ fetch_to_file() {
 }
 
 download_file_list() {
-  echo "check-ai-cli-versions.sh"
+  echo "scripts/check-ai-cli-versions.sh"
 }
 
 download_all() {
   local dir="$1" f
-  mkdir -p "$dir"
+  mkdir -p "$dir/scripts" "$dir/bin"
   while read -r f; do
     log_info "Downloading: $f"
     fetch_to_file "$BASE/$f" "$dir/$f" || return 1
@@ -38,10 +38,18 @@ download_all() {
 
 print_next_steps() {
   local dir="$1"
-  chmod +x "$dir/check-ai-cli-versions.sh" 2>/dev/null || true
+  chmod +x "$dir/scripts/check-ai-cli-versions.sh" 2>/dev/null || true
+  cat > "$dir/bin/check-ai-cli" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$DIR/.." && pwd)"
+exec "$ROOT/scripts/check-ai-cli-versions.sh" "$@"
+EOF
+  chmod +x "$dir/bin/check-ai-cli" 2>/dev/null || true
   log_ok "Installed to: $dir"
-  printf "\nNext:\n  cd \"%s\"\n  ./check-ai-cli-versions.sh\n\n" "$dir"
-  log_warn "Tip: set CHECK_AI_CLI_RAW_BASE to use a mirror in mainland China."
+  printf "\nNext:\n  cd \"%s\"\n  ./bin/check-ai-cli\n\n" "$dir"
+  log_warn "Tip: add \"$dir/bin\" to PATH for global usage."
 }
 
 download_all "$INSTALL_DIR"
