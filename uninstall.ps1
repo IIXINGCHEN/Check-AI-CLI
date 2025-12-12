@@ -13,12 +13,17 @@ function Write-Fail([string]$Message) { Write-Host "[ERROR] $Message" -Foregroun
 function Get-InstallDir() {
   $envDir = $env:CHECK_AI_CLI_INSTALL_DIR
   if (-not [string]::IsNullOrWhiteSpace($envDir)) { return $envDir }
-  return 'C:\Program Files\Tools\Check-AI-CLI'
+  $isAdmin = $false
+  try { $isAdmin = (Test-IsAdmin) } catch { }
+  if ($isAdmin) { return 'C:\Program Files\Tools\Check-AI-CLI' }
+  $localAppData = $env:LOCALAPPDATA
+  if ([string]::IsNullOrWhiteSpace($localAppData)) { return (Join-Path $env:USERPROFILE 'AppData\Local\Check-AI-CLI') }
+  return (Join-Path $localAppData 'Programs\Tools\Check-AI-CLI')
 }
 
 function Get-PathScope() {
   $s = $env:CHECK_AI_CLI_PATH_SCOPE
-  if ([string]::IsNullOrWhiteSpace($s)) { return 'Machine' }
+  if ([string]::IsNullOrWhiteSpace($s)) { if (Test-IsAdmin) { return 'Machine' } ; return 'CurrentUser' }
   $t = $s.Trim()
   if ($t -ne 'Machine' -and $t -ne 'CurrentUser') { return 'Machine' }
   return $t
@@ -85,4 +90,3 @@ try {
   Write-Fail $_.Exception.Message
   exit 1
 }
-

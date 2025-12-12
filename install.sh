@@ -90,6 +90,11 @@ sha256_file() {
   return 1
 }
 
+list_manifest_paths() {
+  local manifest="$1"
+  awk 'NF>=2 && $1 !~ /^#/ {print $2}' "$manifest"
+}
+
 get_expected_hash() {
   local manifest="$1" path="$2"
   awk -v p="$path" '$2==p {print tolower($1); exit 0}' "$manifest"
@@ -105,19 +110,14 @@ verify_hash() {
   [ "$actual" = "$expected" ] || { log_err "Checksum mismatch: $path"; return 1; }
 }
 
-download_file_list() {
-  echo "scripts/check-ai-cli-versions.sh"
-  echo "bin/check-ai-cli"
-  echo "uninstall.sh"
-}
-
 download_all() {
   local stage="$1" f
   mkdir -p "$stage/scripts" "$stage/bin"
   while read -r f; do
+    [ -n "$f" ] || continue
     log_info "Downloading: $f"
     download_with_retry "$BASE/$f" "$stage/$f" || return 1
-  done < <(download_file_list)
+  done < <(list_manifest_paths "$stage/checksums.sha256")
 }
 
 download_manifest() {
@@ -128,8 +128,9 @@ download_manifest() {
 verify_all() {
   local stage="$1" f
   while read -r f; do
+    [ -n "$f" ] || continue
     verify_hash "$stage/checksums.sha256" "$f" "$stage/$f" || return 1
-  done < <(download_file_list)
+  done < <(list_manifest_paths "$stage/checksums.sha256")
 }
 
 deploy_one() {
@@ -146,8 +147,9 @@ deploy_all() {
   local stage="$1" dir="$2" f
   mkdir -p "$dir/scripts" "$dir/bin"
   while read -r f; do
+    [ -n "$f" ] || continue
     deploy_one "$stage" "$dir" "$f"
-  done < <(download_file_list)
+  done < <(list_manifest_paths "$stage/checksums.sha256")
 }
 
 print_next_steps() {

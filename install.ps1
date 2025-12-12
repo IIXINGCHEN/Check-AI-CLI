@@ -54,12 +54,15 @@ function Get-BaseUrl() {
 function Get-InstallDir() {
   $envDir = $env:CHECK_AI_CLI_INSTALL_DIR
   if (-not [string]::IsNullOrWhiteSpace($envDir)) { return $envDir }
-  return 'C:\Program Files\Tools\Check-AI-CLI'
+  if (Test-IsAdmin) { return 'C:\Program Files\Tools\Check-AI-CLI' }
+  $localAppData = $env:LOCALAPPDATA
+  if ([string]::IsNullOrWhiteSpace($localAppData)) { return (Join-Path $env:USERPROFILE 'AppData\Local\Check-AI-CLI') }
+  return (Join-Path $localAppData 'Programs\Tools\Check-AI-CLI')
 }
 
 function Get-PathScope() {
   $s = $env:CHECK_AI_CLI_PATH_SCOPE
-  if ([string]::IsNullOrWhiteSpace($s)) { return 'Machine' }
+  if ([string]::IsNullOrWhiteSpace($s)) { if (Test-IsAdmin) { return 'Machine' } ; return 'CurrentUser' }
   $t = $s.Trim()
   if ($t -ne 'Machine' -and $t -ne 'CurrentUser') { return 'Machine' }
   return $t
@@ -279,7 +282,6 @@ function Print-ChinaTip() {
 
 function Install-All([string]$Dir, [string]$Scope, [bool]$Run) {
   $base = Get-BaseUrl
-  $files = Get-FilesToInstall
   $stage = New-StagingDir
   try {
     $manifestUrl = "$base/$(Get-ManifestRemotePath)"
@@ -288,6 +290,11 @@ function Install-All([string]$Dir, [string]$Scope, [bool]$Run) {
     $manifestText = Get-Content -Raw -LiteralPath $manifestFile
     if ([string]::IsNullOrWhiteSpace($manifestText)) { throw "Failed to download checksums.sha256" }
     $manifest = Read-Manifest $manifestText
+
+    $files = @()
+    foreach ($remote in ($manifest.Keys | Sort-Object)) {
+      $files += @{ Remote = $remote; Local = ($remote -replace '/', '\') }
+    }
 
     foreach ($f in $files) {
       Write-Info "Downloading: $($f.Remote)"
@@ -319,6 +326,11 @@ function Restore-Progress() {
 function Print-AdminHint() {
   Write-Host ""
   Write-Host "Run PowerShell as Administrator, then rerun:"
+  Write-Host "  irm https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main/install.ps1 | iex"
+  Write-Host ""
+  Write-Host "Or install to CurrentUser without admin:"
+  Write-Host "  `$env:CHECK_AI_CLI_PATH_SCOPE = 'CurrentUser'"
+  Write-Host "  `$env:CHECK_AI_CLI_INSTALL_DIR = (Join-Path `$env:LOCALAPPDATA 'Programs\\Tools\\Check-AI-CLI')"
   Write-Host "  irm https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main/install.ps1 | iex"
   Write-Host ""
 }

@@ -54,8 +54,8 @@ $env:CHECK_AI_CLI_AUTO = '1'
 
 ### Windows (无需 clone, 一行命令安装到默认目录并加入 PATH)
 ```powershell
-# 默认安装目录: C:\Program Files\Tools\Check-AI-CLI
-# 需要管理员权限: 请用管理员 PowerShell 运行
+# 管理员 PowerShell: 默认安装到 C:\Program Files\Tools\Check-AI-CLI, 写入 Machine PATH
+# 非管理员 PowerShell: 默认安装到 %LOCALAPPDATA%\Programs\Tools\Check-AI-CLI, 写入 CurrentUser PATH
 irm https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main/install.ps1 | iex
 
 # 备用写法 (同样是 raw 内容)
@@ -140,6 +140,20 @@ export HTTPS_PROXY="http://127.0.0.1:7890"
 export CHECK_AI_CLI_REF="main"
 
 curl -fsSL https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main/install.sh | bash
+```
+
+## 发布流程(自动生成 checksums.sha256)
+
+```powershell
+# 1) 修改代码后先 add
+git add -A
+
+# 2) 自动生成/更新 checksums.sha256
+.\tools\Update-Checksums.ps1
+
+# 3) 提交
+git add checksums.sha256
+git commit -m "Update checksums"
 ```
 
 ### 中国大陆网络较慢时, 推荐使用代理环境变量

@@ -1,10 +1,10 @@
 # SHA256 checksums for Check-AI-CLI
 # Format: <sha256>  <relative-path>
-37485844b418572a68b7734a690200b93d21c8f68141c16b93bd17011a8f1c96  scripts/Check-AI-CLI-Versions.ps1
-b044a421e5c34064fb5513002f8eee0f044d1eacb70e12fa5b625d99ce2def58  scripts/Check-FactoryCLI-Version.ps1
-ed467c705e27a71c6b11d19e3bb04c134edc27200eb290784578278ab13ce040  scripts/check-ai-cli-versions.sh
-f659dfe103b59454b590c27785a3db451a6d7a1eac9e8f5f7dcc3ce8d3b62849  bin/check-ai-cli.ps1
-a50855be94bf8c90751b5a2b1061fd04891c23b80d748b550749f93e3b40c9a8  bin/check-ai-cli.cmd
 753946e5f5e043b231e90d0004f760ab540f191708d4d0f6375c5446f484f402  bin/check-ai-cli
-51fb2a2faafbf317b90b3c3c598c8adf19a24a4e5822801c8bf7c7b723487771  uninstall.ps1
+a50855be94bf8c90751b5a2b1061fd04891c23b80d748b550749f93e3b40c9a8  bin/check-ai-cli.cmd
+f659dfe103b59454b590c27785a3db451a6d7a1eac9e8f5f7dcc3ce8d3b62849  bin/check-ai-cli.ps1
+37485844b418572a68b7734a690200b93d21c8f68141c16b93bd17011a8f1c96  scripts/Check-AI-CLI-Versions.ps1
+ed467c705e27a71c6b11d19e3bb04c134edc27200eb290784578278ab13ce040  scripts/check-ai-cli-versions.sh
+b044a421e5c34064fb5513002f8eee0f044d1eacb70e12fa5b625d99ce2def58  scripts/Check-FactoryCLI-Version.ps1
+deb721720c57813e2a9f9005c871f5f23e618a6691fd9196a75bfa86d2047a0a  uninstall.ps1
 56995141577edb2e486c7691dc89e5327da49c3c2bca18fd593bc6bea51d2571  uninstall.sh
