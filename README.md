@@ -15,6 +15,9 @@
 
 - `install.ps1` - Windows 一键安装器(支持 PATH)
 - `install.sh` - macOS/Linux 一键安装器
+- `uninstall.ps1` - Windows 卸载器(需要确认 DELETE)
+- `uninstall.sh` - macOS/Linux 卸载器(需要确认 DELETE)
+- `checksums.sha256` - 下载文件校验(安装时自动验证)
 - `scripts/` - 版本检查脚本(主逻辑)
 - `bin/` - 命令入口(用于 PATH)
 
@@ -60,6 +63,10 @@ irm https://github.com/IIXINGCHEN/Check-AI-CLI/raw/main/install.ps1 | iex
 
 # 安装完成后, 直接执行
 check-ai-cli
+
+# 卸载(需要输入 DELETE 确认)
+cd "C:\Program Files\Tools\Check-AI-CLI"
+.\uninstall.ps1
 ```
 
 ### Windows (安装到自定义目录, 不需要管理员权限)
@@ -118,6 +125,9 @@ curl -fsSL https://github.com/IIXINGCHEN/Check-AI-CLI/raw/main/install.sh | bash
 
 # 安装完成后, 直接执行
 ./bin/check-ai-cli
+
+# 卸载(需要输入 DELETE 确认)
+./uninstall.sh
 ```
 
 ### macOS / Linux (安全稳定推荐设置)
@@ -411,7 +421,7 @@ sudo pacman -S nodejs npm
 本脚本：
 - ✅ 仅从官方源获取数据
 - ✅ 使用 HTTPS 加密连接
-- ✅ 验证下载文件的校验和（当官方提供时）
+- ✅ 验证下载文件的校验和（checksums.sha256）
 - ✅ 不收集或发送任何用户数据
 - ✅ 开源透明，可审查代码
 

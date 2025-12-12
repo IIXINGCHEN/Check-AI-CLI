@@ -83,33 +83,78 @@ download_with_retry() {
   return 1
 }
 
+sha256_file() {
+  local file="$1"
+  if command_exists sha256sum; then sha256sum "$file" | awk '{print $1}'; return 0; fi
+  if command_exists shasum; then shasum -a 256 "$file" | awk '{print $1}'; return 0; fi
+  return 1
+}
+
+get_expected_hash() {
+  local manifest="$1" path="$2"
+  awk -v p="$path" '$2==p {print tolower($1); exit 0}' "$manifest"
+}
+
+verify_hash() {
+  local manifest="$1" path="$2" file="$3"
+  local expected actual
+  expected="$(get_expected_hash "$manifest" "$path")"
+  [ -n "$expected" ] || { log_err "Missing checksum: $path"; return 1; }
+  actual="$(sha256_file "$file" 2>/dev/null | tr '[:upper:]' '[:lower:]')"
+  [ -n "$actual" ] || { log_err "sha256 tool not found."; return 1; }
+  [ "$actual" = "$expected" ] || { log_err "Checksum mismatch: $path"; return 1; }
+}
+
 download_file_list() {
   echo "scripts/check-ai-cli-versions.sh"
+  echo "bin/check-ai-cli"
+  echo "uninstall.sh"
 }
 
 download_all() {
-  local dir="$1" f
-  mkdir -p "$dir/scripts" "$dir/bin"
+  local stage="$1" f
+  mkdir -p "$stage/scripts" "$stage/bin"
   while read -r f; do
     log_info "Downloading: $f"
-    download_with_retry "$BASE/$f" "$dir/$f" || {
-      log_err "Failed to download: $BASE/$f"
-      return 1
-    }
+    download_with_retry "$BASE/$f" "$stage/$f" || return 1
+  done < <(download_file_list)
+}
+
+download_manifest() {
+  local stage="$1"
+  download_with_retry "$BASE/checksums.sha256" "$stage/checksums.sha256"
+}
+
+verify_all() {
+  local stage="$1" f
+  while read -r f; do
+    verify_hash "$stage/checksums.sha256" "$f" "$stage/$f" || return 1
+  done < <(download_file_list)
+}
+
+deploy_one() {
+  local stage="$1" dir="$2" rel="$3" src dst tmp
+  src="$stage/$rel"
+  dst="$dir/$rel"
+  tmp="$dst.new"
+  ensure_parent_dir "$dst"
+  cp -f "$src" "$tmp"
+  mv -f "$tmp" "$dst"
+}
+
+deploy_all() {
+  local stage="$1" dir="$2" f
+  mkdir -p "$dir/scripts" "$dir/bin"
+  while read -r f; do
+    deploy_one "$stage" "$dir" "$f"
   done < <(download_file_list)
 }
 
 print_next_steps() {
   local dir="$1"
   chmod +x "$dir/scripts/check-ai-cli-versions.sh" 2>/dev/null || true
-  cat > "$dir/bin/check-ai-cli" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT="$(cd "$DIR/.." && pwd)"
-exec "$ROOT/scripts/check-ai-cli-versions.sh" "$@"
-EOF
   chmod +x "$dir/bin/check-ai-cli" 2>/dev/null || true
+  chmod +x "$dir/uninstall.sh" 2>/dev/null || true
   log_ok "Installed to: $dir"
   printf "\nNext:\n  cd \"%s\"\n  ./bin/check-ai-cli\n\n" "$dir"
   log_warn "Tip: add \"$dir/bin\" to PATH for global usage."
@@ -117,5 +162,16 @@ EOF
   log_warn "Tip: prefer HTTP_PROXY/HTTPS_PROXY instead of third-party mirrors."
 }
 
-download_all "$INSTALL_DIR"
-print_next_steps "$INSTALL_DIR"
+main() {
+  local stage
+  stage="$(mktemp -d 2>/dev/null || mktemp -d -t check-ai-cli)"
+  trap 'rm -rf "$stage" >/dev/null 2>&1 || true' EXIT
+
+  download_manifest "$stage" || { log_err "Failed to download checksums.sha256"; exit 1; }
+  download_all "$stage" || { log_err "Download failed."; exit 1; }
+  verify_all "$stage" || { log_err "Checksum verification failed."; exit 1; }
+  deploy_all "$stage" "$INSTALL_DIR" || { log_err "Deploy failed."; exit 1; }
+  print_next_steps "$INSTALL_DIR"
+}
+
+main

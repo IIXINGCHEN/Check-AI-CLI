@@ -140,9 +140,14 @@ function Get-FilesToInstall() {
     @{ Remote = 'scripts/Check-FactoryCLI-Version.ps1'; Local = 'scripts\Check-FactoryCLI-Version.ps1' },
     @{ Remote = 'scripts/check-ai-cli-versions.sh'; Local = 'scripts\check-ai-cli-versions.sh' },
     @{ Remote = 'bin/check-ai-cli.ps1'; Local = 'bin\check-ai-cli.ps1' },
-    @{ Remote = 'bin/check-ai-cli.cmd'; Local = 'bin\check-ai-cli.cmd' }
+    @{ Remote = 'bin/check-ai-cli.cmd'; Local = 'bin\check-ai-cli.cmd' },
+    @{ Remote = 'bin/check-ai-cli'; Local = 'bin\check-ai-cli' },
+    @{ Remote = 'uninstall.ps1'; Local = 'uninstall.ps1' },
+    @{ Remote = 'uninstall.sh'; Local = 'uninstall.sh' }
   )
 }
+
+function Get-ManifestRemotePath() { return 'checksums.sha256' }
 
 function Ensure-ParentDirectory([string]$Path) {
   $parent = Split-Path -Parent $Path
@@ -156,6 +161,71 @@ function Install-OneFile([string]$Base, [string]$InstallDir, [hashtable]$Entry) 
   Ensure-ParentDirectory $out
   Write-Info "Downloading: $($Entry.Remote)"
   Download-FileWithRetry $url $out
+}
+
+function Download-Text([string]$Url) {
+  $headers = @{ 'User-Agent' = 'check-ai-cli-installer' }
+  return (Invoke-WebRequest -Uri $Url -Headers $headers -UseBasicParsing).Content
+}
+
+function Read-Manifest([string]$Text) {
+  $map = @{}
+  foreach ($line in @($Text -split "`n")) {
+    $t = $line.Trim()
+    if ([string]::IsNullOrWhiteSpace($t)) { continue }
+    if ($t.StartsWith('#')) { continue }
+    $parts = $t -split '\s+'
+    if ($parts.Count -lt 2) { continue }
+    $hash = $parts[0].Trim().ToLowerInvariant()
+    $path = $parts[1].Trim()
+    if (-not $map.ContainsKey($path)) { $map[$path] = $hash }
+  }
+  return $map
+}
+
+function Get-ExpectedHash([hashtable]$Manifest, [string]$RemotePath) {
+  if ($Manifest.ContainsKey($RemotePath)) { return [string]$Manifest[$RemotePath] }
+  return $null
+}
+
+function Get-Sha256([string]$Path) {
+  return (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash.ToLowerInvariant()
+}
+
+function Verify-FileHash([hashtable]$Manifest, [string]$RemotePath, [string]$LocalPath) {
+  $expected = Get-ExpectedHash $Manifest $RemotePath
+  if (-not $expected) { throw "Missing checksum for: $RemotePath" }
+  $actual = Get-Sha256 $LocalPath
+  if ($actual -ne $expected) { throw "Checksum mismatch: $RemotePath" }
+}
+
+function New-StagingDir() {
+  $root = Join-Path ([IO.Path]::GetTempPath()) ('check-ai-cli\' + [Guid]::NewGuid().ToString('N'))
+  Ensure-Directory $root
+  return $root
+}
+
+function Stage-OneFile([string]$Base, [string]$StageDir, [hashtable]$Entry) {
+  $url = "$Base/$($Entry.Remote)"
+  $out = Join-Path $StageDir $Entry.Local
+  Ensure-ParentDirectory $out
+  Download-FileWithRetry $url $out
+  return $out
+}
+
+function Deploy-OneFile([string]$StageFile, [string]$TargetFile) {
+  Ensure-ParentDirectory $TargetFile
+  $tmp = "$TargetFile.new"
+  Copy-Item -LiteralPath $StageFile -Destination $tmp -Force
+  Move-Item -LiteralPath $tmp -Destination $TargetFile -Force
+}
+
+function Deploy-All([string]$StageDir, [string]$InstallDir, [object[]]$Entries) {
+  foreach ($e in $Entries) {
+    $src = Join-Path $StageDir $e.Local
+    $dst = Join-Path $InstallDir $e.Local
+    Deploy-OneFile $src $dst
+  }
 }
 
 function Normalize-Dir([string]$Dir) {
@@ -192,6 +262,9 @@ function Print-NextSteps([string]$Dir) {
   Write-Host "  .\\bin\\check-ai-cli.cmd"
   Write-Host "  .\\scripts\\Check-AI-CLI-Versions.ps1"
   Write-Host ""
+  Write-Host "Uninstall:"
+  Write-Host "  .\\uninstall.ps1"
+  Write-Host ""
 }
 
 function Print-ChinaTip() {
@@ -207,7 +280,25 @@ function Print-ChinaTip() {
 function Install-All([string]$Dir, [string]$Scope, [bool]$Run) {
   $base = Get-BaseUrl
   $files = Get-FilesToInstall
-  foreach ($f in $files) { Install-OneFile $base $Dir $f }
+  $stage = New-StagingDir
+  try {
+    $manifestUrl = "$base/$(Get-ManifestRemotePath)"
+    $manifestFile = Join-Path $stage 'checksums.sha256'
+    Download-FileWithRetry $manifestUrl $manifestFile
+    $manifestText = Get-Content -Raw -LiteralPath $manifestFile
+    if ([string]::IsNullOrWhiteSpace($manifestText)) { throw "Failed to download checksums.sha256" }
+    $manifest = Read-Manifest $manifestText
+
+    foreach ($f in $files) {
+      Write-Info "Downloading: $($f.Remote)"
+      $staged = Stage-OneFile $base $stage $f
+      Verify-FileHash $manifest $f.Remote $staged
+    }
+    Deploy-All $stage $Dir $files
+  } finally {
+    if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue }
+  }
+
   $binDir = Join-Path $Dir 'bin'
   Add-ToPath $binDir $Scope
   Write-Success "Installed to: $Dir"

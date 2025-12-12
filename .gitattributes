@@ -3,4 +3,5 @@
 *.sh text eol=lf
 *.ps1 text eol=crlf
 *.cmd text eol=crlf
-
+checksums.sha256 text eol=lf
+bin/check-ai-cli text eol=lf

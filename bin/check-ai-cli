@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# 中文注释: 命令入口, 用于 PATH 场景下直接运行
+BIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$BIN_DIR/.." && pwd)"
+exec "$ROOT_DIR/scripts/check-ai-cli-versions.sh" "$@"
+
