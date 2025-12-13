@@ -156,13 +156,25 @@ function Update-Factory() {
 }
 
 # Install/update Claude Code
-function Update-Claude() {
-  Write-Info "Updating Claude Code..."
+function Update-ClaudeViaScript() {
   $script = Get-Text 'https://claude.ai/install.ps1'
   if (-not $script) { throw "Failed to download installer script." }
   $mode = 'Continue'
   if (Get-QuietProgressMode) { $mode = 'SilentlyContinue' }
   Invoke-WithTempProgressPreference $mode { Invoke-Expression $script }
+}
+
+function Update-ClaudeViaNpm() {
+  $npm = Get-Command npm -ErrorAction SilentlyContinue
+  if (-not $npm) { throw "npm not found. Install Node.js first." }
+  & npm install -g '@anthropic-ai/claude-code@latest'
+}
+
+function Update-Claude() {
+  Write-Info "Updating Claude Code..."
+  $npm = Get-Command npm -ErrorAction SilentlyContinue
+  if ($npm) { Update-ClaudeViaNpm ; return }
+  Update-ClaudeViaScript
 }
 
 # Install/update OpenAI Codex (Windows defaults to npm)
@@ -207,21 +219,35 @@ function Try-Update([scriptblock]$DoUpdate) {
 function Handle-UpdateFlow([string]$Latest, [string]$Local, [scriptblock]$DoUpdate) {
   if (-not $Local) {
     if (-not $Latest) { Write-Warn "Latest version unknown. Installing anyway." }
-    if (Confirm-Yes "Install now? (Y/N)") { Try-Update $DoUpdate }
-    return
+    if (Confirm-Yes "Install now? (Y/N)") { Try-Update $DoUpdate ; return $true }
+    return $false
   }
-  if (-not $Latest) { Write-Warn "Latest version unknown. Skipping update check." ; return }
+  if (-not $Latest) { Write-Warn "Latest version unknown. Skipping update check." ; return $false }
   $cmp = Compare-Version $Local $Latest
-  if ($cmp -eq 0) { Write-Success "Already up to date." ; return }
-  if ($cmp -eq 1) { Write-Warn "Local version is newer than latest source." ; return }
-  if ($cmp -eq -1 -and (Confirm-Yes "Update now? (Y/N)")) { Try-Update $DoUpdate }
+  if ($cmp -eq 0) { Write-Success "Already up to date." ; return $false }
+  if ($cmp -eq 1) { Write-Warn "Local version is newer than latest source." ; return $false }
+  if ($cmp -eq -1 -and (Confirm-Yes "Update now? (Y/N)")) { Try-Update $DoUpdate ; return $true }
+  return $false
+}
+
+function Report-PostUpdate([string]$Title, [string]$Latest, [scriptblock]$GetLocal) {
+  Write-Info "Re-checking local version..."
+  $newLocal = Get-AndPrintLocal $GetLocal
+  if (-not $newLocal) { Write-Warn "Update may not have installed correctly." ; return }
+  if (-not $Latest) { return }
+  $cmp = Compare-Version $newLocal $Latest
+  if ($cmp -eq -1) {
+    Write-Warn "Update may have failed (still older than latest)."
+    if ($Title -eq 'Claude Code') { Write-Warn "Tip: try npm install -g @anthropic-ai/claude-code@latest" }
+  }
 }
 
 function Check-OneTool([string]$Title, [scriptblock]$GetLatest, [scriptblock]$GetLocal, [scriptblock]$DoUpdate) {
   Write-ToolHeader $Title
   $latest = Get-AndPrintLatest $GetLatest
   $local = Get-AndPrintLocal $GetLocal
-  Handle-UpdateFlow $latest $local $DoUpdate
+  $didUpdate = Handle-UpdateFlow $latest $local $DoUpdate
+  if ($didUpdate) { Report-PostUpdate $Title $latest $GetLocal }
 }
 
 function Show-Banner() {
