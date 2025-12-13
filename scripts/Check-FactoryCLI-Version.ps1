@@ -9,7 +9,11 @@ function Write-Fail([string]$Message) { Write-Host "[ERROR] $Message" -Foregroun
 function Get-Text([string]$Uri) {
   try {
     $headers = @{ 'User-Agent' = 'ai-cli-version-checker' }
-    return (Invoke-WebRequest -Uri $Uri -Headers $headers -UseBasicParsing).Content
+    $content = (Invoke-WebRequest -Uri $Uri -Headers $headers -UseBasicParsing).Content
+    if ($content -is [string]) { return $content }
+    if ($content -is [string[]]) { return ($content -join "`n") }
+    if ($content -is [byte[]]) { return [Text.Encoding]::UTF8.GetString($content) }
+    return ($content | Out-String)
   } catch { return $null }
 }
 
