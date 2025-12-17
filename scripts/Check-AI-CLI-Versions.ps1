@@ -155,12 +155,82 @@ function Update-Factory() {
   Invoke-WithTempProgressPreference $mode { Invoke-Expression $script }
 }
 
-# Install/update Claude Code (npm only)
+# Install/update Claude Code via official bootstrap (GCS binary)
+function Update-ClaudeViaBootstrap() {
+  Write-Info "Installing via official bootstrap..."
+
+  # Check for 32-bit Windows
+  if (-not [Environment]::Is64BitProcess) {
+    throw "Claude Code does not support 32-bit Windows."
+  }
+
+  $GCS_BUCKET = "https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/claude-code-releases"
+  $DOWNLOAD_DIR = "$env:USERPROFILE\.claude\downloads"
+  $platform = "win32-x64"
+
+  New-Item -ItemType Directory -Force -Path $DOWNLOAD_DIR | Out-Null
+
+  # Get stable version
+  try {
+    $version = Invoke-RestMethod -Uri "$GCS_BUCKET/stable" -ErrorAction Stop
+  } catch {
+    throw "Failed to get stable version: $($_.Exception.Message)"
+  }
+
+  # Get manifest and checksum
+  try {
+    $manifest = Invoke-RestMethod -Uri "$GCS_BUCKET/$version/manifest.json" -ErrorAction Stop
+    $checksum = $manifest.platforms.$platform.checksum
+    if (-not $checksum) { throw "Platform $platform not found in manifest" }
+  } catch {
+    throw "Failed to get manifest: $($_.Exception.Message)"
+  }
+
+  # Download binary
+  $binaryPath = "$DOWNLOAD_DIR\claude-$version-$platform.exe"
+  try {
+    $mode = 'Continue'
+    if (Get-QuietProgressMode) { $mode = 'SilentlyContinue' }
+    Invoke-WithTempProgressPreference $mode {
+      Invoke-WebRequest -Uri "$GCS_BUCKET/$version/$platform/claude.exe" -OutFile $binaryPath -ErrorAction Stop
+    }
+  } catch {
+    if (Test-Path $binaryPath) { Remove-Item -Force $binaryPath }
+    throw "Failed to download binary: $($_.Exception.Message)"
+  }
+
+  # Verify checksum
+  $actualChecksum = (Get-FileHash -Path $binaryPath -Algorithm SHA256).Hash.ToLower()
+  if ($actualChecksum -ne $checksum) {
+    Remove-Item -Force $binaryPath
+    throw "Checksum verification failed"
+  }
+
+  # Run claude install
+  try {
+    & $binaryPath install
+  } finally {
+    Start-Sleep -Seconds 1
+    try { Remove-Item -Force $binaryPath } catch { Write-Warn "Could not remove temporary file: $binaryPath" }
+  }
+}
+
+# Install/update Claude Code (npm preferred, bootstrap fallback)
 function Update-Claude() {
   Write-Info "Updating Claude Code..."
+
   $npm = Get-Command npm -ErrorAction SilentlyContinue
-  if (-not $npm) { throw "npm not found. Claude Code requires Node.js. Install from https://nodejs.org/" }
-  & npm install -g '@anthropic-ai/claude-code@latest'
+  if ($npm) {
+    try {
+      & npm install -g '@anthropic-ai/claude-code@latest'
+      return
+    } catch {
+      Write-Warn "npm install failed: $($_.Exception.Message)"
+      Write-Info "Falling back to official bootstrap..."
+    }
+  }
+
+  Update-ClaudeViaBootstrap
 }
 
 # Install/update OpenAI Codex (Windows defaults to npm)
