@@ -155,26 +155,12 @@ function Update-Factory() {
   Invoke-WithTempProgressPreference $mode { Invoke-Expression $script }
 }
 
-# Install/update Claude Code
-function Update-ClaudeViaScript() {
-  $script = Get-Text 'https://claude.ai/install.ps1'
-  if (-not $script) { throw "Failed to download installer script." }
-  $mode = 'Continue'
-  if (Get-QuietProgressMode) { $mode = 'SilentlyContinue' }
-  Invoke-WithTempProgressPreference $mode { Invoke-Expression $script }
-}
-
-function Update-ClaudeViaNpm() {
-  $npm = Get-Command npm -ErrorAction SilentlyContinue
-  if (-not $npm) { throw "npm not found. Install Node.js first." }
-  & npm install -g '@anthropic-ai/claude-code@latest'
-}
-
+# Install/update Claude Code (npm only)
 function Update-Claude() {
   Write-Info "Updating Claude Code..."
   $npm = Get-Command npm -ErrorAction SilentlyContinue
-  if ($npm) { Update-ClaudeViaNpm ; return }
-  Update-ClaudeViaScript
+  if (-not $npm) { throw "npm not found. Claude Code requires Node.js. Install from https://nodejs.org/" }
+  & npm install -g '@anthropic-ai/claude-code@latest'
 }
 
 # Install/update OpenAI Codex (Windows defaults to npm)
