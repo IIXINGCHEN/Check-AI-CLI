@@ -137,6 +137,22 @@ function Get-LatestGeminiVersion() {
   return Get-SemVer ([string]$json.version)
 }
 
+# Run npm install -g in a way that avoids PowerShell npm.ps1 "-Command" parsing edge cases.
+function Invoke-NpmInstallGlobal([string]$PackageSpec) {
+  $npmCmd = Get-Command npm.cmd -CommandType Application -ErrorAction SilentlyContinue
+  if (-not $npmCmd) { $npmCmd = Get-Command npm -CommandType Application -ErrorAction SilentlyContinue }
+  if ($npmCmd) {
+    & $npmCmd.Path install -g $PackageSpec
+    if ($LASTEXITCODE -ne 0) { throw "npm install failed with exit code $LASTEXITCODE" }
+    return
+  }
+
+  $npmPs1 = Get-Command npm -CommandType ExternalScript -ErrorAction SilentlyContinue
+  if (-not $npmPs1) { throw "npm not found. Install Node.js first." }
+  & powershell -NoProfile -ExecutionPolicy Bypass -File $npmPs1.Path install -g $PackageSpec
+  if ($LASTEXITCODE -ne 0) { throw "npm install failed with exit code $LASTEXITCODE" }
+}
+
 # Standard yes/no confirmation prompt
 function Confirm-Yes([string]$Prompt) {
   if ($script:AutoMode) { return $true }
@@ -219,15 +235,12 @@ function Update-ClaudeViaBootstrap() {
 function Update-Claude() {
   Write-Info "Updating Claude Code..."
 
-  $npm = Get-Command npm -ErrorAction SilentlyContinue
-  if ($npm) {
-    try {
-      & npm install -g '@anthropic-ai/claude-code@latest'
-      return
-    } catch {
-      Write-Warn "npm install failed: $($_.Exception.Message)"
-      Write-Info "Falling back to official bootstrap..."
-    }
+  try {
+    Invoke-NpmInstallGlobal '@anthropic-ai/claude-code@latest'
+    return
+  } catch {
+    Write-Warn "npm install failed: $($_.Exception.Message)"
+    Write-Info "Falling back to official bootstrap..."
   }
 
   Update-ClaudeViaBootstrap
@@ -236,17 +249,13 @@ function Update-Claude() {
 # Install/update OpenAI Codex (Windows defaults to npm)
 function Update-Codex() {
   Write-Info "Updating OpenAI Codex..."
-  $npm = Get-Command npm -ErrorAction SilentlyContinue
-  if (-not $npm) { throw "npm not found. Install Node.js first." }
-  & npm install -g '@openai/codex'
+  Invoke-NpmInstallGlobal '@openai/codex'
 }
 
 # Install/update Gemini CLI (prefers npm)
 function Update-Gemini() {
   Write-Info "Updating Gemini CLI..."
-  $npm = Get-Command npm -ErrorAction SilentlyContinue
-  if (-not $npm) { throw "npm not found. Install Node.js first." }
-  & npm install -g '@google/gemini-cli@latest'
+  Invoke-NpmInstallGlobal '@google/gemini-cli@latest'
 }
 
 function Write-ToolHeader([string]$Title) {
