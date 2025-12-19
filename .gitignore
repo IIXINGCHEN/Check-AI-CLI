@@ -12,3 +12,7 @@
 # 测试输出
 test-output.txt
 *.log
+
+# 本地运行产物
+/%APPDATA%/
+/bootstrap.ps1
