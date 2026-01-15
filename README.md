@@ -1,6 +1,6 @@
 # AI CLI 工具版本检查器
 
-一键检查和更新四大 AI 编程助手的完整解决方案！
+一键检查和更新五大 AI 编程助手的完整解决方案！
 
 ## 🎯 支持的工具
 
@@ -10,6 +10,7 @@
 | **Claude Code** | Anthropic 的终端 AI 编程工具 | https://code.claude.com |
 | **OpenAI Codex** | OpenAI 的轻量级编程代理 | https://developers.openai.com/codex |
 | **Gemini CLI** | Google 的 Gemini CLI 工具 | https://github.com/google-gemini/gemini-cli |
+| **OpenCode (opencode)** | OpenCode 的 AI 编程助手 CLI 工具 | https://opencode.ai |
 
 ## 📦 脚本文件
 
@@ -185,6 +186,7 @@ curl -fsSL https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main/instal
 - **Claude Code**: Google Cloud Storage + npm 备用
 - **OpenAI Codex**: GitHub Releases API + npm 备用
 - **Gemini CLI**: npm registry
+- **OpenCode**: GitHub Releases API (anomalyco/opencode) + opencode.ai/install 备用 (可用 CHECK_AI_CLI_OPENCODE_VERSION 覆盖)
 
 ### 🎨 交互式界面
 - 彩色输出，清晰易读
@@ -346,6 +348,47 @@ npm install -g @google/gemini-cli
 npm install -g @google/gemini-cli
 ```
 
+### OpenCode (opencode)
+
+自动从 GitHub (anomalyco/opencode) 获取最新版本。可通过环境变量 CHECK_AI_CLI_OPENCODE_VERSION 覆盖为指定版本。
+
+#### Windows
+```bash
+# 方法 0: Git Bash + curl (推荐, 与 macOS/Linux 一致)
+curl -fsSL https://opencode.ai/install | bash -s -- --version 1.1.21
+```
+
+```powershell
+# 方法 1: Scoop
+scoop install extras/opencode
+
+# 方法 2: Chocolatey
+choco install opencode -y
+
+# 方法 3: npm (fallback)
+npm install -g opencode-ai@latest
+```
+
+提示: 如果 `curl` 安装成功, 但 PowerShell 里 `opencode --version` 仍然显示旧版本, 通常是因为命中了 `%APPDATA%\\npm\\opencode.ps1` 的 npm shim. 推荐先用 alias 快速修复:
+
+```powershell
+$exe = Join-Path $env:USERPROFILE ".opencode\\bin\\opencode.exe"
+Set-Alias opencode $exe
+opencode --version
+```
+
+#### macOS / Linux
+```bash
+# 默认: 官方安装脚本 (curl / wget)
+curl -fsSL https://opencode.ai/install | bash -s -- --version 1.1.21
+
+# 可选: Homebrew
+brew install anomalyco/tap/opencode
+
+# 可选: npm (fallback)
+npm install -g opencode-ai@latest
+```
+
 ## 🛠️ 故障排除
 
 ### 问题：PowerShell 执行策略错误
@@ -478,6 +521,7 @@ sudo pacman -S nodejs npm
 | Claude Code | GCS claude-code-releases/stable | registry.npmjs.org |
 | OpenAI Codex | api.github.com/repos/openai/codex | registry.npmjs.org |
 | Gemini CLI | registry.npmjs.org/@google/gemini-cli | github.com/google-gemini/gemini-cli |
+| OpenCode | api.github.com/repos/anomalyco/opencode/releases/latest | opencode.ai/install |
 
 ## 🎯 高级用法
 
@@ -513,9 +557,11 @@ Register-ScheduledTask -Action $action -Trigger $trigger `
 - [Factory CLI 官方文档](https://docs.factory.ai)
 - [Claude Code 官方文档](https://code.claude.com/docs)
 - [OpenAI Codex 官方文档](https://developers.openai.com/codex)
+- [OpenCode 官方文档](https://opencode.ai/docs/cli)
 - [Factory CLI GitHub](https://github.com/Factory-AI/factory)
 - [Claude Code GitHub](https://github.com/anthropics/claude-code)
 - [OpenAI Codex GitHub](https://github.com/openai/codex)
+- [OpenCode GitHub](https://github.com/anomalyco/opencode)
 
 ## 📞 支持
 
@@ -534,7 +580,7 @@ Register-ScheduledTask -Action $action -Trigger $trigger `
 
 ### 2025-12-12
 - ✅ 初始版本发布
-- ✅ 支持 Factory CLI、Claude Code、OpenAI Codex
+- ✅ 支持 Factory CLI、Claude Code、OpenAI Codex、Gemini CLI、OpenCode
 - ✅ 跨平台支持 (Windows/macOS/Linux)
 - ✅ 多数据源备用方案
 - ✅ 交互式安装界面

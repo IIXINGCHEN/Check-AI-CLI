@@ -137,6 +137,32 @@ function Get-LatestGeminiVersion() {
   return Get-SemVer ([string]$json.version)
 }
 
+function Get-TargetOpenCodeVersion() {
+  $v = $env:CHECK_AI_CLI_OPENCODE_VERSION
+  if ([string]::IsNullOrWhiteSpace($v)) { return $null }
+  return Get-SemVer $v
+}
+
+function Get-LatestOpenCodeVersion() {
+  # 优先使用环境变量指定的版本
+  $target = Get-TargetOpenCodeVersion
+  if ($target) { return $target }
+
+  # 从 GitHub Releases API 获取最新版本
+  try {
+    $json = Get-Json 'https://api.github.com/repos/anomalyco/opencode/releases/latest'
+    if ($json -and $json.tag_name) {
+      return Get-SemVer ([string]$json.tag_name)
+    }
+  } catch {
+    Write-Warn "Failed to fetch latest OpenCode version from GitHub: $($_.Exception.Message)"
+  }
+
+  # 降级到备用默认版本
+  Write-Warn "Using fallback OpenCode version: 1.1.21"
+  return Get-SemVer '1.1.21'
+}
+
 # Run npm install -g in a way that avoids PowerShell npm.ps1 "-Command" parsing edge cases.
 function Invoke-NpmInstallGlobal([string]$PackageSpec) {
   $npmCmd = Get-Command npm.cmd -CommandType Application -ErrorAction SilentlyContinue
@@ -258,6 +284,228 @@ function Update-Gemini() {
   Invoke-NpmInstallGlobal '@google/gemini-cli@latest'
 }
 
+function Get-OpenCodeUserInstallPath() {
+  $dir = Join-Path $env:USERPROFILE '.opencode\bin'
+  foreach ($name in @('opencode.exe','opencode')) {
+    $p = Join-Path $dir $name
+    if (Test-Path -LiteralPath $p) { return $p }
+  }
+  return $null
+}
+
+function Report-OpenCodeResolutionMismatch() {
+  $user = Get-OpenCodeUserInstallPath
+  $cmd = Get-Command opencode -ErrorAction SilentlyContinue
+  if (-not $user -or -not $cmd -or -not $cmd.Source) { return }
+  if ($cmd.Source -eq $user) { return }
+  Write-Warn "PowerShell resolves opencode to: $($cmd.Source)"
+  Write-Warn "OpenCode user install path: $user"
+  Write-Warn "Tip: current session: Set-Alias opencode `"$user`""
+  Write-Warn 'Tip: permanent: add the same line into $PROFILE'
+}
+
+function Get-OpenCodeCommandPath() {
+  $user = Get-OpenCodeUserInstallPath
+  if ($user) { return $user }
+  $cmds = Get-Command opencode -All -ErrorAction SilentlyContinue
+  if (-not $cmds) { return $null }
+  $exe = $cmds | Where-Object { $_.CommandType -eq 'Application' -and $_.Source -match '\.exe$' } | Select-Object -First 1
+  if ($exe) { return $exe.Source }
+  $app = $cmds | Where-Object { $_.CommandType -eq 'Application' } | Select-Object -First 1
+  if ($app) { return $app.Source }
+  return $cmds[0].Source
+}
+
+function Invoke-OpenCodeVersionProbe() {
+  $path = Get-OpenCodeCommandPath
+  if (-not $path) { return @{ Version = $null; Output = '' } }
+  try {
+    $out = & $path '--version' 2>&1 | Out-String
+    return @{ Version = (Get-SemVer $out); Output = $out }
+  } catch {
+    return @{ Version = $null; Output = $_.Exception.Message }
+  }
+}
+
+function Get-OpenCodeNpmExePath() {
+  $cmd = Get-Command opencode -ErrorAction SilentlyContinue
+  if (-not $cmd -or [string]::IsNullOrWhiteSpace($cmd.Source)) { return $null }
+  $baseDir = Split-Path -Parent $cmd.Source
+  $glob = Join-Path $baseDir 'node_modules\opencode-ai\node_modules\opencode-*\bin\opencode.exe'
+  $hit = Get-ChildItem -Path $glob -ErrorAction SilentlyContinue | Select-Object -First 1
+  if ($hit) { return $hit.FullName }
+  return $null
+}
+
+function Get-LocalOpenCodeVersion() {
+  $probe = Invoke-OpenCodeVersionProbe
+  if ($probe.Version) { return $probe.Version }
+  $exe = Get-OpenCodeNpmExePath
+  if (-not $exe) { return $null }
+  try { return Get-SemVer ((& $exe '--version' 2>&1 | Out-String)) } catch { return $null }
+}
+
+function Try-FixOpenCodeNpmShim([string]$ExePath) {
+  if ([string]::IsNullOrWhiteSpace($ExePath)) { return $false }
+  $cmd = Get-Command opencode -ErrorAction SilentlyContinue
+  if (-not $cmd -or $cmd.CommandType -ne 'ExternalScript') { return $false }
+  if (-not (Test-Path -LiteralPath $cmd.Source)) { return $false }
+  $text = [IO.File]::ReadAllText($cmd.Source)
+  if (-not $text.Contains('/bin/sh')) { return $false }
+  $repl = "& `"$ExePath`" `$args"
+  $newText = [regex]::Replace($text, '&\s+\"/bin/sh\$exe\"[^\r\n]*', $repl)
+  $enc = New-Object System.Text.UTF8Encoding($false)
+  [IO.File]::WriteAllText($cmd.Source, $newText, $enc)
+  return $true
+}
+
+function Test-OpenCodeRunnable() {
+  return [bool]((Invoke-OpenCodeVersionProbe).Version)
+}
+
+function Try-RepairOpenCodeNpmShim() {
+  $exe = Get-OpenCodeNpmExePath
+  if (-not $exe) { return $false }
+  return Try-FixOpenCodeNpmShim $exe
+}
+
+function Get-OpenCodeMissingRuntimePackageName([string]$Text) {
+  if ($Text -match '\"(opencode-(?:win32|windows)-[a-z0-9-]+)\"') { return $Matches[1] }
+  return $null
+}
+
+function Try-InstallOpenCodeRuntimePackage([string]$TargetVersion) {
+  $probe = Invoke-OpenCodeVersionProbe
+  $pkg = Get-OpenCodeMissingRuntimePackageName $probe.Output
+  if (-not $pkg) { return $false }
+  Write-Warn "Trying npm install for missing runtime package: $pkg"
+  try { Invoke-NpmInstallGlobal $pkg } catch { return $false }
+  return (Test-OpenCodeRunnable)
+}
+
+function Try-OpenCodeSelfUpgrade([string]$TargetVersion) {
+  $path = Get-OpenCodeCommandPath
+  if (-not $path) { return $false }
+  $arg = $null
+  if ($TargetVersion) { $arg = "v$TargetVersion" }
+  try {
+    if ($arg) { & $path upgrade $arg } else { & $path upgrade }
+    if ($LASTEXITCODE -ne 0) { throw "opencode upgrade failed with exit code $LASTEXITCODE" }
+    return $true
+  } catch {
+    Write-Warn "opencode upgrade failed: $($_.Exception.Message)"
+    return $false
+  }
+}
+
+function Get-BashCommandPath() {
+  $candidates = @(
+    "$env:ProgramFiles\Git\bin\bash.exe",
+    "$env:ProgramFiles\Git\usr\bin\bash.exe",
+    "${env:ProgramFiles(x86)}\Git\bin\bash.exe",
+    "${env:ProgramFiles(x86)}\Git\usr\bin\bash.exe"
+  )
+  foreach ($p in $candidates) { if (Test-Path -LiteralPath $p) { return $p } }
+  $cmd = Get-Command bash -ErrorAction SilentlyContinue
+  if ($cmd -and $cmd.Source) { return $cmd.Source }
+  return $null
+}
+
+function Test-BashUsable([string]$BashPath) {
+  if ([string]::IsNullOrWhiteSpace($BashPath)) { return $false }
+  try {
+    $out = & $BashPath -lc 'echo __bash_ok__' 2>$null | Out-String
+    return $LASTEXITCODE -eq 0 -and $out.Trim() -eq '__bash_ok__'
+  } catch {
+    return $false
+  }
+}
+
+function Try-InstallOpenCodeWithCurl([string]$TargetVersion) {
+  $bash = Get-BashCommandPath
+  if (-not $bash) { return $false }
+  if (-not (Test-BashUsable $bash)) {
+    Write-Warn "bash found but not usable. Skipping curl install. Tip: install Git for Windows (Git Bash) or a WSL distro."
+    return $false
+  }
+  $v = Get-SemVer $TargetVersion
+  $cmd = 'curl -fsSL https://opencode.ai/install | bash'
+  if ($v) { $cmd = "curl -fsSL https://opencode.ai/install | bash -s -- --version $v" }
+  & $bash -lc $cmd
+  if ($LASTEXITCODE -ne 0) { Write-Warn "curl install failed with exit code $LASTEXITCODE" ; return $false }
+  return $true
+}
+
+function Test-OpenCodeAtLeast([string]$TargetVersion) {
+  $v = Get-LocalOpenCodeVersion
+  if (-not $v) { return $false }
+  if (-not $TargetVersion) { return $true }
+  $cmp = Compare-Version $v $TargetVersion
+  return ($cmp -eq 0 -or $cmp -eq 1)
+}
+
+function Try-InstallOpenCodeWithScoop() {
+  $cmd = Get-Command scoop -ErrorAction SilentlyContinue
+  if (-not $cmd) { return $false }
+  & scoop install extras/opencode
+  if ($LASTEXITCODE -eq 0) { return $true }
+  & scoop bucket add extras 2>$null | Out-Null
+  & scoop install extras/opencode
+  if ($LASTEXITCODE -ne 0) {
+    Write-Warn "scoop install failed with exit code $LASTEXITCODE"
+    return $false
+  }
+  return $true
+}
+
+function Try-InstallOpenCodeWithChoco() {
+  $cmd = Get-Command choco -ErrorAction SilentlyContinue
+  if (-not $cmd) { return $false }
+  & choco upgrade opencode -y
+  if ($LASTEXITCODE -eq 0) { return $true }
+  & choco install opencode -y
+  if ($LASTEXITCODE -ne 0) {
+    Write-Warn "choco install failed with exit code $LASTEXITCODE"
+    return $false
+  }
+  return $true
+}
+
+function Try-InstallOpenCodeWithNpm([string]$TargetVersion) {
+  try {
+    Invoke-NpmInstallGlobal 'opencode-ai@latest'
+    if (Test-OpenCodeRunnable) { return $true }
+    if (Try-RepairOpenCodeNpmShim -and (Test-OpenCodeRunnable)) { return $true }
+    if (Try-InstallOpenCodeRuntimePackage $TargetVersion -and (Test-OpenCodeRunnable)) { return $true }
+    Write-Warn "opencode installed but still not runnable. Prefer scoop/choco, or run the bundled exe under npm node_modules."
+    return $false
+  } catch {
+    Write-Warn "npm install failed: $($_.Exception.Message)"
+    return $false
+  }
+}
+
+function Update-OpenCode() {
+  Write-Info "Updating OpenCode..."
+  $target = Get-TargetOpenCodeVersion
+  if ($target) { Write-Info "Target OpenCode version: v$target" }
+  Write-Info "Trying: curl install (bash)"
+  if (Try-InstallOpenCodeWithCurl $target -and (Test-OpenCodeAtLeast $target)) { return }
+  $installed = [bool](Get-Command opencode -ErrorAction SilentlyContinue)
+  if ($installed) {
+    Write-Info "Trying: opencode upgrade"
+    Try-OpenCodeSelfUpgrade $target | Out-Null
+    if (Test-OpenCodeAtLeast $target) { return }
+  }
+  Write-Info "Trying: scoop install"
+  if (Try-InstallOpenCodeWithScoop) { Try-OpenCodeSelfUpgrade $target | Out-Null ; if (Test-OpenCodeAtLeast $target) { return } }
+  Write-Info "Trying: choco install"
+  if (Try-InstallOpenCodeWithChoco) { Try-OpenCodeSelfUpgrade $target | Out-Null ; if (Test-OpenCodeAtLeast $target) { return } }
+  Write-Info "Trying: npm install"
+  if (Try-InstallOpenCodeWithNpm $target -and (Test-OpenCodeAtLeast $target)) { return }
+  throw "No installer found. Install Git Bash (for curl), scoop/choco, or Node.js (npm) first."
+}
+
 function Write-ToolHeader([string]$Title) {
   Write-Host ""
   Write-Host $Title
@@ -299,11 +547,17 @@ function Report-PostUpdate([string]$Title, [string]$Latest, [scriptblock]$GetLoc
   Write-Info "Re-checking local version..."
   $newLocal = Get-AndPrintLocal $GetLocal
   if (-not $newLocal) { Write-Warn "Update may not have installed correctly." ; return }
+  if ($Title -eq 'OpenCode') { Report-OpenCodeResolutionMismatch }
   if (-not $Latest) { return }
   $cmp = Compare-Version $newLocal $Latest
   if ($cmp -eq -1) {
     Write-Warn "Update may have failed (still older than latest)."
     if ($Title -eq 'Claude Code') { Write-Warn "Tip: try npm install -g @anthropic-ai/claude-code@latest" }
+    if ($Title -eq 'OpenCode') {
+      if ($Latest) { Write-Warn "Tip: try opencode upgrade v$Latest" } else { Write-Warn "Tip: try opencode upgrade" }
+      Write-Warn "Tip: override target via CHECK_AI_CLI_OPENCODE_VERSION"
+      Write-Warn "Tip: Windows recommend scoop/choco: scoop install extras/opencode OR choco install opencode -y"
+    }
   }
 }
 
@@ -311,6 +565,7 @@ function Check-OneTool([string]$Title, [scriptblock]$GetLatest, [scriptblock]$Ge
   Write-ToolHeader $Title
   $latest = Get-AndPrintLatest $GetLatest
   $local = Get-AndPrintLocal $GetLocal
+  if ($Title -eq 'OpenCode') { Report-OpenCodeResolutionMismatch }
   $didUpdate = Handle-UpdateFlow $latest $local $DoUpdate
   if ($didUpdate) { Report-PostUpdate $Title $latest $GetLocal }
 }
@@ -319,7 +574,7 @@ function Show-Banner() {
   Write-Host ""
   Write-Host "==============================================="
   Write-Host " AI CLI Version Checker"
-  Write-Host " Factory CLI (Droid) | Claude Code | OpenAI Codex | Gemini CLI"
+  Write-Host " Factory CLI (Droid) | Claude Code | OpenAI Codex | Gemini CLI | OpenCode"
   Write-Host "==============================================="
   Write-Host ""
 }
@@ -330,8 +585,9 @@ function Ask-Selection() {
   Write-Host "  [2] Claude Code"
   Write-Host "  [3] OpenAI Codex"
   Write-Host "  [4] Gemini CLI"
+  Write-Host "  [5] OpenCode"
   Write-Host "  [A] Check all (default)"
-  $s = Read-Host "Enter choice (1/2/3/4/A)"
+  $s = Read-Host "Enter choice (1/2/3/4/5/A)"
   if ([string]::IsNullOrWhiteSpace($s)) { return 'A' }
   return $s.Trim().ToUpperInvariant()
 }
@@ -350,4 +606,7 @@ if ($sel -eq '3' -or $sel -eq 'A') {
 }
 if ($sel -eq '4' -or $sel -eq 'A') {
   Check-OneTool "Gemini CLI" { Get-LatestGeminiVersion } { Get-LocalCommandVersion @('gemini') } { Update-Gemini }
+}
+if ($sel -eq '5' -or $sel -eq 'A') {
+  Check-OneTool "OpenCode" { Get-LatestOpenCodeVersion } { Get-LocalOpenCodeVersion } { Update-OpenCode }
 }

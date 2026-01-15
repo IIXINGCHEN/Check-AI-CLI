@@ -7,6 +7,8 @@ if [ "${1:-}" = "--yes" ] || [ "${1:-}" = "-y" ]; then
   AUTO_MODE="1"
 fi
 
+OPENCODE_TARGET_VERSION="${CHECK_AI_CLI_OPENCODE_VERSION:-}"
+
 # Colored output (no external deps)
 COLOR_INFO='\033[36m'
 COLOR_OK='\033[32m'
@@ -60,6 +62,7 @@ get_local_factory() { get_local_version factory || get_local_version droid || tr
 get_local_claude() { get_local_version claude || get_local_version claude-code || true; }
 get_local_codex() { get_local_version codex || true; }
 get_local_gemini() { get_local_version gemini || true; }
+get_local_opencode() { get_local_version opencode || true; }
 
 get_latest_factory() {
   local text
@@ -83,6 +86,29 @@ get_latest_gemini() {
   local text
   text="$(fetch_text 'https://registry.npmjs.org/@google/gemini-cli/latest' || true)"
   extract_semver "$(echo "$text" | grep -Eo '\"version\"[[:space:]]*:[[:space:]]*\"[^\"]+\"' | head -n 1)"
+}
+
+get_latest_opencode() {
+  # 优先使用环境变量指定的版本
+  if [ -n "$OPENCODE_TARGET_VERSION" ]; then
+    extract_semver "$OPENCODE_TARGET_VERSION"
+    return
+  fi
+
+  # 从 GitHub Releases API 获取最新版本
+  local text tag
+  text="$(fetch_text 'https://api.github.com/repos/anomalyco/opencode/releases/latest' 2>/dev/null || true)"
+  if [ -n "$text" ]; then
+    tag="$(echo "$text" | grep -Eo '\"tag_name\"[[:space:]]*:[[:space:]]*\"[^\"]+\"' | head -n 1 | grep -Eo 'v?[0-9]+\.[0-9]+\.[0-9]+' || true)"
+    if [ -n "$tag" ]; then
+      extract_semver "$tag"
+      return
+    fi
+  fi
+
+  # 降级到备用默认版本
+  log_warn "Failed to fetch latest OpenCode version, using fallback: 1.1.21"
+  extract_semver "1.1.21"
 }
 
 confirm_yes() {
@@ -131,6 +157,45 @@ update_gemini() {
   return 1
 }
 
+update_opencode() {
+  log_info "Updating OpenCode..."
+  local target localv cmp
+  target="$(get_latest_opencode)"
+  [ -n "$target" ] || { log_err "Failed to determine OpenCode target version"; return 1; }
+  log_info "Target OpenCode version: v$target"
+
+  if command_exists opencode; then
+    opencode upgrade "v$target" || true
+    localv="$(get_local_opencode || true)"
+    cmp="$(compare_semver "$localv" "$target" || true)"
+    if [ "$cmp" = "0" ] || [ "$cmp" = "1" ]; then return 0; fi
+  fi
+
+  if fetch_text 'https://opencode.ai/install' | bash -s -- --version "$target"; then
+    localv="$(get_local_opencode || true)"
+    cmp="$(compare_semver "$localv" "$target" || true)"
+    if [ "$cmp" = "0" ] || [ "$cmp" = "1" ]; then return 0; fi
+  fi
+
+  if command_exists brew; then
+    brew install anomalyco/tap/opencode || return 1
+    opencode upgrade "v$target" 2>/dev/null || true
+    localv="$(get_local_opencode || true)"
+    cmp="$(compare_semver "$localv" "$target" || true)"
+    if [ "$cmp" = "0" ] || [ "$cmp" = "1" ]; then return 0; fi
+  fi
+
+  if command_exists npm; then
+    npm install -g "opencode-ai@latest" || return 1
+    localv="$(get_local_opencode || true)"
+    cmp="$(compare_semver "$localv" "$target" || true)"
+    if [ "$cmp" = "0" ] || [ "$cmp" = "1" ]; then return 0; fi
+  fi
+
+  log_err "No installer found (curl/wget/brew/npm)."
+  return 1
+}
+
 print_tool_header() {
   local title="$1"
   echo ""
@@ -174,7 +239,7 @@ show_banner() {
   echo ""
   echo "==============================================="
   echo " AI CLI Version Checker"
-  echo " Factory CLI (Droid) | Claude Code | OpenAI Codex | Gemini CLI"
+  echo " Factory CLI (Droid) | Claude Code | OpenAI Codex | Gemini CLI | OpenCode"
   echo "==============================================="
   echo ""
 }
@@ -185,8 +250,9 @@ ask_selection() {
   echo "  [2] Claude Code"
   echo "  [3] OpenAI Codex"
   echo "  [4] Gemini CLI"
+  echo "  [5] OpenCode"
   echo "  [A] Check all (default)"
-  read -r -p "Enter choice (1/2/3/4/A): " choice || true
+  read -r -p "Enter choice (1/2/3/4/5/A): " choice || true
   echo "${choice:-A}" | tr '[:lower:]' '[:upper:]'
 }
 
@@ -204,4 +270,7 @@ if [ "$sel" = "3" ] || [ "$sel" = "A" ]; then
 fi
 if [ "$sel" = "4" ] || [ "$sel" = "A" ]; then
   check_tool "Gemini CLI" get_latest_gemini get_local_gemini update_gemini
+fi
+if [ "$sel" = "5" ] || [ "$sel" = "A" ]; then
+  check_tool "OpenCode" get_latest_opencode get_local_opencode update_opencode
 fi
