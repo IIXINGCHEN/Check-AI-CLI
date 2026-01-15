@@ -160,7 +160,12 @@ function Get-LatestOpenCodeVersion() {
 
   # 降级到备用默认版本
   Write-Warn "Using fallback OpenCode version: 1.1.21"
-  return Get-SemVer '1.1.21'
+  $fallback = Get-SemVer '1.1.21'
+  if (-not $fallback) {
+    Write-Error "Critical: Failed to parse fallback version. This should never happen."
+    throw "Unable to determine OpenCode version"
+  }
+  return $fallback
 }
 
 # Run npm install -g in a way that avoids PowerShell npm.ps1 "-Command" parsing edge cases.

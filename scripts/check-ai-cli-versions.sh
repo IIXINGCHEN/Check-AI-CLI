@@ -179,7 +179,9 @@ update_opencode() {
 
   if command_exists brew; then
     brew install anomalyco/tap/opencode || return 1
-    opencode upgrade "v$target" 2>/dev/null || true
+    if ! opencode upgrade "v$target" 2>/dev/null; then
+      log_warn "opencode upgrade failed, checking if installed version is sufficient..."
+    fi
     localv="$(get_local_opencode || true)"
     cmp="$(compare_semver "$localv" "$target" || true)"
     if [ "$cmp" = "0" ] || [ "$cmp" = "1" ]; then return 0; fi
