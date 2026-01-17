@@ -146,7 +146,6 @@ function Download-FileWithRetry([string]$Url, [string]$OutFile) {
 function Get-FilesToInstall() {
   return @(
     @{ Remote = 'scripts/Check-AI-CLI-Versions.ps1'; Local = 'scripts\Check-AI-CLI-Versions.ps1' },
-    @{ Remote = 'scripts/Check-FactoryCLI-Version.ps1'; Local = 'scripts\Check-FactoryCLI-Version.ps1' },
     @{ Remote = 'scripts/check-ai-cli-versions.sh'; Local = 'scripts\check-ai-cli-versions.sh' },
     @{ Remote = 'bin/check-ai-cli.ps1'; Local = 'bin\check-ai-cli.ps1' },
     @{ Remote = 'bin/check-ai-cli.cmd'; Local = 'bin\check-ai-cli.cmd' },

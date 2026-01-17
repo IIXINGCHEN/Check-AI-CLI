@@ -1,5 +1,6 @@
 param(
-  [switch]$Auto
+  [switch]$Auto,
+  [switch]$FactoryOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -570,9 +571,8 @@ function Try-Update([scriptblock]$DoUpdate) {
 
 function Handle-UpdateFlow([string]$Latest, [string]$Local, [scriptblock]$DoUpdate) {
   if (-not $Local) {
-  if (-not $Latest) { Write-Warn "Latest version unknown. Installing anyway." }
-  if (Confirm-Yes "Install now? (Y/N): ") { Try-Update $DoUpdate ; return $true }
-
+    if (-not $Latest) { Write-Warn "Latest version unknown. Installing anyway." }
+    if (Confirm-Yes "Install now? (Y/N): ") { Try-Update $DoUpdate ; return $true }
     return $false
   }
   if (-not $Latest) { Write-Warn "Latest version unknown. Skipping update check." ; return $false }
@@ -633,23 +633,32 @@ function Ask-Selection() {
   return $s.Trim().ToUpperInvariant()
 }
 
+function Invoke-Selection([string]$Selection) {
+  if ($Selection -eq '1' -or $Selection -eq 'A') {
+    Check-OneTool "Factory CLI (Droid)" { Get-LatestFactoryVersion } { Get-LocalCommandVersion @('factory','droid') } { Update-Factory }
+  }
+  if ($Selection -eq '2' -or $Selection -eq 'A') {
+    Check-OneTool "Claude Code" { Get-LatestClaudeVersion } { Get-LocalCommandVersion @('claude','claude-code') } { Update-Claude }
+  }
+  if ($Selection -eq '3' -or $Selection -eq 'A') {
+    Check-OneTool "OpenAI Codex" { Get-LatestCodexVersion } { Get-LocalCommandVersion @('codex') } { Update-Codex }
+  }
+  if ($Selection -eq '4' -or $Selection -eq 'A') {
+    Check-OneTool "Gemini CLI" { Get-LatestGeminiVersion } { Get-LocalCommandVersion @('gemini') } { Update-Gemini }
+  }
+  if ($Selection -eq '5' -or $Selection -eq 'A') {
+    Check-OneTool "OpenCode" { Get-LatestOpenCodeVersion } { Get-LocalOpenCodeVersion } { Update-OpenCode }
+  }
+}
+
 Require-WebRequest
 Show-Banner
+
+if ($FactoryOnly) {
+  Invoke-Selection '1'
+  exit 0
+}
+
 $sel = Ask-Selection
 if ($sel -eq 'Q') { exit 0 }
-
-if ($sel -eq '1' -or $sel -eq 'A') {
-  Check-OneTool "Factory CLI (Droid)" { Get-LatestFactoryVersion } { Get-LocalCommandVersion @('factory','droid') } { Update-Factory }
-}
-if ($sel -eq '2' -or $sel -eq 'A') {
-  Check-OneTool "Claude Code" { Get-LatestClaudeVersion } { Get-LocalCommandVersion @('claude','claude-code') } { Update-Claude }
-}
-if ($sel -eq '3' -or $sel -eq 'A') {
-  Check-OneTool "OpenAI Codex" { Get-LatestCodexVersion } { Get-LocalCommandVersion @('codex') } { Update-Codex }
-}
-if ($sel -eq '4' -or $sel -eq 'A') {
-  Check-OneTool "Gemini CLI" { Get-LatestGeminiVersion } { Get-LocalCommandVersion @('gemini') } { Update-Gemini }
-}
-if ($sel -eq '5' -or $sel -eq 'A') {
-  Check-OneTool "OpenCode" { Get-LatestOpenCodeVersion } { Get-LocalOpenCodeVersion } { Update-OpenCode }
-}
+Invoke-Selection $sel

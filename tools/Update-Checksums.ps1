@@ -50,7 +50,14 @@ function Get-Sha256FromIndex([string]$Path) {
   $tmp = Join-Path ([IO.Path]::GetTempPath()) ("check-ai-cli-" + [Guid]::NewGuid().ToString('N') + ".tmp")
   try {
     Write-BlobToFile $sha $tmp
-    return (Get-FileHash -Algorithm SHA256 -LiteralPath $tmp).Hash.ToLowerInvariant()
+    $getFileHash = Get-Command Get-FileHash -ErrorAction SilentlyContinue
+    if ($getFileHash) {
+      return (Get-FileHash -Algorithm SHA256 -LiteralPath $tmp).Hash.ToLowerInvariant()
+    }
+    $out = certutil -hashfile $tmp SHA256
+    $hash = ($out | Select-Object -Skip 1 -First 1) -replace '\s',''
+    if ([string]::IsNullOrWhiteSpace($hash)) { throw "Failed to hash: $Path" }
+    return $hash.ToLowerInvariant()
   } finally {
     Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
   }

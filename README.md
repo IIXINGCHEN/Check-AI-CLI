@@ -25,15 +25,17 @@
 ## 目录结构
 
 - `scripts/Check-AI-CLI-Versions.ps1` - Windows PowerShell 版本(主脚本)
-- `scripts/Check-FactoryCLI-Version.ps1` - Windows 版本(仅 Factory CLI)
 - `scripts/check-ai-cli-versions.sh` - macOS/Linux Bash 版本
 - `bin/check-ai-cli.cmd` - Windows PATH 命令入口
 - `bin/check-ai-cli.ps1` - PowerShell PATH 命令入口
 
+
 ## 兼容入口
 
 - `Check-AI-CLI-Versions.ps1` - 兼容旧路径, 会转发到 `scripts/Check-AI-CLI-Versions.ps1`
+- `Check-FactoryCLI-Version.ps1` - 兼容旧路径, 会转发到 `scripts/Check-AI-CLI-Versions.ps1 -FactoryOnly`
 - `check-ai-cli-versions.sh` - 兼容旧路径, 会转发到 `scripts/check-ai-cli-versions.sh`
+
 
 ## 🚀 快速使用
 
@@ -51,6 +53,10 @@ powershell -ExecutionPolicy Bypass -File "G:\wwwroot\CRS\code\USA\droid2api-v3\s
 # 自动模式: 未安装自动安装, 非最新自动更新
 $env:CHECK_AI_CLI_AUTO = '1'
 .\Check-AI-CLI-Versions.ps1 -Auto
+
+# 仅检查 Factory CLI
+.\Check-FactoryCLI-Version.ps1
+
 ```
 
 ### Windows (无需 clone, 一行命令安装到默认目录并加入 PATH)
