@@ -95,6 +95,12 @@ function Ensure-Directory([string]$Path) {
   New-Item -ItemType Directory -Path $Path | Out-Null
 }
 
+function Require-WebRequest() {
+  $cmd = Get-Command Invoke-WebRequest -ErrorAction SilentlyContinue
+  if ($cmd) { return }
+  throw "Invoke-WebRequest not found. Use Windows PowerShell 5.1+ or PowerShell 7+."
+}
+
 function Get-RetryCount() {
   $v = $env:CHECK_AI_CLI_RETRY
   if ([string]::IsNullOrWhiteSpace($v)) { return 3 }
@@ -247,13 +253,36 @@ function Path-ContainsDir([string]$PathValue, [string]$Dir) {
   return $false
 }
 
-function Add-ToPath([string]$Dir, [string]$Scope) {
+function Get-EnvRegistryPath([string]$Scope) {
+  if ($Scope -eq 'Machine') { return 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment' }
+  return 'HKCU:\Environment'
+}
+
+function Get-EnvValue([string]$Name, [string]$Scope) {
   $target = [EnvironmentVariableTarget]::$Scope
-  $current = [Environment]::GetEnvironmentVariable('Path', $target)
+  try { return [Environment]::GetEnvironmentVariable($Name, $target) } catch {
+    $path = Get-EnvRegistryPath $Scope
+    $item = Get-ItemProperty -Path $path -Name $Name -ErrorAction SilentlyContinue
+    if ($null -eq $item) { return '' }
+    return $item.$Name
+  }
+}
+
+function Set-EnvValue([string]$Name, [string]$Value, [string]$Scope) {
+  $target = [EnvironmentVariableTarget]::$Scope
+  try { [Environment]::SetEnvironmentVariable($Name, $Value, $target); return } catch {
+    $path = Get-EnvRegistryPath $Scope
+    if (-not (Test-Path -LiteralPath $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name $Name -Value $Value
+  }
+}
+
+function Add-ToPath([string]$Dir, [string]$Scope) {
+  $current = Get-EnvValue 'Path' $Scope
   if (Path-ContainsDir $current $Dir) { return }
   $normalized = Normalize-Dir $Dir
   $newPath = "$current;$normalized"
-  [Environment]::SetEnvironmentVariable('Path', $newPath, $target)
+  Set-EnvValue 'Path' $newPath $Scope
   $env:Path = $newPath
 }
 
@@ -314,7 +343,13 @@ function Install-All([string]$Dir, [string]$Scope, [bool]$Run) {
   if ($Run) { & (Join-Path $Dir 'bin\check-ai-cli.ps1') }
 }
 
-function Set-QuietProgress([string]$Mode) {
+function Get-ShowProgress() {
+  $v = $env:CHECK_AI_CLI_SHOW_PROGRESS
+  if ([string]::IsNullOrWhiteSpace($v)) { return $false }
+  return $v.Trim() -eq '1'
+}
+
+function Set-ProgressMode([string]$Mode) {
   $script:PrevProgressPreference = $ProgressPreference
   $ProgressPreference = $Mode
 }
@@ -343,7 +378,12 @@ try {
   if (Test-IsUnderProgramFiles $installDir) { Require-Admin "writing to Program Files: $installDir" }
   if ($pathScope -eq 'Machine') { Require-Admin "updating Machine PATH" }
 
-  Set-QuietProgress 'SilentlyContinue'
+  Require-WebRequest
+  if (Get-ShowProgress) {
+    Set-ProgressMode 'Continue'
+  } else {
+    Set-ProgressMode 'SilentlyContinue'
+  }
   Ensure-Directory $installDir
   Install-All $installDir $pathScope $runAfter
 } catch {

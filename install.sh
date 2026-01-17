@@ -57,15 +57,31 @@ log_err() { printf "[ERROR] %s\n" "$*"; }
 
 command_exists() { command -v "$1" >/dev/null 2>&1; }
 
+require_fetch_tool() {
+  if command_exists curl || command_exists wget; then return 0; fi
+  log_err "curl/wget not found. Install curl or wget first."
+  return 1
+}
+
 ensure_parent_dir() {
   local path="$1"
   mkdir -p "$(dirname "$path")"
 }
 
+show_progress_enabled() {
+  [ "${CHECK_AI_CLI_SHOW_PROGRESS:-0}" = "1" ] && [ -t 2 ]
+}
+
 fetch_to_temp() {
   local url="$1" tmp="$2"
-  if command_exists curl; then curl -fsSL "$url" -o "$tmp"; return 0; fi
-  if command_exists wget; then wget -qO "$tmp" "$url"; return 0; fi
+  if command_exists curl; then
+    if show_progress_enabled; then curl -fSL --progress-bar "$url" -o "$tmp"; else curl -fsSL "$url" -o "$tmp"; fi
+    return 0
+  fi
+  if command_exists wget; then
+    if show_progress_enabled; then wget -O "$tmp" --progress=bar:force "$url"; else wget -qO "$tmp" "$url"; fi
+    return 0
+  fi
   return 1
 }
 
@@ -192,6 +208,7 @@ main() {
   stage="$(mktemp -d 2>/dev/null || mktemp -d -t check-ai-cli)"
   trap 'rm -rf "$stage" >/dev/null 2>&1 || true' EXIT
 
+  require_fetch_tool || exit 1
   download_manifest "$stage" || { log_err "Failed to download checksums.sha256"; exit 1; }
   require_sha256_tool || exit 1
   download_all "$stage" || { log_err "Download failed."; exit 1; }

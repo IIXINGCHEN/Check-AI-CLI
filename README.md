@@ -162,6 +162,7 @@ git commit -m "Update checksums"
 #### PowerShell
 ```powershell
 $ProgressPreference = 'SilentlyContinue'
+$env:CHECK_AI_CLI_SHOW_PROGRESS = '1'
 $env:HTTP_PROXY  = 'http://127.0.0.1:7890'
 $env:HTTPS_PROXY = 'http://127.0.0.1:7890'
 irm https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main/install.ps1 | iex
@@ -169,10 +170,22 @@ irm https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main/install.ps1 |
 
 #### Bash
 ```bash
+export CHECK_AI_CLI_SHOW_PROGRESS=1
 export HTTP_PROXY="http://127.0.0.1:7890"
 export HTTPS_PROXY="http://127.0.0.1:7890"
 curl -fsSL https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main/install.sh | bash
 ```
+
+### 核心依赖检查
+
+#### Windows
+- Invoke-WebRequest
+
+#### macOS / Linux
+- curl 或 wget
+- sha256sum 或 shasum
+
+
 
 ## 📖 功能特性
 

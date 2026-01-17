@@ -24,6 +24,12 @@ log_err() { echo -e "${COLOR_ERR}[ERROR] $*${COLOR_RESET}"; }
 # Check if command exists
 command_exists() { command -v "$1" >/dev/null 2>&1; }
 
+require_fetch_tool() {
+  if command_exists curl || command_exists wget; then return 0; fi
+  log_err "curl/wget not found. Install curl or wget first."
+  return 1
+}
+
 # Extract x.y.z from arbitrary text
 extract_semver() {
   echo "$*" | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1
@@ -44,11 +50,21 @@ compare_semver() {
   echo 0
 }
 
+show_progress_enabled() {
+  [ "${CHECK_AI_CLI_SHOW_PROGRESS:-0}" = "1" ] && [ -t 2 ]
+}
+
 # Prefer curl, fallback to wget
 fetch_text() {
   local url="$1"
-  if command_exists curl; then curl -fsSL "$url" 2>/dev/null || return 1; fi
-  if command_exists wget; then wget -qO- "$url" 2>/dev/null || return 1; fi
+  if command_exists curl; then
+    if show_progress_enabled; then curl -fSL --progress-bar "$url" || return 1; else curl -fsSL "$url" 2>/dev/null || return 1; fi
+    return 0
+  fi
+  if command_exists wget; then
+    if show_progress_enabled; then wget -O- --progress=bar:force "$url" || return 1; else wget -qO- "$url" 2>/dev/null || return 1; fi
+    return 0
+  fi
   return 1
 }
 
@@ -126,34 +142,51 @@ confirm_yes() {
 
 update_factory() {
   log_info "Updating Factory CLI (Droid)..."
-  if fetch_text 'https://app.factory.ai/cli' | sh; then return 0; fi
-  fetch_text 'https://app.factory.ai/cli/install.sh' | bash
+  log_info "Trying: official bootstrap"
+  if fetch_text 'https://app.factory.ai/cli/windows' | sh; then return 0; fi
+  log_err "Factory CLI installer failed."
+  return 1
 }
+
 
 update_claude() {
   log_info "Updating Claude Code..."
+  if command_exists npm; then
+    log_info "Trying: npm install"
+    npm install -g '@anthropic-ai/claude-code' && return 0
+  fi
+  log_info "Trying: official bootstrap"
   if fetch_text 'https://claude.ai/install.sh' | bash; then return 0; fi
-  if command_exists npm; then npm install -g '@anthropic-ai/claude-code'; return 0; fi
-  log_err "No installer and npm not found."
+  log_err "No installer found. Install curl/wget, brew, or Node.js (npm) first."
   return 1
 }
 
 update_codex() {
   log_info "Updating OpenAI Codex..."
-  if command_exists brew; then brew install --cask codex && return 0; fi
-  if command_exists npm; then npm install -g '@openai/codex' && return 0; fi
-  log_err "brew/npm not found."
+  if command_exists npm; then
+    log_info "Trying: npm install"
+    npm install -g '@openai/codex' && return 0
+  fi
+  if command_exists brew; then
+    log_info "Trying: brew install"
+    brew install --cask codex && return 0
+  fi
+  log_err "No installer found. Install npm or brew first."
   return 1
 }
 
 update_gemini() {
   log_info "Updating Gemini CLI..."
-  if command_exists npm; then npm install -g '@google/gemini-cli@latest' && return 0; fi
+  if command_exists npm; then
+    log_info "Trying: npm install"
+    npm install -g '@google/gemini-cli@latest' && return 0
+  fi
   if command_exists brew; then
+    log_info "Trying: brew install"
     brew list --formula gemini-cli >/dev/null 2>&1 && brew upgrade gemini-cli && return 0
     brew install gemini-cli && return 0
   fi
-  log_err "npm/brew not found."
+  log_err "No installer found. Install npm or brew first."
   return 1
 }
 
@@ -164,37 +197,46 @@ update_opencode() {
   [ -n "$target" ] || { log_err "Failed to determine OpenCode target version"; return 1; }
   log_info "Target OpenCode version: v$target"
 
+  log_info "Trying: curl/wget install"
+  if fetch_text 'https://opencode.ai/install' | bash -s -- --version "$target"; then
+    localv="$(get_local_opencode || true)"
+    cmp="$(compare_semver "$localv" "$target" || true)"
+    if [ "$cmp" = "0" ] || [ "$cmp" = "1" ]; then return 0; fi
+  else
+    log_warn "curl/wget install failed, continuing fallbacks."
+  fi
+
   if command_exists opencode; then
+    log_info "Trying: opencode upgrade"
     opencode upgrade "v$target" || true
     localv="$(get_local_opencode || true)"
     cmp="$(compare_semver "$localv" "$target" || true)"
     if [ "$cmp" = "0" ] || [ "$cmp" = "1" ]; then return 0; fi
   fi
 
-  if fetch_text 'https://opencode.ai/install' | bash -s -- --version "$target"; then
-    localv="$(get_local_opencode || true)"
-    cmp="$(compare_semver "$localv" "$target" || true)"
-    if [ "$cmp" = "0" ] || [ "$cmp" = "1" ]; then return 0; fi
-  fi
-
   if command_exists brew; then
-    brew install anomalyco/tap/opencode || return 1
-    if ! opencode upgrade "v$target" 2>/dev/null; then
-      log_warn "opencode upgrade failed, checking if installed version is sufficient..."
+    log_info "Trying: brew install"
+    if brew install anomalyco/tap/opencode; then
+      if ! opencode upgrade "v$target" 2>/dev/null; then
+        log_warn "opencode upgrade failed, checking if installed version is sufficient..."
+      fi
+      localv="$(get_local_opencode || true)"
+      cmp="$(compare_semver "$localv" "$target" || true)"
+      if [ "$cmp" = "0" ] || [ "$cmp" = "1" ]; then return 0; fi
+    else
+      log_warn "brew install failed, continuing fallbacks."
     fi
-    localv="$(get_local_opencode || true)"
-    cmp="$(compare_semver "$localv" "$target" || true)"
-    if [ "$cmp" = "0" ] || [ "$cmp" = "1" ]; then return 0; fi
   fi
 
   if command_exists npm; then
+    log_info "Trying: npm install"
     npm install -g "opencode-ai@latest" || return 1
     localv="$(get_local_opencode || true)"
     cmp="$(compare_semver "$localv" "$target" || true)"
     if [ "$cmp" = "0" ] || [ "$cmp" = "1" ]; then return 0; fi
   fi
 
-  log_err "No installer found (curl/wget/brew/npm)."
+  log_err "No installer found. Install curl/wget, brew, or Node.js (npm) first."
   return 1
 }
 
@@ -246,6 +288,8 @@ show_banner() {
   echo ""
 }
 
+require_fetch_tool || exit 1
+
 ask_selection() {
   echo "Select tools to check:"
   echo "  [1] Factory CLI (Droid)"
@@ -254,12 +298,14 @@ ask_selection() {
   echo "  [4] Gemini CLI"
   echo "  [5] OpenCode"
   echo "  [A] Check all (default)"
-  read -r -p "Enter choice (1/2/3/4/5/A): " choice || true
+  echo "  [Q] Quit"
+  read -r -p "Enter choice (1/2/3/4/5/A/Q): " choice || true
   echo "${choice:-A}" | tr '[:lower:]' '[:upper:]'
 }
 
 show_banner
 sel="$(ask_selection)"
+[ "$sel" = "Q" ] && exit 0
 
 if [ "$sel" = "1" ] || [ "$sel" = "A" ]; then
   check_tool "Factory CLI (Droid)" get_latest_factory get_local_factory update_factory

@@ -42,7 +42,31 @@ function Require-Admin([string]$Reason) {
 
 function Normalize-Dir([string]$Dir) {
   $full = [IO.Path]::GetFullPath($Dir)
-  return $full.TrimEnd('\')
+  return $full.TrimEnd('\\')
+}
+
+function Get-EnvRegistryPath([string]$Scope) {
+  if ($Scope -eq 'Machine') { return 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment' }
+  return 'HKCU:\Environment'
+}
+
+function Get-EnvValue([string]$Name, [string]$Scope) {
+  $target = [EnvironmentVariableTarget]::$Scope
+  try { return [Environment]::GetEnvironmentVariable($Name, $target) } catch {
+    $path = Get-EnvRegistryPath $Scope
+    $item = Get-ItemProperty -Path $path -Name $Name -ErrorAction SilentlyContinue
+    if ($null -eq $item) { return '' }
+    return $item.$Name
+  }
+}
+
+function Set-EnvValue([string]$Name, [string]$Value, [string]$Scope) {
+  $target = [EnvironmentVariableTarget]::$Scope
+  try { [Environment]::SetEnvironmentVariable($Name, $Value, $target); return } catch {
+    $path = Get-EnvRegistryPath $Scope
+    if (-not (Test-Path -LiteralPath $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name $Name -Value $Value
+  }
 }
 
 function Remove-PathEntry([string]$PathValue, [string]$Dir) {
@@ -58,16 +82,15 @@ function Remove-PathEntry([string]$PathValue, [string]$Dir) {
 }
 
 function Update-Path([string]$Scope, [string]$BinDir) {
-  $target = [EnvironmentVariableTarget]::$Scope
-  $current = [Environment]::GetEnvironmentVariable('Path', $target)
+  $current = Get-EnvValue 'Path' $Scope
   $next = Remove-PathEntry $current $BinDir
-  [Environment]::SetEnvironmentVariable('Path', $next, $target)
+  Set-EnvValue 'Path' $next $Scope
   $env:Path = $next
 }
 
 function Confirm-Delete([string]$Dir) {
   Write-Warn "This will remove directory: $Dir"
-  $ans = Read-Host "Type DELETE to confirm"
+  $ans = Read-Host "Type DELETE to confirm: "
   return $ans -eq 'DELETE'
 }
 

@@ -1,4 +1,4 @@
-﻿param(
+param(
   [switch]$Auto
 )
 
@@ -24,7 +24,14 @@ function Write-Fail([string]$Message) { Write-Host "[ERROR] $Message" -Foregroun
 
 # Some installer scripts rely on PowerShell progress output (Write-Progress / Invoke-WebRequest).
 # If user's $ProgressPreference is set to SilentlyContinue, downloads may look "stuck".
+function Get-ShowProgress() {
+  $v = $env:CHECK_AI_CLI_SHOW_PROGRESS
+  if ([string]::IsNullOrWhiteSpace($v)) { return $false }
+  return $v.Trim() -eq '1'
+}
+
 function Get-QuietProgressMode() {
+  if (Get-ShowProgress) { return $false }
   $v = $env:CHECK_AI_CLI_QUIET_PROGRESS
   if ([string]::IsNullOrWhiteSpace($v)) { return $false }
   return $v.Trim() -eq '1'
@@ -34,6 +41,12 @@ function Invoke-WithTempProgressPreference([string]$Mode, [scriptblock]$Action) 
   $prev = $ProgressPreference
   $ProgressPreference = $Mode
   try { & $Action } finally { $ProgressPreference = $prev }
+}
+
+function Require-WebRequest() {
+  $cmd = Get-Command Invoke-WebRequest -ErrorAction SilentlyContinue
+  if ($cmd) { return }
+  throw "Invoke-WebRequest not found. Use Windows PowerShell 5.1+ or PowerShell 7+."
 }
 
 # Fetch text content, return $null on failure
@@ -144,11 +157,9 @@ function Get-TargetOpenCodeVersion() {
 }
 
 function Get-LatestOpenCodeVersion() {
-  # 优先使用环境变量指定的版本
   $target = Get-TargetOpenCodeVersion
   if ($target) { return $target }
 
-  # 从 GitHub Releases API 获取最新版本
   try {
     $json = Get-Json 'https://api.github.com/repos/anomalyco/opencode/releases/latest'
     if ($json -and $json.tag_name) {
@@ -158,7 +169,6 @@ function Get-LatestOpenCodeVersion() {
     Write-Warn "Failed to fetch latest OpenCode version from GitHub: $($_.Exception.Message)"
   }
 
-  # 降级到备用默认版本
   Write-Warn "Using fallback OpenCode version: 1.1.21"
   $fallback = Get-SemVer '1.1.21'
   if (-not $fallback) {
@@ -195,16 +205,21 @@ function Confirm-Yes([string]$Prompt) {
 # Install/update Factory CLI
 function Update-Factory() {
   Write-Info "Updating Factory CLI (Droid)..."
-  $script = Get-Text 'https://app.factory.ai/cli/windows'
-  if (-not $script) { throw "Failed to download installer script." }
-  $mode = 'Continue'
-  if (Get-QuietProgressMode) { $mode = 'SilentlyContinue' }
-  Invoke-WithTempProgressPreference $mode { Invoke-Expression $script }
+  Write-Info "Trying: official bootstrap"
+  try {
+    $script = Get-Text 'https://app.factory.ai/cli/windows'
+    if (-not $script) { throw "Failed to download installer script." }
+    $mode = 'Continue'
+    if (Get-QuietProgressMode) { $mode = 'SilentlyContinue' }
+    Invoke-WithTempProgressPreference $mode { Invoke-Expression $script }
+  } catch {
+    throw "Factory CLI installer failed."
+  }
 }
 
 # Install/update Claude Code via official bootstrap (GCS binary)
 function Update-ClaudeViaBootstrap() {
-  Write-Info "Installing via official bootstrap..."
+  Write-Info "Trying: official bootstrap"
 
   # Check for 32-bit Windows
   if (-not [Environment]::Is64BitProcess) {
@@ -267,26 +282,40 @@ function Update-Claude() {
   Write-Info "Updating Claude Code..."
 
   try {
+    Write-Info "Trying: npm install"
     Invoke-NpmInstallGlobal '@anthropic-ai/claude-code@latest'
     return
   } catch {
     Write-Warn "npm install failed: $($_.Exception.Message)"
-    Write-Info "Falling back to official bootstrap..."
   }
 
-  Update-ClaudeViaBootstrap
+  try {
+    Update-ClaudeViaBootstrap
+  } catch {
+    throw "No installer found. Install curl/wget or Node.js (npm) first."
+  }
 }
 
 # Install/update OpenAI Codex (Windows defaults to npm)
 function Update-Codex() {
   Write-Info "Updating OpenAI Codex..."
-  Invoke-NpmInstallGlobal '@openai/codex'
+  try {
+    Write-Info "Trying: npm install"
+    Invoke-NpmInstallGlobal '@openai/codex'
+  } catch {
+    throw "No installer found. Install Node.js (npm) first."
+  }
 }
 
 # Install/update Gemini CLI (prefers npm)
 function Update-Gemini() {
   Write-Info "Updating Gemini CLI..."
-  Invoke-NpmInstallGlobal '@google/gemini-cli@latest'
+  try {
+    Write-Info "Trying: npm install"
+    Invoke-NpmInstallGlobal '@google/gemini-cli@latest'
+  } catch {
+    throw "No installer found. Install Node.js (npm) first."
+  }
 }
 
 function Get-OpenCodeUserInstallPath() {
@@ -436,9 +465,14 @@ function Try-InstallOpenCodeWithCurl([string]$TargetVersion) {
   $v = Get-SemVer $TargetVersion
   $cmd = 'curl -fsSL https://opencode.ai/install | bash'
   if ($v) { $cmd = "curl -fsSL https://opencode.ai/install | bash -s -- --version $v" }
-  & $bash -lc $cmd
-  if ($LASTEXITCODE -ne 0) { Write-Warn "curl install failed with exit code $LASTEXITCODE" ; return $false }
-  return $true
+  try {
+    & $bash -lc $cmd
+    if ($LASTEXITCODE -ne 0) { Write-Warn "curl install failed with exit code $LASTEXITCODE" ; return $false }
+    return $true
+  } catch {
+    Write-Warn "curl install failed: $($_.Exception.Message)"
+    return $false
+  }
 }
 
 function Test-OpenCodeAtLeast([string]$TargetVersion) {
@@ -494,7 +528,7 @@ function Update-OpenCode() {
   Write-Info "Updating OpenCode..."
   $target = Get-TargetOpenCodeVersion
   if ($target) { Write-Info "Target OpenCode version: v$target" }
-  Write-Info "Trying: curl install (bash)"
+  Write-Info "Trying: curl/wget install"
   if (Try-InstallOpenCodeWithCurl $target -and (Test-OpenCodeAtLeast $target)) { return }
   $installed = [bool](Get-Command opencode -ErrorAction SilentlyContinue)
   if ($installed) {
@@ -536,15 +570,16 @@ function Try-Update([scriptblock]$DoUpdate) {
 
 function Handle-UpdateFlow([string]$Latest, [string]$Local, [scriptblock]$DoUpdate) {
   if (-not $Local) {
-    if (-not $Latest) { Write-Warn "Latest version unknown. Installing anyway." }
-    if (Confirm-Yes "Install now? (Y/N)") { Try-Update $DoUpdate ; return $true }
+  if (-not $Latest) { Write-Warn "Latest version unknown. Installing anyway." }
+  if (Confirm-Yes "Install now? (Y/N): ") { Try-Update $DoUpdate ; return $true }
+
     return $false
   }
   if (-not $Latest) { Write-Warn "Latest version unknown. Skipping update check." ; return $false }
   $cmp = Compare-Version $Local $Latest
   if ($cmp -eq 0) { Write-Success "Already up to date." ; return $false }
   if ($cmp -eq 1) { Write-Warn "Local version is newer than latest source." ; return $false }
-  if ($cmp -eq -1 -and (Confirm-Yes "Update now? (Y/N)")) { Try-Update $DoUpdate ; return $true }
+  if ($cmp -eq -1 -and (Confirm-Yes "Update now? (Y/N): ")) { Try-Update $DoUpdate ; return $true }
   return $false
 }
 
@@ -592,13 +627,16 @@ function Ask-Selection() {
   Write-Host "  [4] Gemini CLI"
   Write-Host "  [5] OpenCode"
   Write-Host "  [A] Check all (default)"
-  $s = Read-Host "Enter choice (1/2/3/4/5/A)"
+  Write-Host "  [Q] Quit"
+  $s = Read-Host "Enter choice (1/2/3/4/5/A/Q)"
   if ([string]::IsNullOrWhiteSpace($s)) { return 'A' }
   return $s.Trim().ToUpperInvariant()
 }
 
+Require-WebRequest
 Show-Banner
 $sel = Ask-Selection
+if ($sel -eq 'Q') { exit 0 }
 
 if ($sel -eq '1' -or $sel -eq 'A') {
   Check-OneTool "Factory CLI (Droid)" { Get-LatestFactoryVersion } { Get-LocalCommandVersion @('factory','droid') } { Update-Factory }
