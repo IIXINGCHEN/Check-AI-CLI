@@ -16,3 +16,7 @@ test-output.txt
 # 本地运行产物
 /%APPDATA%/
 /bootstrap.ps1
+
+# 本地工具配置
+/.agents/
+/.claude/
