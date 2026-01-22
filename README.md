@@ -48,7 +48,7 @@
 powershell -ExecutionPolicy Bypass -File ".\Check-AI-CLI-Versions.ps1"
 
 # 方法 3: 从任意位置运行
-powershell -ExecutionPolicy Bypass -File "G:\wwwroot\CRS\code\USA\droid2api-v3\shell\Check-AI-CLI-Versions.ps1"
+powershell -ExecutionPolicy Bypass -File "G:\shell\Check-AI-CLI-Versions.ps1"
 
 # 自动模式: 未安装自动安装, 非最新自动更新
 $env:CHECK_AI_CLI_AUTO = '1'
