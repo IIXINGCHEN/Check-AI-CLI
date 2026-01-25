@@ -50,6 +50,331 @@ function Require-WebRequest() {
   throw "Invoke-WebRequest not found. Use Windows PowerShell 5.1+ or PowerShell 7+."
 }
 
+# ============================================================================
+# Network Detection & npm Registry Management
+# ============================================================================
+
+# npm mirrors configuration
+$script:NpmMirrors = @{
+  'taobao'  = 'https://registry.npmmirror.com'
+  'tencent' = 'https://mirrors.cloud.tencent.com/npm/'
+  'huawei'  = 'https://repo.huaweicloud.com/repository/npm/'
+  'default' = 'https://registry.npmjs.org'
+}
+
+# Network detection cache
+$script:NetworkInfo = $null
+$script:OriginalNpmRegistry = $null
+
+# Network status enum-like values
+# ProxyMode: 'direct' | 'global' | 'rule' | 'unknown'
+# Region: 'china' | 'global' | 'unknown'
+
+# Detect Windows system proxy settings
+function Get-SystemProxySettings() {
+  $result = @{
+    Enabled = $false
+    Server = $null
+    Bypass = $null
+    AutoConfig = $false
+    AutoConfigUrl = $null
+  }
+  
+  try {
+    # Check Internet Settings registry
+    $regPath = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings'
+    $settings = Get-ItemProperty -Path $regPath -ErrorAction SilentlyContinue
+    
+    if ($settings) {
+      $result.Enabled = [bool]$settings.ProxyEnable
+      $result.Server = $settings.ProxyServer
+      $result.Bypass = $settings.ProxyOverride
+      $result.AutoConfig = [bool]$settings.AutoConfigURL
+      $result.AutoConfigUrl = $settings.AutoConfigURL
+    }
+  } catch { }
+  
+  return $result
+}
+
+# Detect environment proxy variables
+function Get-EnvProxySettings() {
+  $result = @{
+    HttpProxy = $null
+    HttpsProxy = $null
+    NoProxy = $null
+    AllProxy = $null
+  }
+  
+  # Check common proxy environment variables (case-insensitive)
+  $result.HttpProxy = if ($env:HTTP_PROXY) { $env:HTTP_PROXY } elseif ($env:http_proxy) { $env:http_proxy } else { $null }
+  $result.HttpsProxy = if ($env:HTTPS_PROXY) { $env:HTTPS_PROXY } elseif ($env:https_proxy) { $env:https_proxy } else { $null }
+  $result.NoProxy = if ($env:NO_PROXY) { $env:NO_PROXY } elseif ($env:no_proxy) { $env:no_proxy } else { $null }
+  $result.AllProxy = if ($env:ALL_PROXY) { $env:ALL_PROXY } elseif ($env:all_proxy) { $env:all_proxy } else { $null }
+  
+  return $result
+}
+
+# Test actual connectivity to determine real network path
+function Test-ActualConnectivity() {
+  $result = @{
+    GoogleOK = $false
+    GoogleTime = -1
+    BaiduOK = $false
+    BaiduTime = -1
+    NpmjsOK = $false
+    NpmjsTime = -1
+    NpmmirrorOK = $false
+    NpmmirrorTime = -1
+  }
+  
+  # Test endpoints with timing
+  $tests = @(
+    @{ Name = 'Google'; Url = 'https://www.google.com/generate_204'; Key = 'GoogleOK'; TimeKey = 'GoogleTime' },
+    @{ Name = 'Baidu'; Url = 'https://www.baidu.com'; Key = 'BaiduOK'; TimeKey = 'BaiduTime' },
+    @{ Name = 'npmjs'; Url = 'https://registry.npmjs.org'; Key = 'NpmjsOK'; TimeKey = 'NpmjsTime' },
+    @{ Name = 'npmmirror'; Url = 'https://registry.npmmirror.com'; Key = 'NpmmirrorOK'; TimeKey = 'NpmmirrorTime' }
+  )
+  
+  foreach ($test in $tests) {
+    try {
+      $sw = [System.Diagnostics.Stopwatch]::StartNew()
+      $null = Invoke-WebRequest -Uri $test.Url -TimeoutSec 5 -UseBasicParsing -ErrorAction Stop
+      $sw.Stop()
+      $result[$test.Key] = $true
+      $result[$test.TimeKey] = $sw.ElapsedMilliseconds
+    } catch {
+      $result[$test.Key] = $false
+      $result[$test.TimeKey] = -1
+    }
+  }
+  
+  return $result
+}
+
+# Determine proxy mode based on connectivity tests
+function Get-ProxyMode([hashtable]$Connectivity) {
+  $googleOK = $Connectivity.GoogleOK
+  $baiduOK = $Connectivity.BaiduOK
+  
+  if ($googleOK -and $baiduOK) {
+    # Both accessible - either global proxy or outside China
+    return 'global'
+  }
+  elseif (-not $googleOK -and $baiduOK) {
+    # Only Baidu - direct connection in China (no proxy or rule-based proxy not covering Google)
+    return 'direct'
+  }
+  elseif ($googleOK -and -not $baiduOK) {
+    # Only Google - unusual, might be rule-based proxy
+    return 'rule'
+  }
+  else {
+    # Neither accessible - network issues
+    return 'unknown'
+  }
+}
+
+# Determine effective region for npm registry selection
+function Get-EffectiveRegion([hashtable]$Connectivity, [string]$ProxyMode) {
+  # If user specified region, respect it
+  $envOverride = $env:CHECK_AI_CLI_REGION
+  if (-not [string]::IsNullOrWhiteSpace($envOverride)) {
+    $region = $envOverride.Trim().ToLowerInvariant()
+    if ($region -eq 'china' -or $region -eq 'cn') { return 'china' }
+    if ($region -eq 'global' -or $region -eq 'intl') { return 'global' }
+  }
+  
+  # Determine based on actual connectivity and speed
+  switch ($ProxyMode) {
+    'global' {
+      # Compare npm registry speeds
+      if ($Connectivity.NpmjsOK -and $Connectivity.NpmmirrorOK) {
+        # Both accessible, choose faster one
+        if ($Connectivity.NpmjsTime -le $Connectivity.NpmmirrorTime) {
+          return 'global'
+        } else {
+          return 'china'
+        }
+      }
+      elseif ($Connectivity.NpmjsOK) {
+        return 'global'
+      }
+      elseif ($Connectivity.NpmmirrorOK) {
+        return 'china'
+      }
+      return 'global'
+    }
+    'direct' {
+      # Direct connection in China, use China mirror
+      return 'china'
+    }
+    'rule' {
+      # Rule-based proxy, test both and pick faster
+      if ($Connectivity.NpmmirrorOK -and (-not $Connectivity.NpmjsOK -or $Connectivity.NpmmirrorTime -lt $Connectivity.NpmjsTime)) {
+        return 'china'
+      }
+      return 'global'
+    }
+    default {
+      return 'unknown'
+    }
+  }
+}
+
+# Main network detection function
+function Initialize-NetworkDetection() {
+  if ($null -ne $script:NetworkInfo) { return $script:NetworkInfo }
+  
+  Write-Info "Detecting network environment..."
+  
+  # Collect all proxy settings
+  $sysProxy = Get-SystemProxySettings
+  $envProxy = Get-EnvProxySettings
+  
+  # Check if any proxy is configured
+  $hasProxy = $sysProxy.Enabled -or $sysProxy.AutoConfig -or 
+              (-not [string]::IsNullOrWhiteSpace($envProxy.HttpProxy)) -or
+              (-not [string]::IsNullOrWhiteSpace($envProxy.HttpsProxy)) -or
+              (-not [string]::IsNullOrWhiteSpace($envProxy.AllProxy))
+  
+  # Show proxy status
+  if ($hasProxy) {
+    if ($sysProxy.Enabled) {
+      Write-Info "System proxy detected: $($sysProxy.Server)"
+    }
+    if ($sysProxy.AutoConfig) {
+      Write-Info "PAC auto-config detected: $($sysProxy.AutoConfigUrl)"
+    }
+    if ($envProxy.HttpProxy -or $envProxy.HttpsProxy) {
+      $proxyUrl = if ($envProxy.HttpsProxy) { $envProxy.HttpsProxy } else { $envProxy.HttpProxy }
+      Write-Info "Environment proxy detected: $proxyUrl"
+    }
+  } else {
+    Write-Info "No proxy configured (direct connection)"
+  }
+  
+  # Test actual connectivity
+  Write-Info "Testing connectivity to determine best npm source..."
+  $connectivity = Test-ActualConnectivity
+  
+  # Determine proxy mode
+  $proxyMode = Get-ProxyMode $connectivity
+  
+  # Determine effective region
+  $region = Get-EffectiveRegion $connectivity $proxyMode
+  
+  # Build result
+  $script:NetworkInfo = @{
+    HasProxy = $hasProxy
+    SystemProxy = $sysProxy
+    EnvProxy = $envProxy
+    Connectivity = $connectivity
+    ProxyMode = $proxyMode
+    Region = $region
+  }
+  
+  # Log detection results
+  $modeDesc = switch ($proxyMode) {
+    'global' { 'Global proxy (all traffic proxied)' }
+    'direct' { 'Direct connection (China network)' }
+    'rule'   { 'Rule-based proxy (selective)' }
+    default  { 'Unknown (network issues)' }
+  }
+  Write-Info "Network mode: $modeDesc"
+  Write-Info "Effective region for npm: $region"
+  
+  return $script:NetworkInfo
+}
+
+# Get current npm registry
+function Get-NpmRegistry() {
+  try {
+    $npmCmd = Get-Command npm.cmd -CommandType Application -ErrorAction SilentlyContinue
+    if (-not $npmCmd) { $npmCmd = Get-Command npm -CommandType Application -ErrorAction SilentlyContinue }
+    if ($npmCmd) {
+      $registry = & $npmCmd.Path config get registry 2>$null
+      if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($registry)) {
+        return $registry.Trim().TrimEnd('/')
+      }
+    }
+  } catch { }
+  return $script:NpmMirrors['default']
+}
+
+# Set npm registry
+function Set-NpmRegistry([string]$Registry) {
+  try {
+    $npmCmd = Get-Command npm.cmd -CommandType Application -ErrorAction SilentlyContinue
+    if (-not $npmCmd) { $npmCmd = Get-Command npm -CommandType Application -ErrorAction SilentlyContinue }
+    if ($npmCmd) {
+      & $npmCmd.Path config set registry $Registry 2>$null | Out-Null
+      if ($LASTEXITCODE -eq 0) {
+        Write-Info "npm registry set to: $Registry"
+        return $true
+      }
+    }
+  } catch { }
+  Write-Warn "Failed to set npm registry"
+  return $false
+}
+
+# Select best npm mirror based on network detection
+function Get-BestNpmMirror() {
+  $netInfo = Initialize-NetworkDetection
+  
+  if ($netInfo.Region -eq 'china') {
+    # For China, test mirrors and pick fastest
+    $connectivity = $netInfo.Connectivity
+    if ($connectivity.NpmmirrorOK) {
+      Write-Info "Using China npm mirror: npmmirror (taobao)"
+      return $script:NpmMirrors['taobao']
+    }
+    # Try other China mirrors
+    foreach ($name in @('tencent', 'huawei')) {
+      $url = $script:NpmMirrors[$name]
+      try {
+        $null = Invoke-WebRequest -Uri $url -TimeoutSec 3 -UseBasicParsing -ErrorAction Stop
+        Write-Info "Using China npm mirror: $name"
+        return $url
+      } catch { continue }
+    }
+    # Fallback to taobao
+    Write-Info "Using China npm mirror: npmmirror (taobao) [fallback]"
+    return $script:NpmMirrors['taobao']
+  }
+  
+  Write-Info "Using official npm registry"
+  return $script:NpmMirrors['default']
+}
+
+# Configure npm for optimal speed based on network detection
+function Initialize-NpmForRegion() {
+  # Save original registry
+  $script:OriginalNpmRegistry = Get-NpmRegistry
+  
+  $bestMirror = Get-BestNpmMirror
+  $currentRegistry = Get-NpmRegistry
+  
+  if ($currentRegistry.TrimEnd('/') -ne $bestMirror.TrimEnd('/')) {
+    Write-Info "Switching npm registry for better speed..."
+    Set-NpmRegistry $bestMirror
+  } else {
+    Write-Info "npm registry already optimal: $currentRegistry"
+  }
+}
+
+# Restore original npm registry
+function Restore-NpmRegistry() {
+  if ($null -ne $script:OriginalNpmRegistry) {
+    $current = Get-NpmRegistry
+    if ($current.TrimEnd('/') -ne $script:OriginalNpmRegistry.TrimEnd('/')) {
+      Write-Info "Restoring original npm registry: $($script:OriginalNpmRegistry)"
+      Set-NpmRegistry $script:OriginalNpmRegistry
+    }
+  }
+}
+
 # Fetch text content, return $null on failure
 function Get-Text([string]$Uri) {
   try {
@@ -698,11 +1023,19 @@ function Invoke-Selection([string]$Selection) {
 Require-WebRequest
 Show-Banner
 
+# Initialize network detection and optimize npm registry
+Initialize-NpmForRegion
+
 if ($FactoryOnly) {
   Invoke-Selection '1'
+  Restore-NpmRegistry
   exit 0
 }
 
 $sel = Ask-Selection
-if ($sel -eq 'Q') { exit 0 }
+if ($sel -eq 'Q') { 
+  Restore-NpmRegistry
+  exit 0 
+}
 Invoke-Selection $sel
+Restore-NpmRegistry

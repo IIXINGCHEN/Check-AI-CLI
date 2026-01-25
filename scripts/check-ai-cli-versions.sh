@@ -30,6 +30,245 @@ require_fetch_tool() {
   return 1
 }
 
+# ============================================================================
+# Network Detection & npm Registry Management
+# ============================================================================
+
+# npm mirrors
+NPM_MIRROR_TAOBAO="https://registry.npmmirror.com"
+NPM_MIRROR_TENCENT="https://mirrors.cloud.tencent.com/npm/"
+NPM_MIRROR_HUAWEI="https://repo.huaweicloud.com/repository/npm/"
+NPM_MIRROR_DEFAULT="https://registry.npmjs.org"
+
+# Network detection cache
+NETWORK_PROXY_MODE=""
+NETWORK_REGION=""
+ORIGINAL_NPM_REGISTRY=""
+
+# Test URL with timing (returns time in ms or -1 on failure)
+test_url_timing() {
+  local url="$1" timeout="${2:-5}"
+  local start end elapsed
+  
+  if command_exists curl; then
+    start=$(date +%s%3N 2>/dev/null || date +%s)
+    if curl -fsSL --connect-timeout "$timeout" --max-time "$timeout" "$url" >/dev/null 2>&1; then
+      end=$(date +%s%3N 2>/dev/null || date +%s)
+      elapsed=$((end - start))
+      echo "$elapsed"
+      return 0
+    fi
+  elif command_exists wget; then
+    start=$(date +%s%3N 2>/dev/null || date +%s)
+    if wget -q --timeout="$timeout" -O /dev/null "$url" 2>/dev/null; then
+      end=$(date +%s%3N 2>/dev/null || date +%s)
+      elapsed=$((end - start))
+      echo "$elapsed"
+      return 0
+    fi
+  fi
+  echo "-1"
+  return 1
+}
+
+# Check environment proxy settings
+get_env_proxy() {
+  local proxy=""
+  proxy="${HTTPS_PROXY:-${https_proxy:-${HTTP_PROXY:-${http_proxy:-${ALL_PROXY:-${all_proxy:-}}}}}}"
+  echo "$proxy"
+}
+
+# Detect network environment
+detect_network_environment() {
+  # Return cached result
+  if [ -n "$NETWORK_PROXY_MODE" ]; then return 0; fi
+  
+  log_info "Detecting network environment..."
+  
+  # Check for proxy
+  local env_proxy has_proxy
+  env_proxy="$(get_env_proxy)"
+  has_proxy="no"
+  
+  if [ -n "$env_proxy" ]; then
+    has_proxy="yes"
+    log_info "Environment proxy detected: $env_proxy"
+  else
+    log_info "No proxy configured (direct connection)"
+  fi
+  
+  # User override
+  local region_override="${CHECK_AI_CLI_REGION:-}"
+  if [ -n "$region_override" ]; then
+    case "$(echo "$region_override" | tr '[:upper:]' '[:lower:]')" in
+      china|cn)
+        NETWORK_PROXY_MODE="direct"
+        NETWORK_REGION="china"
+        log_info "Region override: China (via CHECK_AI_CLI_REGION)"
+        return 0
+        ;;
+      global|intl)
+        NETWORK_PROXY_MODE="global"
+        NETWORK_REGION="global"
+        log_info "Region override: Global (via CHECK_AI_CLI_REGION)"
+        return 0
+        ;;
+    esac
+  fi
+  
+  log_info "Testing connectivity to determine best npm source..."
+  
+  # Test connectivity
+  local google_time baidu_time npmjs_time npmmirror_time
+  google_time=$(test_url_timing "https://www.google.com/generate_204" 5)
+  baidu_time=$(test_url_timing "https://www.baidu.com" 5)
+  npmjs_time=$(test_url_timing "https://registry.npmjs.org" 5)
+  npmmirror_time=$(test_url_timing "https://registry.npmmirror.com" 5)
+  
+  local google_ok baidu_ok npmjs_ok npmmirror_ok
+  [ "$google_time" != "-1" ] && google_ok="yes" || google_ok="no"
+  [ "$baidu_time" != "-1" ] && baidu_ok="yes" || baidu_ok="no"
+  [ "$npmjs_time" != "-1" ] && npmjs_ok="yes" || npmjs_ok="no"
+  [ "$npmmirror_time" != "-1" ] && npmmirror_ok="yes" || npmmirror_ok="no"
+  
+  # Determine proxy mode
+  if [ "$google_ok" = "yes" ] && [ "$baidu_ok" = "yes" ]; then
+    NETWORK_PROXY_MODE="global"
+    log_info "Network mode: Global proxy (all traffic proxied)"
+  elif [ "$google_ok" = "no" ] && [ "$baidu_ok" = "yes" ]; then
+    NETWORK_PROXY_MODE="direct"
+    log_info "Network mode: Direct connection (China network)"
+  elif [ "$google_ok" = "yes" ] && [ "$baidu_ok" = "no" ]; then
+    NETWORK_PROXY_MODE="rule"
+    log_info "Network mode: Rule-based proxy (selective)"
+  else
+    NETWORK_PROXY_MODE="unknown"
+    log_warn "Network mode: Unknown (network issues)"
+  fi
+  
+  # Determine effective region based on npm registry speed
+  case "$NETWORK_PROXY_MODE" in
+    global)
+      if [ "$npmjs_ok" = "yes" ] && [ "$npmmirror_ok" = "yes" ]; then
+        if [ "$npmjs_time" -le "$npmmirror_time" ]; then
+          NETWORK_REGION="global"
+        else
+          NETWORK_REGION="china"
+        fi
+      elif [ "$npmjs_ok" = "yes" ]; then
+        NETWORK_REGION="global"
+      elif [ "$npmmirror_ok" = "yes" ]; then
+        NETWORK_REGION="china"
+      else
+        NETWORK_REGION="global"
+      fi
+      ;;
+    direct)
+      NETWORK_REGION="china"
+      ;;
+    rule)
+      if [ "$npmmirror_ok" = "yes" ] && { [ "$npmjs_ok" = "no" ] || [ "$npmmirror_time" -lt "$npmjs_time" ]; }; then
+        NETWORK_REGION="china"
+      else
+        NETWORK_REGION="global"
+      fi
+      ;;
+    *)
+      NETWORK_REGION="unknown"
+      ;;
+  esac
+  
+  log_info "Effective region for npm: $NETWORK_REGION"
+}
+
+# Get current npm registry
+get_npm_registry() {
+  if command_exists npm; then
+    npm config get registry 2>/dev/null | tr -d '\n' | sed 's:/*$::'
+  else
+    echo "$NPM_MIRROR_DEFAULT"
+  fi
+}
+
+# Set npm registry
+set_npm_registry() {
+  local registry="$1"
+  if command_exists npm; then
+    if npm config set registry "$registry" 2>/dev/null; then
+      log_info "npm registry set to: $registry"
+      return 0
+    fi
+  fi
+  log_warn "Failed to set npm registry"
+  return 1
+}
+
+# Get best npm mirror based on network detection
+get_best_npm_mirror() {
+  detect_network_environment
+  
+  if [ "$NETWORK_REGION" = "china" ]; then
+    # Test China mirrors
+    if test_url_timing "$NPM_MIRROR_TAOBAO" 3 >/dev/null 2>&1; then
+      log_info "Using China npm mirror: npmmirror (taobao)"
+      echo "$NPM_MIRROR_TAOBAO"
+      return 0
+    fi
+    if test_url_timing "$NPM_MIRROR_TENCENT" 3 >/dev/null 2>&1; then
+      log_info "Using China npm mirror: tencent"
+      echo "$NPM_MIRROR_TENCENT"
+      return 0
+    fi
+    if test_url_timing "$NPM_MIRROR_HUAWEI" 3 >/dev/null 2>&1; then
+      log_info "Using China npm mirror: huawei"
+      echo "$NPM_MIRROR_HUAWEI"
+      return 0
+    fi
+    log_info "Using China npm mirror: npmmirror (taobao) [fallback]"
+    echo "$NPM_MIRROR_TAOBAO"
+    return 0
+  fi
+  
+  log_info "Using official npm registry"
+  echo "$NPM_MIRROR_DEFAULT"
+}
+
+# Initialize npm for region
+initialize_npm_for_region() {
+  ORIGINAL_NPM_REGISTRY="$(get_npm_registry)"
+  local best_mirror current_registry
+  best_mirror="$(get_best_npm_mirror)"
+  current_registry="$(get_npm_registry)"
+  
+  # Compare without trailing slashes
+  local best_clean current_clean
+  best_clean="$(echo "$best_mirror" | sed 's:/*$::')"
+  current_clean="$(echo "$current_registry" | sed 's:/*$::')"
+  
+  if [ "$current_clean" != "$best_clean" ]; then
+    log_info "Switching npm registry for better speed..."
+    set_npm_registry "$best_mirror"
+  else
+    log_info "npm registry already optimal: $current_registry"
+  fi
+}
+
+# Restore original npm registry
+restore_npm_registry() {
+  if [ -n "$ORIGINAL_NPM_REGISTRY" ]; then
+    local current_registry
+    current_registry="$(get_npm_registry)"
+    local orig_clean current_clean
+    orig_clean="$(echo "$ORIGINAL_NPM_REGISTRY" | sed 's:/*$::')"
+    current_clean="$(echo "$current_registry" | sed 's:/*$::')"
+    
+    if [ "$current_clean" != "$orig_clean" ]; then
+      log_info "Restoring original npm registry: $ORIGINAL_NPM_REGISTRY"
+      set_npm_registry "$ORIGINAL_NPM_REGISTRY"
+    fi
+  fi
+}
+
 # Extract x.y.z from arbitrary text
 extract_semver() {
   echo "$*" | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1
@@ -340,8 +579,15 @@ ask_selection() {
 }
 
 show_banner
+
+# Initialize network detection and optimize npm registry
+initialize_npm_for_region
+
 sel="$(ask_selection)"
-[ "$sel" = "Q" ] && exit 0
+if [ "$sel" = "Q" ]; then
+  restore_npm_registry
+  exit 0
+fi
 
 if [ "$sel" = "1" ] || [ "$sel" = "A" ]; then
   check_tool "Factory CLI (Droid)" get_latest_factory get_local_factory update_factory
@@ -358,3 +604,6 @@ fi
 if [ "$sel" = "5" ] || [ "$sel" = "A" ]; then
   check_tool "OpenCode" get_latest_opencode get_local_opencode update_opencode
 fi
+
+# Restore original npm registry
+restore_npm_registry
