@@ -37,7 +37,19 @@ function Test-IsTrustedBase([string]$Base) {
 
 function Require-TrustedBase([string]$Base) {
   if (Test-IsTrustedBase $Base) { return }
-  if (Get-AllowUntrustedMirrorFlag) { return }
+  if (Get-AllowUntrustedMirrorFlag) {
+    Write-Host ""
+    Write-Warn "┌─────────────────────────────────────────────────────────────┐"
+    Write-Warn "│ SECURITY WARNING: Untrusted Mirror Enabled                  │"
+    Write-Warn "└─────────────────────────────────────────────────────────────┘"
+    Write-Warn "Mirror URL: $Base"
+    Write-Warn "You have enabled CHECK_AI_CLI_ALLOW_UNTRUSTED_MIRROR=1"
+    Write-Warn "Files will be downloaded from an untrusted source."
+    Write-Warn "This could expose you to supply chain attacks."
+    Write-Host ""
+    Start-Sleep -Seconds 3
+    return
+  }
   throw "Untrusted mirror base. Set CHECK_AI_CLI_ALLOW_UNTRUSTED_MIRROR=1 to allow: $Base"
 }
 
@@ -276,10 +288,35 @@ function Set-EnvValue([string]$Name, [string]$Value, [string]$Scope) {
   }
 }
 
+function Test-ValidPathEntry([string]$Dir) {
+  # Reject paths containing semicolons (PATH injection attempt)
+  if ($Dir.Contains(';')) {
+    Write-Warn "Invalid path entry (contains semicolon): $Dir"
+    return $false
+  }
+  # Reject paths with suspicious characters
+  if ($Dir -match '[<>"|?*]') {
+    Write-Warn "Invalid path entry (contains invalid characters): $Dir"
+    return $false
+  }
+  # Reject empty or whitespace-only paths
+  if ([string]::IsNullOrWhiteSpace($Dir)) {
+    Write-Warn "Invalid path entry (empty or whitespace)"
+    return $false
+  }
+  return $true
+}
+
 function Add-ToPath([string]$Dir, [string]$Scope) {
+  if (-not (Test-ValidPathEntry $Dir)) {
+    throw "Refusing to add invalid path entry to PATH: $Dir"
+  }
   $current = Get-EnvValue 'Path' $Scope
   if (Path-ContainsDir $current $Dir) { return }
   $normalized = Normalize-Dir $Dir
+  if (-not (Test-ValidPathEntry $normalized)) {
+    throw "Refusing to add invalid normalized path entry to PATH: $normalized"
+  }
   $newPath = "$current;$normalized"
   Set-EnvValue 'Path' $newPath $Scope
   $env:Path = $newPath

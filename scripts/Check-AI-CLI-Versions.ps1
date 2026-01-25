@@ -203,12 +203,37 @@ function Confirm-Yes([string]$Prompt) {
   return $ans.Trim().ToUpperInvariant().StartsWith('Y')
 }
 
+# Security warning for remote script execution
+function Confirm-RemoteScriptExecution([string]$Url, [string]$ToolName) {
+  if ($script:AutoMode) {
+    Write-Warn "[SECURITY] Auto mode: executing remote script from $Url"
+    return $true
+  }
+  Write-Host ""
+  Write-Warn "┌─────────────────────────────────────────────────────────────┐"
+  Write-Warn "│ SECURITY WARNING: Remote Script Execution                   │"
+  Write-Warn "└─────────────────────────────────────────────────────────────┘"
+  Write-Host "Tool: $ToolName" -ForegroundColor Yellow
+  Write-Host "URL:  $Url" -ForegroundColor Yellow
+  Write-Host ""
+  Write-Host "This will download and execute a script from the internet." -ForegroundColor Red
+  Write-Host "Only proceed if you trust the source." -ForegroundColor Red
+  Write-Host ""
+  $ans = Read-Host "Type 'YES' to confirm execution"
+  return $ans -eq 'YES'
+}
+
 # Install/update Factory CLI
 function Update-Factory() {
   Write-Info "Updating Factory CLI (Droid)..."
   Write-Info "Trying: official bootstrap"
+  $url = 'https://app.factory.ai/cli/windows'
+  if (-not (Confirm-RemoteScriptExecution $url 'Factory CLI')) {
+    Write-Warn "Installation cancelled by user."
+    return
+  }
   try {
-    $script = Get-Text 'https://app.factory.ai/cli/windows'
+    $script = Get-Text $url
     if (-not $script) { throw "Failed to download installer script." }
     $mode = 'Continue'
     if (Get-QuietProgressMode) { $mode = 'SilentlyContinue' }
@@ -387,11 +412,30 @@ function Try-FixOpenCodeNpmShim([string]$ExePath) {
   if (-not (Test-Path -LiteralPath $cmd.Source)) { return $false }
   $text = [IO.File]::ReadAllText($cmd.Source)
   if (-not $text.Contains('/bin/sh')) { return $false }
+  
+  # Create backup before modifying
+  $backupPath = "$($cmd.Source).backup"
+  try {
+    Copy-Item -LiteralPath $cmd.Source -Destination $backupPath -Force
+    Write-Info "Created backup: $backupPath"
+  } catch {
+    Write-Warn "Failed to create backup, aborting shim fix: $($_.Exception.Message)"
+    return $false
+  }
+  
   $repl = "& `"$ExePath`" `$args"
   $newText = [regex]::Replace($text, '&\s+\"/bin/sh\$exe\"[^\r\n]*', $repl)
   $enc = New-Object System.Text.UTF8Encoding($false)
-  [IO.File]::WriteAllText($cmd.Source, $newText, $enc)
-  return $true
+  try {
+    [IO.File]::WriteAllText($cmd.Source, $newText, $enc)
+    Write-Info "Fixed npm shim: $($cmd.Source)"
+    return $true
+  } catch {
+    # Restore from backup on failure
+    Write-Warn "Failed to write shim, restoring backup: $($_.Exception.Message)"
+    try { Copy-Item -LiteralPath $backupPath -Destination $cmd.Source -Force } catch { }
+    return $false
+  }
 }
 
 function Test-OpenCodeRunnable() {

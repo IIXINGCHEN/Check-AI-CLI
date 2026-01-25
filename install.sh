@@ -35,10 +35,23 @@ resolve_base() {
   local base
   if [ -n "$RAW_BASE" ]; then
     base="${RAW_BASE%/}"
-    if ! is_trusted_base "$base" && [ "$ALLOW_UNTRUSTED" != "1" ]; then
-      log_err "Untrusted mirror base: $base"
-      log_err "Set CHECK_AI_CLI_ALLOW_UNTRUSTED_MIRROR=1 to allow."
-      exit 1
+    if ! is_trusted_base "$base"; then
+      if [ "$ALLOW_UNTRUSTED" != "1" ]; then
+        log_err "Untrusted mirror base: $base"
+        log_err "Set CHECK_AI_CLI_ALLOW_UNTRUSTED_MIRROR=1 to allow."
+        exit 1
+      fi
+      # Show security warning for untrusted mirror
+      echo "" >&2
+      log_warn "┌─────────────────────────────────────────────────────────────┐"
+      log_warn "│ SECURITY WARNING: Untrusted Mirror Enabled                  │"
+      log_warn "└─────────────────────────────────────────────────────────────┘"
+      log_warn "Mirror URL: $base"
+      log_warn "You have enabled CHECK_AI_CLI_ALLOW_UNTRUSTED_MIRROR=1"
+      log_warn "Files will be downloaded from an untrusted source."
+      log_warn "This could expose you to supply chain attacks."
+      echo "" >&2
+      sleep 3
     fi
     echo "$base"
     return 0

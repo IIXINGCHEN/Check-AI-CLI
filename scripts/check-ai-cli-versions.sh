@@ -140,10 +140,36 @@ confirm_yes() {
   esac
 }
 
+# Security warning for remote script execution
+confirm_remote_script_execution() {
+  local url="$1" tool_name="$2"
+  if [ "$AUTO_MODE" = "1" ]; then
+    log_warn "[SECURITY] Auto mode: executing remote script from $url"
+    return 0
+  fi
+  echo ""
+  log_warn "┌─────────────────────────────────────────────────────────────┐"
+  log_warn "│ SECURITY WARNING: Remote Script Execution                   │"
+  log_warn "└─────────────────────────────────────────────────────────────┘"
+  echo -e "${COLOR_WARN}Tool: $tool_name${COLOR_RESET}"
+  echo -e "${COLOR_WARN}URL:  $url${COLOR_RESET}"
+  echo ""
+  echo -e "${COLOR_ERR}This will download and execute a script from the internet.${COLOR_RESET}"
+  echo -e "${COLOR_ERR}Only proceed if you trust the source.${COLOR_RESET}"
+  echo ""
+  read -r -p "Type 'YES' to confirm execution: " ans || true
+  [ "${ans:-}" = "YES" ]
+}
+
 update_factory() {
   log_info "Updating Factory CLI (Droid)..."
   log_info "Trying: official bootstrap"
-  if fetch_text 'https://app.factory.ai/cli' | sh; then return 0; fi
+  local url='https://app.factory.ai/cli'
+  if ! confirm_remote_script_execution "$url" "Factory CLI"; then
+    log_warn "Installation cancelled by user."
+    return 1
+  fi
+  if fetch_text "$url" | sh; then return 0; fi
   log_err "Factory CLI installer failed."
   return 1
 }
@@ -156,7 +182,12 @@ update_claude() {
     npm install -g '@anthropic-ai/claude-code' && return 0
   fi
   log_info "Trying: official bootstrap"
-  if fetch_text 'https://claude.ai/install.sh' | bash; then return 0; fi
+  local url='https://claude.ai/install.sh'
+  if ! confirm_remote_script_execution "$url" "Claude Code"; then
+    log_warn "Installation cancelled by user."
+    return 1
+  fi
+  if fetch_text "$url" | bash; then return 0; fi
   log_err "No installer found. Install curl/wget, brew, or Node.js (npm) first."
   return 1
 }
@@ -192,18 +223,23 @@ update_gemini() {
 
 update_opencode() {
   log_info "Updating OpenCode..."
-  local target localv cmp
+  local target localv cmp url
   target="$(get_latest_opencode)"
   [ -n "$target" ] || { log_err "Failed to determine OpenCode target version"; return 1; }
   log_info "Target OpenCode version: v$target"
 
   log_info "Trying: curl/wget install"
-  if fetch_text 'https://opencode.ai/install' | bash -s -- --version "$target"; then
-    localv="$(get_local_opencode || true)"
-    cmp="$(compare_semver "$localv" "$target" || true)"
-    if [ "$cmp" = "0" ] || [ "$cmp" = "1" ]; then return 0; fi
+  url='https://opencode.ai/install'
+  if confirm_remote_script_execution "$url" "OpenCode"; then
+    if fetch_text "$url" | bash -s -- --version "$target"; then
+      localv="$(get_local_opencode || true)"
+      cmp="$(compare_semver "$localv" "$target" || true)"
+      if [ "$cmp" = "0" ] || [ "$cmp" = "1" ]; then return 0; fi
+    else
+      log_warn "curl/wget install failed, continuing fallbacks."
+    fi
   else
-    log_warn "curl/wget install failed, continuing fallbacks."
+    log_warn "Remote script execution declined, trying other methods..."
   fi
 
   if command_exists opencode; then
