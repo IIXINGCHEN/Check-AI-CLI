@@ -57,7 +57,7 @@ function Get-RemoteFileHash([string]$Url) {
       'Pragma' = 'no-cache'
       'User-Agent' = 'check-ai-cli-cache-purger'
     }
-    $content = (Invoke-WebRequest -Uri $Url -Headers $headers -UseBasicParsing).Content
+    $content = (Invoke-WebRequest -Uri $Url -Headers $headers -UseBasicParsing -TimeoutSec 15).Content
     if ($content -is [byte[]]) {
       $stream = [System.IO.MemoryStream]::new($content)
     } else {
@@ -74,7 +74,7 @@ function Get-RemoteFileHash([string]$Url) {
 
 function Invoke-PurgeGitHubRaw([string]$RelativePath) {
   $url = "$BaseUrl/$RelativePath"
-  Write-Info "Purging: $url"
+  Write-Info "Purging: $RelativePath"
   
   # Method 1: Request with cache-busting headers
   try {
@@ -84,24 +84,23 @@ function Invoke-PurgeGitHubRaw([string]$RelativePath) {
       'Expires' = '0'
       'User-Agent' = 'check-ai-cli-cache-purger/' + [guid]::NewGuid().ToString('N')
     }
-    $null = Invoke-WebRequest -Uri "$url`?t=$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())" -Headers $headers -UseBasicParsing -ErrorAction SilentlyContinue
+    $null = Invoke-WebRequest -Uri "$url`?t=$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())" -Headers $headers -UseBasicParsing -TimeoutSec 10 -ErrorAction SilentlyContinue
   } catch { }
   
   # Method 2: Request with random query string (cache bust)
   try {
     $rand = [guid]::NewGuid().ToString('N')
-    $null = Invoke-WebRequest -Uri "$url`?purge=$rand" -UseBasicParsing -ErrorAction SilentlyContinue
+    $null = Invoke-WebRequest -Uri "$url`?purge=$rand" -UseBasicParsing -TimeoutSec 10 -ErrorAction SilentlyContinue
   } catch { }
 }
 
 function Invoke-PurgeJsDelivr([string]$RelativePath) {
   $purgeUrl = "$PurgeJsDelivrUrl/$RelativePath"
-  Write-Info "Purging jsDelivr: $RelativePath"
   try {
-    $null = Invoke-WebRequest -Uri $purgeUrl -UseBasicParsing -ErrorAction SilentlyContinue
-    Write-Success "jsDelivr cache purged: $RelativePath"
+    $null = Invoke-WebRequest -Uri $purgeUrl -UseBasicParsing -TimeoutSec 10 -ErrorAction SilentlyContinue
+    Write-Success "  jsDelivr purged: $RelativePath"
   } catch {
-    Write-Warn "jsDelivr purge failed: $RelativePath"
+    Write-Warn "  jsDelivr purge failed: $RelativePath"
   }
 }
 
