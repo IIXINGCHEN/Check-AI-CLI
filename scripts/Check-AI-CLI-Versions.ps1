@@ -996,26 +996,31 @@ function Ask-Selection() {
   Write-Host "  [4] Gemini CLI"
   Write-Host "  [5] OpenCode"
   Write-Host "  [A] Check all (default)"
+  Write-Host "  [U] Check all and Update all (auto-yes)"
   Write-Host "  [Q] Quit"
-  $s = Read-Host 'Enter choice (1-5/A/Q)'
+  $s = Read-Host 'Enter choice (1-5/A/U/Q)'
   if ([string]::IsNullOrWhiteSpace($s)) { return 'A' }
   return $s.Trim().ToUpperInvariant()
 }
 
 function Invoke-Selection([string]$Selection) {
-  if ($Selection -eq '1' -or $Selection -eq 'A') {
+  # U = Update all (auto-yes mode for all tools)
+  $checkAll = ($Selection -eq 'A' -or $Selection -eq 'U')
+  if ($Selection -eq 'U') { $script:AutoMode = $true }
+  
+  if ($Selection -eq '1' -or $checkAll) {
     Check-OneTool "Factory CLI (Droid)" { Get-LatestFactoryVersion } { Get-LocalCommandVersion @('factory','droid') } { Update-Factory }
   }
-  if ($Selection -eq '2' -or $Selection -eq 'A') {
+  if ($Selection -eq '2' -or $checkAll) {
     Check-OneTool "Claude Code" { Get-LatestClaudeVersion } { Get-LocalCommandVersion @('claude','claude-code') } { Update-Claude }
   }
-  if ($Selection -eq '3' -or $Selection -eq 'A') {
+  if ($Selection -eq '3' -or $checkAll) {
     Check-OneTool "OpenAI Codex" { Get-LatestCodexVersion } { Get-LocalCommandVersion @('codex') } { Update-Codex }
   }
-  if ($Selection -eq '4' -or $Selection -eq 'A') {
+  if ($Selection -eq '4' -or $checkAll) {
     Check-OneTool "Gemini CLI" { Get-LatestGeminiVersion } { Get-LocalCommandVersion @('gemini') } { Update-Gemini }
   }
-  if ($Selection -eq '5' -or $Selection -eq 'A') {
+  if ($Selection -eq '5' -or $checkAll) {
     Check-OneTool "OpenCode" { Get-LatestOpenCodeVersion } { Get-LocalOpenCodeVersion } { Update-OpenCode }
   }
 }
