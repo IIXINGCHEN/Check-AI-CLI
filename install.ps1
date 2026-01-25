@@ -39,9 +39,9 @@ function Require-TrustedBase([string]$Base) {
   if (Test-IsTrustedBase $Base) { return }
   if (Get-AllowUntrustedMirrorFlag) {
     Write-Host ""
-    Write-Warn "┌─────────────────────────────────────────────────────────────┐"
-    Write-Warn "│ SECURITY WARNING: Untrusted Mirror Enabled                  │"
-    Write-Warn "└─────────────────────────────────────────────────────────────┘"
+    Write-Warn "+-------------------------------------------------------------+"
+    Write-Warn "| SECURITY WARNING: Untrusted Mirror Enabled                  |"
+    Write-Warn "+-------------------------------------------------------------+"
     Write-Warn "Mirror URL: $Base"
     Write-Warn "You have enabled CHECK_AI_CLI_ALLOW_UNTRUSTED_MIRROR=1"
     Write-Warn "Files will be downloaded from an untrusted source."

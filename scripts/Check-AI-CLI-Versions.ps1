@@ -534,17 +534,17 @@ function Confirm-RemoteScriptExecution([string]$Url, [string]$ToolName) {
     Write-Warn "[SECURITY] Auto mode: executing remote script from $Url"
     return $true
   }
-  Write-Host ""
-  Write-Warn "┌─────────────────────────────────────────────────────────────┐"
-  Write-Warn "│ SECURITY WARNING: Remote Script Execution                   │"
-  Write-Warn "└─────────────────────────────────────────────────────────────┘"
-  Write-Host "Tool: $ToolName" -ForegroundColor Yellow
-  Write-Host "URL:  $Url" -ForegroundColor Yellow
-  Write-Host ""
-  Write-Host "This will download and execute a script from the internet." -ForegroundColor Red
-  Write-Host "Only proceed if you trust the source." -ForegroundColor Red
-  Write-Host ""
-  $ans = Read-Host "Type 'YES' to confirm execution"
+  Write-Host ''
+  Write-Warn '============================================================='
+  Write-Warn '  SECURITY WARNING: Remote Script Execution'
+  Write-Warn '============================================================='
+  Write-Host ('Tool: ' + $ToolName) -ForegroundColor Yellow
+  Write-Host ('URL:  ' + $Url) -ForegroundColor Yellow
+  Write-Host ''
+  Write-Host 'This will download and execute a script from the internet.' -ForegroundColor Red
+  Write-Host 'Only proceed if you trust the source.' -ForegroundColor Red
+  Write-Host ''
+  $ans = Read-Host 'Type YES to confirm execution'
   return $ans -eq 'YES'
 }
 
@@ -748,7 +748,7 @@ function Try-FixOpenCodeNpmShim([string]$ExePath) {
     return $false
   }
   
-  $repl = "& `"$ExePath`" `$args"
+  $repl = '& "' + $ExePath + '" $args'
   $newText = [regex]::Replace($text, '&\s+\"/bin/sh\$exe\"[^\r\n]*', $repl)
   $enc = New-Object System.Text.UTF8Encoding($false)
   try {
@@ -997,7 +997,7 @@ function Ask-Selection() {
   Write-Host "  [5] OpenCode"
   Write-Host "  [A] Check all (default)"
   Write-Host "  [Q] Quit"
-  $s = Read-Host "Enter choice (1/2/3/4/5/A/Q)"
+  $s = Read-Host 'Enter choice (1-5/A/Q)'
   if ([string]::IsNullOrWhiteSpace($s)) { return 'A' }
   return $s.Trim().ToUpperInvariant()
 }
