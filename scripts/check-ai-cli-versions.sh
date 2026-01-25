@@ -143,7 +143,7 @@ confirm_yes() {
 update_factory() {
   log_info "Updating Factory CLI (Droid)..."
   log_info "Trying: official bootstrap"
-  if fetch_text 'https://app.factory.ai/cli/windows' | sh; then return 0; fi
+  if fetch_text 'https://app.factory.ai/cli' | sh; then return 0; fi
   log_err "Factory CLI installer failed."
   return 1
 }

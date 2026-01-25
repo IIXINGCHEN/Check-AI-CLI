@@ -27,7 +27,7 @@ function Get-RepoRoot() {
 
 function Get-TargetPaths() {
   $paths = @()
-  $paths += (git ls-files scripts bin uninstall.ps1 uninstall.sh 2>$null)
+  $paths += (git ls-files scripts bin install.ps1 install.sh uninstall.ps1 uninstall.sh 2>$null)
   $paths = $paths | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
   return $paths | Sort-Object
 }
