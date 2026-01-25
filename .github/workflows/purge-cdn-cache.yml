@@ -1,0 +1,97 @@
+name: Purge CDN Cache
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "**.ps1"
+      - "**.sh"
+      - "**.cmd"
+      - "checksums.sha256"
+  workflow_dispatch:  # Allow manual trigger
+
+jobs:
+  purge-cache:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Purge GitHub raw CDN cache
+        run: |
+          echo "Purging GitHub raw.githubusercontent.com CDN cache..."
+          
+          REPO_OWNER="IIXINGCHEN"
+          REPO_NAME="Check-AI-CLI"
+          BRANCH="main"
+          BASE_URL="https://raw.githubusercontent.com/$REPO_OWNER/$REPO_NAME/$BRANCH"
+          PURGE_JSDELIVR_URL="https://purge.jsdelivr.net/gh/$REPO_OWNER/$REPO_NAME@$BRANCH"
+          
+          FILES=(
+            "checksums.sha256"
+            "install.ps1"
+            "install.sh"
+            "uninstall.ps1"
+            "uninstall.sh"
+            "bin/check-ai-cli"
+            "bin/check-ai-cli.cmd"
+            "bin/check-ai-cli.ps1"
+            "scripts/Check-AI-CLI-Versions.ps1"
+            "scripts/check-ai-cli-versions.sh"
+          )
+          
+          # Purge raw.githubusercontent.com cache
+          for file in "${FILES[@]}"; do
+            echo "Purging: $file"
+            TIMESTAMP=$(date +%s%N)
+            RAND=$(openssl rand -hex 8)
+            
+            # Request with cache-busting headers
+            curl -fsSL -H "Cache-Control: no-cache, no-store, must-revalidate" \
+                 -H "Pragma: no-cache" \
+                 -H "User-Agent: github-actions-cache-purger/$TIMESTAMP" \
+                 "$BASE_URL/$file?t=$TIMESTAMP" > /dev/null 2>&1 || true
+            
+            # Request with random query string
+            curl -fsSL "$BASE_URL/$file?purge=$RAND" > /dev/null 2>&1 || true
+          done
+          
+          echo ""
+          echo "Purging jsDelivr CDN cache..."
+          
+          # Purge jsDelivr cache
+          for file in "${FILES[@]}"; do
+            echo "Purging jsDelivr: $file"
+            curl -fsSL "$PURGE_JSDELIVR_URL/$file" > /dev/null 2>&1 && echo "  OK: $file" || echo "  Failed: $file"
+          done
+          
+          echo ""
+          echo "CDN cache purge completed!"
+
+      - name: Wait for cache propagation
+        run: sleep 10
+
+      - name: Verify cache status
+        run: |
+          echo "Verifying cache status..."
+          
+          REPO_OWNER="IIXINGCHEN"
+          REPO_NAME="Check-AI-CLI"
+          BRANCH="main"
+          BASE_URL="https://raw.githubusercontent.com/$REPO_OWNER/$REPO_NAME/$BRANCH"
+          
+          # Get latest commit SHA
+          COMMIT_SHA="${{ github.sha }}"
+          echo "Expected commit: $COMMIT_SHA"
+          
+          # Verify checksums.sha256 is accessible
+          echo ""
+          echo "Fetching checksums.sha256..."
+          TIMESTAMP=$(date +%s)
+          if curl -fsSL -H "Cache-Control: no-cache" "$BASE_URL/checksums.sha256?verify=$TIMESTAMP" > /tmp/checksums.sha256 2>/dev/null; then
+            echo "checksums.sha256 is accessible"
+            echo "Content preview:"
+            head -5 /tmp/checksums.sha256
+          else
+            echo "Warning: Could not fetch checksums.sha256"
+          fi
+          
+          echo ""
+          echo "Cache verification completed!"
