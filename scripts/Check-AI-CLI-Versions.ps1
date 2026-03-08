@@ -50,6 +50,213 @@ function Require-WebRequest() {
   throw "Invoke-WebRequest not found. Use Windows PowerShell 5.1+ or PowerShell 7+."
 }
 
+function Get-RetryCount() {
+  $v = $env:CHECK_AI_CLI_RETRY
+  if ([string]::IsNullOrWhiteSpace($v)) { return 3 }
+  $n = 0
+  if (-not [int]::TryParse($v.Trim(), [ref]$n)) { return 3 }
+  if ($n -lt 1) { return 1 }
+  if ($n -gt 10) { return 10 }
+  return $n
+}
+
+function Test-NonEmptyFile([string]$Path) {
+  if (-not (Test-Path -LiteralPath $Path)) { return $false }
+  return (Get-Item -LiteralPath $Path).Length -gt 0
+}
+
+function Invoke-WebRequestWithHeaders([string]$Uri, [string]$OutFile) {
+  $headers = @{ 'User-Agent' = 'ai-cli-version-checker' }
+  if ($OutFile) {
+    $mode = 'Continue'
+    if (Get-QuietProgressMode) { $mode = 'SilentlyContinue' }
+    Invoke-WithTempProgressPreference $mode {
+      Invoke-WebRequest -Uri $Uri -Headers $headers -UseBasicParsing -OutFile $OutFile -ErrorAction Stop | Out-Null
+    }
+    return
+  }
+  return Invoke-WebRequest -Uri $Uri -Headers $headers -UseBasicParsing -ErrorAction Stop
+}
+
+function Download-FileWithRetry([string]$Url, [string]$OutFile, [string]$Label) {
+  $tries = Get-RetryCount
+  $tmp = "$OutFile.download"
+  for ($i = 1; $i -le $tries; $i++) {
+    try {
+      if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
+      Invoke-WebRequestWithHeaders $Url $tmp
+      if (-not (Test-NonEmptyFile $tmp)) { throw "Downloaded file is empty." }
+      Move-Item -LiteralPath $tmp -Destination $OutFile -Force
+      return
+    } catch {
+      if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
+      if ($i -eq $tries) { throw "Failed to download ${Label}: $($_.Exception.Message)" }
+      Write-Warn "${Label} download attempt $i/$tries failed: $($_.Exception.Message)"
+      Start-Sleep -Seconds 2
+    }
+  }
+}
+
+function Get-FactoryBootstrapInfo() {
+  $text = Get-Text 'https://app.factory.ai/cli/windows'
+  if (-not $text) { throw 'Failed to download Factory installer script.' }
+  $versionMatch = [regex]::Match($text, '\$version\s*=\s*"([^"]+)"')
+  if (-not $versionMatch.Success) { throw 'Failed to parse Factory version from installer script.' }
+  $baseUrlMatch = [regex]::Match($text, '\$baseUrl\s*=\s*"([^"]+)"')
+  if (-not $baseUrlMatch.Success) { throw 'Failed to parse Factory base URL from installer script.' }
+  $baseUrl = $baseUrlMatch.Groups[1].Value.Trim()
+  if ([string]::IsNullOrWhiteSpace($baseUrl)) { throw 'Factory base URL is empty in installer script.' }
+  return @{ Version = $versionMatch.Groups[1].Value; BaseUrl = $baseUrl }
+}
+
+function Get-EffectiveWindowsArchitecture() {
+  $arch = $env:PROCESSOR_ARCHITECTURE
+  $wow64Arch = $env:PROCESSOR_ARCHITEW6432
+
+  if (-not [string]::IsNullOrWhiteSpace($wow64Arch)) {
+    return $wow64Arch.ToUpperInvariant()
+  }
+
+  if (-not [string]::IsNullOrWhiteSpace($arch)) {
+    $normalized = $arch.ToUpperInvariant()
+    if ($normalized -eq 'X86') {
+      if ([Environment]::Is64BitOperatingSystem) { return 'AMD64' }
+      return 'X86'
+    }
+    return $normalized
+  }
+
+  if ([Environment]::Is64BitOperatingSystem) { return 'AMD64' }
+  return 'X86'
+}
+
+function Test-FactoryAvx2Support() {
+  try {
+    $type = Add-Type -MemberDefinition '[DllImport("kernel32.dll")] public static extern bool IsProcessorFeaturePresent(int ProcessorFeature);' -Name 'Kernel32' -Namespace 'Win32' -PassThru -ErrorAction Stop
+    return $type::IsProcessorFeaturePresent(40)
+  } catch {
+    try { return ([Win32.Kernel32]::IsProcessorFeaturePresent(40)) } catch { return $false }
+  }
+}
+
+function Get-FactoryArchitectures() {
+  $arch = Get-EffectiveWindowsArchitecture
+  if ($arch -eq 'ARM64') { return @{ Factory = 'arm64'; Ripgrep = 'arm64' } }
+  if ($arch -ne 'AMD64' -and $arch -ne 'X64') { throw "Unsupported architecture: $arch" }
+  $factoryArch = 'x64'
+  if (-not (Test-FactoryAvx2Support)) { $factoryArch = 'x64-baseline' }
+  return @{ Factory = $factoryArch; Ripgrep = 'x64' }
+}
+
+function Get-ExpectedSha256([string]$Url) {
+  $text = Get-Text $Url
+  if ([string]::IsNullOrWhiteSpace($text)) { throw "Failed to fetch checksum: $Url" }
+  return $text.Trim().Split()[0].ToLowerInvariant()
+}
+
+function Assert-FileSha256([string]$Path, [string]$ExpectedHash, [string]$Label) {
+  $actualHash = (Get-FileHash -Path $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+  if ($actualHash -ne $ExpectedHash.ToLowerInvariant()) { throw "$Label checksum verification failed" }
+}
+
+function Stop-FactoryProcesses() {
+  $droidProcesses = Get-Process -Name 'droid' -ErrorAction SilentlyContinue
+  if (-not $droidProcesses) { return }
+  Write-Info 'Stopping old droid process(es)'
+  Stop-Process -Name 'droid' -Force -ErrorAction SilentlyContinue
+  Start-Sleep -Seconds 1
+}
+
+function Install-FactoryFile([string]$SourcePath, [string]$DestinationPath) {
+  $parent = Split-Path -Parent $DestinationPath
+  if (-not (Test-Path -LiteralPath $parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
+  Copy-Item -Path $SourcePath -Destination $DestinationPath -Force
+}
+
+function Normalize-Dir([string]$Dir) {
+  $full = [IO.Path]::GetFullPath($Dir)
+  return $full.TrimEnd('\\')
+}
+
+function Path-ContainsDir([string]$PathValue, [string]$Dir) {
+  $needle = (Normalize-Dir $Dir).ToLowerInvariant()
+  foreach ($p in @($PathValue -split ';')) {
+    if ([string]::IsNullOrWhiteSpace($p)) { continue }
+    try {
+      if ((Normalize-Dir $p).ToLowerInvariant() -eq $needle) { return $true }
+    } catch { }
+  }
+  return $false
+}
+
+function Get-UserPathValue() {
+  return [Environment]::GetEnvironmentVariable('Path', 'User')
+}
+
+function Set-UserPathValue([string]$PathValue) {
+  [Environment]::SetEnvironmentVariable('Path', $PathValue, 'User')
+}
+
+function Ensure-UserPathContains([string]$Dir) {
+  $userPath = Get-UserPathValue
+  if ([string]::IsNullOrWhiteSpace($userPath)) { $userPath = '' }
+  if (Path-ContainsDir $userPath $Dir) { return }
+  $normalized = Normalize-Dir $Dir
+  $newPath = if ($userPath) { "$userPath;$normalized" } else { $normalized }
+  Set-UserPathValue $newPath
+  if (-not (Path-ContainsDir $env:PATH $normalized)) {
+    $env:PATH = if ([string]::IsNullOrWhiteSpace($env:PATH)) { $normalized } else { "$normalized;$env:PATH" }
+  }
+  Write-Info "Added $normalized to your PATH permanently"
+}
+
+function Install-FactoryFromBootstrap() {
+  $bootstrap = Get-FactoryBootstrapInfo
+  $arch = Get-FactoryArchitectures
+  $binaryName = 'droid.exe'
+  $rgBinaryName = 'rg.exe'
+  $version = $bootstrap.Version
+  $baseUrl = $bootstrap.BaseUrl.TrimEnd('/')
+  $factoryUrl = "$baseUrl/factory-cli/releases/$version/windows/$($arch.Factory)/$binaryName"
+  $factoryShaUrl = "$factoryUrl.sha256"
+  $rgUrl = "$baseUrl/ripgrep/windows/$($arch.Ripgrep)/$rgBinaryName"
+  $rgShaUrl = "$rgUrl.sha256"
+  Write-Info "Downloading Factory CLI v$version for Windows-$($arch.Factory)"
+
+  $tempDir = New-TemporaryFile | ForEach-Object { Remove-Item $_; New-Item -ItemType Directory -Path $_ }
+  $binaryPath = Join-Path $tempDir $binaryName
+  $rgBinaryPath = Join-Path $tempDir $rgBinaryName
+
+  try {
+    Download-FileWithRetry $factoryUrl $binaryPath 'Factory CLI binary'
+    Write-Info 'Fetching and verifying checksum'
+    Assert-FileSha256 $binaryPath (Get-ExpectedSha256 $factoryShaUrl) 'Factory CLI'
+    Write-Info 'Checksum verification passed'
+
+    Write-Info "Downloading ripgrep for Windows-$($arch.Ripgrep)"
+    Download-FileWithRetry $rgUrl $rgBinaryPath 'ripgrep binary'
+    Write-Info 'Fetching and verifying ripgrep checksum'
+    Assert-FileSha256 $rgBinaryPath (Get-ExpectedSha256 $rgShaUrl) 'ripgrep'
+    Write-Info 'Ripgrep checksum verification passed'
+
+    $installDir = Join-Path $env:USERPROFILE 'bin'
+    $factoryBinDir = Join-Path $env:USERPROFILE '.factory\bin'
+    $installPath = Join-Path $installDir $binaryName
+    $rgInstallPath = Join-Path $factoryBinDir $rgBinaryName
+
+    Stop-FactoryProcesses
+    Install-FactoryFile $binaryPath $installPath
+    Install-FactoryFile $rgBinaryPath $rgInstallPath
+
+    Write-Info "Factory CLI v$version installed successfully to $installPath"
+    Write-Info "Ripgrep installed successfully to $rgInstallPath"
+    Ensure-UserPathContains $installDir
+    Write-Info 'Run ''droid'' to get started!'
+  } finally {
+    if (Test-Path -LiteralPath $tempDir) { Remove-Item $tempDir -Recurse -Force -ErrorAction SilentlyContinue }
+  }
+}
+
 # ============================================================================
 # Network Detection & npm Registry Management
 # ============================================================================
@@ -377,27 +584,38 @@ function Restore-NpmRegistry() {
 
 # Fetch text content, return $null on failure
 function Get-Text([string]$Uri) {
-  try {
-    $headers = @{ 'User-Agent' = 'ai-cli-version-checker' }
-    $content = (Invoke-WebRequest -Uri $Uri -Headers $headers -UseBasicParsing).Content
-    if ($content -is [string]) { return $content }
-    if ($content -is [string[]]) { return ($content -join "`n") }
-    if ($content -is [byte[]]) { return [Text.Encoding]::UTF8.GetString($content) }
-    return ($content | Out-String)
-  } catch {
-    Write-Warn "Request failed: $Uri ($($_.Exception.Message))"
-    return $null
+  $tries = Get-RetryCount
+  for ($i = 1; $i -le $tries; $i++) {
+    try {
+      $content = (Invoke-WebRequestWithHeaders $Uri $null).Content
+      if ($content -is [string]) { return $content }
+      if ($content -is [string[]]) { return ($content -join "`n") }
+      if ($content -is [byte[]]) { return [Text.Encoding]::UTF8.GetString($content) }
+      return ($content | Out-String)
+    } catch {
+      if ($i -eq $tries) {
+        Write-Warn "Request failed: $Uri ($($_.Exception.Message))"
+        return $null
+      }
+      Start-Sleep -Seconds 2
+    }
   }
 }
 
 # Fetch JSON, return $null on failure
 function Get-Json([string]$Uri) {
-  try {
-    $headers = @{ 'User-Agent' = 'ai-cli-version-checker' }
-    return Invoke-RestMethod -Uri $Uri -Headers $headers
-  } catch {
-    Write-Warn "Request failed: $Uri ($($_.Exception.Message))"
-    return $null
+  $tries = Get-RetryCount
+  $headers = @{ 'User-Agent' = 'ai-cli-version-checker' }
+  for ($i = 1; $i -le $tries; $i++) {
+    try {
+      return Invoke-RestMethod -Uri $Uri -Headers $headers -ErrorAction Stop
+    } catch {
+      if ($i -eq $tries) {
+        Write-Warn "Request failed: $Uri ($($_.Exception.Message))"
+        return $null
+      }
+      Start-Sleep -Seconds 2
+    }
   }
 }
 
@@ -429,20 +647,48 @@ function Compare-Version([string]$Current, [string]$Latest) {
   return 0
 }
 
+function Get-CommandVersionInfo([string]$CommandName) {
+  $cmd = Get-Command $CommandName -ErrorAction SilentlyContinue
+  if (-not $cmd) { return @{ Name = $CommandName; Version = $null; Source = $null } }
+  try {
+    $out = & $CommandName '--version' 2>$null | Out-String
+    $v = Get-SemVer $out
+    if ($v) {
+      return @{ Name = $CommandName; Version = $v; Source = $cmd.Source }
+    }
+    Write-Warn "Failed to parse local version from: $CommandName"
+  } catch {
+    Write-Warn "Failed to run: $CommandName --version ($($_.Exception.Message))"
+  }
+  return @{ Name = $CommandName; Version = $null; Source = $cmd.Source }
+}
+
 # Get local command version, return $null if missing or failed
 function Get-LocalCommandVersion([string[]]$CommandNames) {
   foreach ($name in $CommandNames) {
-    $cmd = Get-Command $name -ErrorAction SilentlyContinue
-    if (-not $cmd) { continue }
-    try {
-      $out = & $name '--version' 2>$null | Out-String
-      $v = Get-SemVer $out
-      if ($v) { return $v }
-      Write-Warn "Failed to parse local version from: $name"
-    } catch {
-      Write-Warn "Failed to run: $name --version ($($_.Exception.Message))"
-    }
+    $info = Get-CommandVersionInfo $name
+    if ($info.Version) { return $info.Version }
   }
+  return $null
+}
+
+function Get-LocalFactoryVersion() {
+  $droid = Get-CommandVersionInfo 'droid'
+  $factory = Get-CommandVersionInfo 'factory'
+
+  if ($droid.Version) {
+    if ($factory.Version) {
+      $cmp = Compare-Version $factory.Version $droid.Version
+      if ($cmp -eq -1) {
+        $factorySource = if ($factory.Source) { $factory.Source } else { 'factory' }
+        $droidSource = if ($droid.Source) { $droid.Source } else { 'droid' }
+        Write-Warn "Factory alias mismatch detected: factory resolves to v$($factory.Version) at $factorySource, but droid resolves to v$($droid.Version) at $droidSource. Using droid for version checks."
+      }
+    }
+    return $droid.Version
+  }
+
+  if ($factory.Version) { return $factory.Version }
   return $null
 }
 
@@ -529,19 +775,19 @@ function Confirm-Yes([string]$Prompt) {
 }
 
 # Security warning for remote script execution
-function Confirm-RemoteScriptExecution([string]$Url, [string]$ToolName) {
+function Confirm-RemoteScriptExecution([string]$Url, [string]$ToolName, [string]$ActionDescription = 'download and execute a script from the internet', [string]$WarningTitle = 'Remote Script Execution') {
   if ($script:AutoMode) {
-    Write-Warn "[SECURITY] Auto mode: executing remote script from $Url"
+    Write-Warn "[SECURITY] Auto mode: $ActionDescription from $Url"
     return $true
   }
   Write-Host ''
   Write-Warn '============================================================='
-  Write-Warn '  SECURITY WARNING: Remote Script Execution'
+  Write-Warn "  SECURITY WARNING: $WarningTitle"
   Write-Warn '============================================================='
   Write-Host ('Tool: ' + $ToolName) -ForegroundColor Yellow
   Write-Host ('URL:  ' + $Url) -ForegroundColor Yellow
   Write-Host ''
-  Write-Host 'This will download and execute a script from the internet.' -ForegroundColor Red
+  Write-Host ('This will ' + $ActionDescription + '.') -ForegroundColor Red
   Write-Host 'Only proceed if you trust the source.' -ForegroundColor Red
   Write-Host ''
   $ans = Read-Host 'Type YES to confirm execution'
@@ -553,18 +799,15 @@ function Update-Factory() {
   Write-Info "Updating Factory CLI (Droid)..."
   Write-Info "Trying: official bootstrap"
   $url = 'https://app.factory.ai/cli/windows'
-  if (-not (Confirm-RemoteScriptExecution $url 'Factory CLI')) {
+  $actionDescription = 'fetch metadata from the official bootstrap, then download and install verified binaries locally'
+  if (-not (Confirm-RemoteScriptExecution $url 'Factory CLI' $actionDescription 'Verified Binary Download')) {
     Write-Warn "Installation cancelled by user."
     return
   }
   try {
-    $script = Get-Text $url
-    if (-not $script) { throw "Failed to download installer script." }
-    $mode = 'Continue'
-    if (Get-QuietProgressMode) { $mode = 'SilentlyContinue' }
-    Invoke-WithTempProgressPreference $mode { Invoke-Expression $script }
+    Install-FactoryFromBootstrap
   } catch {
-    throw "Factory CLI installer failed."
+    throw "Factory CLI installer failed: $($_.Exception.Message)"
   }
 }
 
@@ -1009,7 +1252,7 @@ function Invoke-Selection([string]$Selection) {
   if ($Selection -eq 'U') { $script:AutoMode = $true }
   
   if ($Selection -eq '1' -or $checkAll) {
-    Check-OneTool "Factory CLI (Droid)" { Get-LatestFactoryVersion } { Get-LocalCommandVersion @('factory','droid') } { Update-Factory }
+    Check-OneTool "Factory CLI (Droid)" { Get-LatestFactoryVersion } { Get-LocalFactoryVersion } { Update-Factory }
   }
   if ($Selection -eq '2' -or $checkAll) {
     Check-OneTool "Claude Code" { Get-LatestClaudeVersion } { Get-LocalCommandVersion @('claude','claude-code') } { Update-Claude }
@@ -1025,22 +1268,24 @@ function Invoke-Selection([string]$Selection) {
   }
 }
 
-Require-WebRequest
-Show-Banner
+if ($MyInvocation.InvocationName -ne '.') {
+  Require-WebRequest
+  Show-Banner
 
-# Initialize network detection and optimize npm registry
-Initialize-NpmForRegion
+  # Initialize network detection and optimize npm registry
+  Initialize-NpmForRegion
 
-if ($FactoryOnly) {
-  Invoke-Selection '1'
+  if ($FactoryOnly) {
+    Invoke-Selection '1'
+    Restore-NpmRegistry
+    exit 0
+  }
+
+  $sel = Ask-Selection
+  if ($sel -eq 'Q') {
+    Restore-NpmRegistry
+    exit 0
+  }
+  Invoke-Selection $sel
   Restore-NpmRegistry
-  exit 0
 }
-
-$sel = Ask-Selection
-if ($sel -eq 'Q') { 
-  Restore-NpmRegistry
-  exit 0 
-}
-Invoke-Selection $sel
-Restore-NpmRegistry

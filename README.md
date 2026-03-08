@@ -29,6 +29,16 @@
 - `bin/check-ai-cli.cmd` - Windows PATH 命令入口
 - `bin/check-ai-cli.ps1` - PowerShell PATH 命令入口
 
+## 目录职责说明
+
+- `scripts/` - 项目主逻辑, 优先修改这里的实现
+- `bin/` - 安装到 PATH 后使用的真实命令入口
+- 根目录同名脚本 - 兼容旧路径/旧调用方式的 legacy wrapper, 仅做转发
+- `tools/` - 发布和维护辅助脚本
+- `tests/` - 回归测试与自检脚本
+- `.github/` - CI 与自动校验工作流
+- 其他本地 AI/IDE 工具目录 - 不属于项目运行必需内容, 已建议忽略, 避免把本地工具状态混入仓库
+
 
 ## 兼容入口
 
@@ -285,7 +295,9 @@ Claude Code
 
 #### Windows
 ```powershell
-irm https://app.factory.ai/cli/windows | iex
+# Factory 的 Windows bootstrap 现在会先提供版本/下载元数据,
+# 再由本项目脚本在本地下载并校验官方二进制, 不再直接执行远端 bootstrap 内容
+.\Check-FactoryCLI-Version.ps1
 ```
 
 #### macOS / Linux
