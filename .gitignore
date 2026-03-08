@@ -18,5 +18,14 @@ test-output.txt
 /bootstrap.ps1
 
 # 本地工具配置
+/.agent/
 /.agents/
 /.claude/
+/.codex/
+/.cursor/
+/.factory/
+/.gemini/
+/.kiro/
+/.opencode/
+/.trae/
+/.windsurf/
