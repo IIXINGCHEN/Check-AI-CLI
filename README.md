@@ -566,6 +566,39 @@ sudo pacman -S nodejs npm
 - `OpenCode`: 仓库源不可用时回退到官方 npm 包; 若官方来源都失败则显示 `unknown`.
 - 五个工具在检查前和更新后都会自动尝试修复 PATH/环境变量冲突, 以减少“已安装但命令未识别”问题。
 
+## 🚢 自动发布 GitHub Releases
+
+推送符合 `vX.Y.Z` 格式的 tag 后, GitHub Actions 会自动创建 GitHub Release。
+
+### 发布方式
+
+```bash
+git tag v1.3.0
+git push origin v1.3.0
+```
+
+### 自动校验
+
+- tag 必须匹配 `vX.Y.Z`
+- tag 对应提交必须已经包含在 `main` 上
+- `checksums.sha256` 必须与仓库当前内容一致
+- 同名 Release 已存在时会直接失败, 不自动覆盖
+
+### 自动上传的 Release 附件
+
+- `checksums.sha256`
+- `install.ps1`
+- `install.sh`
+- `uninstall.ps1`
+- `uninstall.sh`
+- `bin/check-ai-cli`
+- `bin/check-ai-cli.cmd`
+- `bin/check-ai-cli.ps1`
+- `scripts/Check-AI-CLI-Versions.ps1`
+- `scripts/check-ai-cli-versions.sh`
+
+Release 页面会包含一段固定说明, 并附加 GitHub 自动生成的 Release Notes。
+
 ## 🎯 高级用法
 
 ### 自动化定期检查 (Linux/macOS)
