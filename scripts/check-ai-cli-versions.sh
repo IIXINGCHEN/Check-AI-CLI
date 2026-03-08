@@ -313,11 +313,124 @@ get_local_version() {
   extract_semver "$("$name" --version 2>/dev/null | tr '\n' ' ')"
 }
 
-get_local_factory() { get_local_version factory || get_local_version droid || true; }
-get_local_claude() { get_local_version claude || get_local_version claude-code || true; }
-get_local_codex() { get_local_version codex || true; }
-get_local_gemini() { get_local_version gemini || true; }
-get_local_opencode() { get_local_version opencode || true; }
+normalize_dir() {
+  local dir="${1:-}"
+  [ -n "$dir" ] || return 1
+  if [ -d "$dir" ]; then (cd "$dir" && pwd); else printf '%s\n' "${dir%/}"; fi
+}
+
+path_contains_dir() {
+  local path_value="$1" needle current
+  needle="$(normalize_dir "$2" 2>/dev/null || true)"
+  [ -n "$needle" ] || return 1
+  IFS=':' read -r -a parts <<< "$path_value"
+  for current in "${parts[@]}"; do
+    [ -n "$current" ] || continue
+    [ "$(normalize_dir "$current" 2>/dev/null || true)" = "$needle" ] && return 0
+  done
+  return 1
+}
+
+remove_path_entry() {
+  local path_value="$1" needle current result=()
+  needle="$(normalize_dir "$2" 2>/dev/null || true)"
+  [ -n "$needle" ] || { printf '%s\n' "$path_value"; return 0; }
+  IFS=':' read -r -a parts <<< "$path_value"
+  for current in "${parts[@]}"; do
+    [ -n "$current" ] || continue
+    [ "$(normalize_dir "$current" 2>/dev/null || true)" = "$needle" ] || result+=("$current")
+  done
+  local IFS=':'
+  printf '%s\n' "${result[*]:-}"
+}
+
+prepend_path_entry() {
+  local normalized trimmed
+  normalized="$(normalize_dir "$2" 2>/dev/null || true)"
+  [ -n "$normalized" ] || { printf '%s\n' "$1"; return 0; }
+  trimmed="$(remove_path_entry "$1" "$normalized")"
+  [ -n "$trimmed" ] && printf '%s\n' "$normalized:$trimmed" || printf '%s\n' "$normalized"
+}
+
+get_npm_global_bin_dir() {
+  local prefix
+  command_exists npm || return 1
+  prefix="$(npm config get prefix 2>/dev/null | tr -d '\r\n')"
+  [ -n "$prefix" ] && [ "$prefix" != "undefined" ] || return 1
+  printf '%s\n' "$prefix/bin"
+}
+
+get_profile_file() {
+  local shell_name
+  shell_name="$(basename "${SHELL:-bash}")"
+  case "$shell_name" in
+    fish) printf '%s\n' "$HOME/.config/fish/config.fish" ;;
+    zsh) printf '%s\n' "${ZDOTDIR:-$HOME}/.zshrc" ;;
+    bash) [ -f "$HOME/.bashrc" ] && printf '%s\n' "$HOME/.bashrc" || printf '%s\n' "$HOME/.profile" ;;
+    *) printf '%s\n' "$HOME/.profile" ;;
+  esac
+}
+
+get_path_marker() {
+  printf 'check-ai-cli:path:%s\n' "$(printf '%s' "$1" | tr '/\\: .' '_')"
+}
+
+persist_path_preference() {
+  local dir="$1" file marker tmp shell_name
+  file="$(get_profile_file)"
+  marker="$(get_path_marker "$dir")"
+  mkdir -p "$(dirname "$file")"
+  [ -f "$file" ] || : > "$file"
+  tmp="$file.tmp.$$"
+  grep -Fv "$marker" "$file" > "$tmp" 2>/dev/null || true
+  shell_name="$(basename "${SHELL:-bash}")"
+  if [ "$shell_name" = "fish" ]; then
+    printf 'fish_add_path -m "%s" # %s\n' "$dir" "$marker" >> "$tmp"
+  else
+    printf 'export PATH="%s:$PATH" # %s\n' "$dir" "$marker" >> "$tmp"
+  fi
+  mv "$tmp" "$file"
+}
+
+ensure_profile_path_prefers() {
+  local normalized
+  normalized="$(normalize_dir "$1" 2>/dev/null || true)"
+  [ -n "$normalized" ] || return 1
+  persist_path_preference "$normalized"
+  PATH="$(prepend_path_entry "$PATH" "$normalized")"
+  export PATH
+  log_info "Moved $normalized to the front of your PATH permanently"
+}
+
+emit_dir_if_exists() {
+  [ -d "$1" ] && printf '%s\n' "$1"
+}
+
+get_tool_candidate_dirs() {
+  local tool_id="$1" npm_bin
+  npm_bin="$(get_npm_global_bin_dir 2>/dev/null || true)"
+  case "$tool_id" in
+    factory) emit_dir_if_exists "$HOME/.local/bin"; emit_dir_if_exists "$HOME/bin" ;;
+    claude) emit_dir_if_exists "$npm_bin"; emit_dir_if_exists "$HOME/.local/bin"; emit_dir_if_exists "$HOME/bin" ;;
+    codex) emit_dir_if_exists "$npm_bin"; emit_dir_if_exists "/opt/homebrew/bin"; emit_dir_if_exists "/usr/local/bin"; emit_dir_if_exists "/home/linuxbrew/.linuxbrew/bin" ;;
+    gemini) emit_dir_if_exists "$npm_bin"; emit_dir_if_exists "/opt/homebrew/bin"; emit_dir_if_exists "/usr/local/bin"; emit_dir_if_exists "/home/linuxbrew/.linuxbrew/bin" ;;
+    opencode) emit_dir_if_exists "$HOME/.opencode/bin"; emit_dir_if_exists "$npm_bin"; emit_dir_if_exists "/opt/homebrew/bin"; emit_dir_if_exists "/usr/local/bin"; emit_dir_if_exists "/home/linuxbrew/.linuxbrew/bin" ;;
+  esac | awk 'NF && !seen[$0]++'
+}
+
+repair_tool_path() {
+  local tool_id="$1" dirs=() dir idx
+  while IFS= read -r dir; do dirs+=("$dir"); done < <(get_tool_candidate_dirs "$tool_id")
+  [ "${#dirs[@]}" -gt 0 ] || return 1
+  for ((idx=${#dirs[@]}-1; idx>=0; idx--)); do ensure_profile_path_prefers "${dirs[$idx]}"; done
+  return 0
+}
+
+get_local_factory() { repair_tool_path factory >/dev/null 2>&1 || true; get_local_version droid || get_local_version factory || true; }
+get_local_claude() { repair_tool_path claude >/dev/null 2>&1 || true; get_local_version claude || get_local_version claude-code || true; }
+get_local_codex() { repair_tool_path codex >/dev/null 2>&1 || true; get_local_version codex || true; }
+get_local_gemini() { repair_tool_path gemini >/dev/null 2>&1 || true; get_local_version gemini || true; }
+get_local_opencode() { repair_tool_path opencode >/dev/null 2>&1 || true; get_local_version opencode || true; }
 
 get_latest_factory() {
   local text
@@ -325,22 +438,63 @@ get_latest_factory() {
   extract_semver "$(echo "$text" | grep -Eo '\$version[[:space:]]*=[[:space:]]*"[^"]+"' | head -n 1)"
 }
 
-get_latest_claude() {
-  local text
-  text="$(fetch_text 'https://registry.npmjs.org/@anthropic-ai/claude-code/latest' || true)"
+get_npm_latest_version() {
+  local package_name="$1" text
+  text="$(fetch_text "https://registry.npmjs.org/$package_name/latest" || true)"
   extract_semver "$(echo "$text" | grep -Eo '\"version\"[[:space:]]*:[[:space:]]*\"[^\"]+\"' | head -n 1)"
 }
 
-get_latest_codex() {
-  local text
-  text="$(fetch_text 'https://api.github.com/repos/openai/codex/releases/latest' || true)"
+get_github_latest_release_version() {
+  local repo="$1" text
+  text="$(fetch_text "https://api.github.com/repos/$repo/releases/latest" || true)"
   extract_semver "$(echo "$text" | grep -Eo '\"tag_name\"[[:space:]]*:[[:space:]]*\"[^\"]+\"' | head -n 1)"
 }
 
+get_claude_bootstrap_stable_version() {
+  extract_semver "$(fetch_text 'https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/claude-code-releases/stable' || true)"
+}
+
+get_claude_repo_latest_version() {
+  get_github_latest_release_version 'anthropics/claude-code'
+}
+
+select_higher_version() {
+  [ -n "${1:-}" ] || { printf '%s\n' "${2:-}"; return 0; }
+  [ -n "${2:-}" ] || { printf '%s\n' "$1"; return 0; }
+  [ "$(compare_semver "$1" "$2" || true)" = "-1" ] && printf '%s\n' "$2" || printf '%s\n' "$1"
+}
+
+resolve_version_conflict() {
+  local tool_name="$1" primary_label="$2" primary="$3" secondary_label="$4" secondary="$5" selected
+  selected="$(select_higher_version "$primary" "$secondary")"
+  [ -n "$primary" ] && [ -n "$secondary" ] && [ "$primary" != "$secondary" ] && log_warn "$tool_name latest version conflict: $primary_label=v$primary, $secondary_label=v$secondary. Using v$selected."
+  printf '%s\n' "$selected"
+}
+
+get_latest_claude() {
+  local repo stable npm
+  repo="$(get_claude_repo_latest_version)"
+  [ -n "$repo" ] && printf '%s\n' "$repo" && return
+  stable="$(get_claude_bootstrap_stable_version)"
+  [ -n "$stable" ] && printf '%s\n' "$stable" && return
+  npm="$(get_npm_latest_version '@anthropic-ai/claude-code')"
+  printf '%s\n' "$npm"
+}
+
+get_latest_codex() {
+  local repo npm
+  repo="$(get_github_latest_release_version 'openai/codex')"
+  [ -n "$repo" ] && printf '%s\n' "$repo" && return
+  npm="$(get_npm_latest_version '@openai/codex')"
+  printf '%s\n' "$npm"
+}
+
 get_latest_gemini() {
-  local text
-  text="$(fetch_text 'https://registry.npmjs.org/@google/gemini-cli/latest' || true)"
-  extract_semver "$(echo "$text" | grep -Eo '\"version\"[[:space:]]*:[[:space:]]*\"[^\"]+\"' | head -n 1)"
+  local repo npm
+  repo="$(get_github_latest_release_version 'google-gemini/gemini-cli')"
+  [ -n "$repo" ] && printf '%s\n' "$repo" && return
+  npm="$(get_npm_latest_version '@google/gemini-cli')"
+  printf '%s\n' "$npm"
 }
 
 get_latest_opencode() {
@@ -350,20 +504,12 @@ get_latest_opencode() {
     return
   fi
 
-  # 从 GitHub Releases API 获取最新版本
-  local text tag
-  text="$(fetch_text 'https://api.github.com/repos/anomalyco/opencode/releases/latest' 2>/dev/null || true)"
-  if [ -n "$text" ]; then
-    tag="$(echo "$text" | grep -Eo '\"tag_name\"[[:space:]]*:[[:space:]]*\"[^\"]+\"' | head -n 1 | grep -Eo 'v?[0-9]+\.[0-9]+\.[0-9]+' || true)"
-    if [ -n "$tag" ]; then
-      extract_semver "$tag"
-      return
-    fi
-  fi
-
-  # 降级到备用默认版本
-  log_warn "Failed to fetch latest OpenCode version, using fallback: 1.1.21"
-  extract_semver "1.1.21"
+  local repo npm
+  repo="$(get_github_latest_release_version 'anomalyco/opencode')"
+  if [ -n "$repo" ]; then printf '%s\n' "$repo"; return; fi
+  npm="$(get_npm_latest_version 'opencode-ai')"
+  if [ -n "$npm" ]; then printf '%s\n' "$npm"; return; fi
+  log_warn "Failed to determine latest OpenCode version from official sources."
 }
 
 confirm_yes() {
@@ -408,7 +554,7 @@ update_factory() {
     log_warn "Installation cancelled by user."
     return 1
   fi
-  if fetch_text "$url" | sh; then return 0; fi
+  if fetch_text "$url" | sh; then repair_tool_path factory >/dev/null 2>&1 || true; return 0; fi
   log_err "Factory CLI installer failed."
   return 1
 }
@@ -416,17 +562,19 @@ update_factory() {
 
 update_claude() {
   log_info "Updating Claude Code..."
-  if command_exists npm; then
-    log_info "Trying: npm install"
-    npm install -g '@anthropic-ai/claude-code' && return 0
-  fi
   log_info "Trying: official bootstrap"
   local url='https://claude.ai/install.sh'
   if ! confirm_remote_script_execution "$url" "Claude Code"; then
     log_warn "Installation cancelled by user."
     return 1
   fi
-  if fetch_text "$url" | bash; then return 0; fi
+  if fetch_text "$url" | bash; then repair_tool_path claude >/dev/null 2>&1 || true; return 0; fi
+  if command_exists npm; then
+    log_info "Trying: npm install"
+    npm install -g '@anthropic-ai/claude-code' || return 1
+    repair_tool_path claude >/dev/null 2>&1 || true
+    return 0
+  fi
   log_err "No installer found. Install curl/wget, brew, or Node.js (npm) first."
   return 1
 }
@@ -435,11 +583,15 @@ update_codex() {
   log_info "Updating OpenAI Codex..."
   if command_exists npm; then
     log_info "Trying: npm install"
-    npm install -g '@openai/codex' && return 0
+    npm install -g '@openai/codex' || return 1
+    repair_tool_path codex >/dev/null 2>&1 || true
+    return 0
   fi
   if command_exists brew; then
     log_info "Trying: brew install"
-    brew install --cask codex && return 0
+    brew install --cask codex || return 1
+    repair_tool_path codex >/dev/null 2>&1 || true
+    return 0
   fi
   log_err "No installer found. Install npm or brew first."
   return 1
@@ -449,12 +601,15 @@ update_gemini() {
   log_info "Updating Gemini CLI..."
   if command_exists npm; then
     log_info "Trying: npm install"
-    npm install -g '@google/gemini-cli@latest' && return 0
+    npm install -g '@google/gemini-cli@latest' || return 1
+    repair_tool_path gemini >/dev/null 2>&1 || true
+    return 0
   fi
   if command_exists brew; then
     log_info "Trying: brew install"
-    brew list --formula gemini-cli >/dev/null 2>&1 && brew upgrade gemini-cli && return 0
-    brew install gemini-cli && return 0
+    if brew list --formula gemini-cli >/dev/null 2>&1; then brew upgrade gemini-cli || return 1; else brew install gemini-cli || return 1; fi
+    repair_tool_path gemini >/dev/null 2>&1 || true
+    return 0
   fi
   log_err "No installer found. Install npm or brew first."
   return 1
@@ -471,6 +626,7 @@ update_opencode() {
   url='https://opencode.ai/install'
   if confirm_remote_script_execution "$url" "OpenCode"; then
     if fetch_text "$url" | bash -s -- --version "$target"; then
+      repair_tool_path opencode >/dev/null 2>&1 || true
       localv="$(get_local_opencode || true)"
       cmp="$(compare_semver "$localv" "$target" || true)"
       if [ "$cmp" = "0" ] || [ "$cmp" = "1" ]; then return 0; fi
@@ -484,6 +640,7 @@ update_opencode() {
   if command_exists opencode; then
     log_info "Trying: opencode upgrade"
     opencode upgrade "v$target" || true
+    repair_tool_path opencode >/dev/null 2>&1 || true
     localv="$(get_local_opencode || true)"
     cmp="$(compare_semver "$localv" "$target" || true)"
     if [ "$cmp" = "0" ] || [ "$cmp" = "1" ]; then return 0; fi
@@ -495,6 +652,7 @@ update_opencode() {
       if ! opencode upgrade "v$target" 2>/dev/null; then
         log_warn "opencode upgrade failed, checking if installed version is sufficient..."
       fi
+      repair_tool_path opencode >/dev/null 2>&1 || true
       localv="$(get_local_opencode || true)"
       cmp="$(compare_semver "$localv" "$target" || true)"
       if [ "$cmp" = "0" ] || [ "$cmp" = "1" ]; then return 0; fi
@@ -506,6 +664,7 @@ update_opencode() {
   if command_exists npm; then
     log_info "Trying: npm install"
     npm install -g "opencode-ai@latest" || return 1
+    repair_tool_path opencode >/dev/null 2>&1 || true
     localv="$(get_local_opencode || true)"
     cmp="$(compare_semver "$localv" "$target" || true)"
     if [ "$cmp" = "0" ] || [ "$cmp" = "1" ]; then return 0; fi
@@ -563,8 +722,6 @@ show_banner() {
   echo ""
 }
 
-require_fetch_tool || exit 1
-
 ask_selection() {
   echo "Select tools to check:"
   echo "  [1] Factory CLI (Droid)"
@@ -578,32 +735,21 @@ ask_selection() {
   echo "${choice:-A}" | tr '[:lower:]' '[:upper:]'
 }
 
-show_banner
-
-# Initialize network detection and optimize npm registry
-initialize_npm_for_region
-
-sel="$(ask_selection)"
-if [ "$sel" = "Q" ]; then
+main() {
+  local sel
+  require_fetch_tool || exit 1
+  show_banner
+  initialize_npm_for_region
+  sel="$(ask_selection)"
+  if [ "$sel" = "Q" ]; then restore_npm_registry; exit 0; fi
+  if [ "$sel" = "1" ] || [ "$sel" = "A" ]; then check_tool "Factory CLI (Droid)" get_latest_factory get_local_factory update_factory; fi
+  if [ "$sel" = "2" ] || [ "$sel" = "A" ]; then check_tool "Claude Code" get_latest_claude get_local_claude update_claude; fi
+  if [ "$sel" = "3" ] || [ "$sel" = "A" ]; then check_tool "OpenAI Codex" get_latest_codex get_local_codex update_codex; fi
+  if [ "$sel" = "4" ] || [ "$sel" = "A" ]; then check_tool "Gemini CLI" get_latest_gemini get_local_gemini update_gemini; fi
+  if [ "$sel" = "5" ] || [ "$sel" = "A" ]; then check_tool "OpenCode" get_latest_opencode get_local_opencode update_opencode; fi
   restore_npm_registry
-  exit 0
-fi
+}
 
-if [ "$sel" = "1" ] || [ "$sel" = "A" ]; then
-  check_tool "Factory CLI (Droid)" get_latest_factory get_local_factory update_factory
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+  main "$@"
 fi
-if [ "$sel" = "2" ] || [ "$sel" = "A" ]; then
-  check_tool "Claude Code" get_latest_claude get_local_claude update_claude
-fi
-if [ "$sel" = "3" ] || [ "$sel" = "A" ]; then
-  check_tool "OpenAI Codex" get_latest_codex get_local_codex update_codex
-fi
-if [ "$sel" = "4" ] || [ "$sel" = "A" ]; then
-  check_tool "Gemini CLI" get_latest_gemini get_local_gemini update_gemini
-fi
-if [ "$sel" = "5" ] || [ "$sel" = "A" ]; then
-  check_tool "OpenCode" get_latest_opencode get_local_opencode update_opencode
-fi
-
-# Restore original npm registry
-restore_npm_registry

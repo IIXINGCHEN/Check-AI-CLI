@@ -189,6 +189,23 @@ function Path-ContainsDir([string]$PathValue, [string]$Dir) {
   return $false
 }
 
+function Remove-PathEntry([string]$PathValue, [string]$Dir) {
+  $needle = (Normalize-Dir $Dir).ToLowerInvariant()
+  $items = @()
+  foreach ($p in @($PathValue -split ';')) {
+    if ([string]::IsNullOrWhiteSpace($p)) { continue }
+    try { if ((Normalize-Dir $p).ToLowerInvariant() -ne $needle) { $items += $p } } catch { $items += $p }
+  }
+  return ($items -join ';')
+}
+
+function Prepend-PathEntry([string]$PathValue, [string]$Dir) {
+  $normalized = Normalize-Dir $Dir
+  $trimmed = Remove-PathEntry $PathValue $normalized
+  if ([string]::IsNullOrWhiteSpace($trimmed)) { return $normalized }
+  return "$normalized;$trimmed"
+}
+
 function Get-UserPathValue() {
   return [Environment]::GetEnvironmentVariable('Path', 'User')
 }
@@ -208,6 +225,52 @@ function Ensure-UserPathContains([string]$Dir) {
     $env:PATH = if ([string]::IsNullOrWhiteSpace($env:PATH)) { $normalized } else { "$normalized;$env:PATH" }
   }
   Write-Info "Added $normalized to your PATH permanently"
+}
+
+function Ensure-UserPathPrefers([string]$Dir) {
+  $normalized = Normalize-Dir $Dir
+  $userPath = Get-UserPathValue
+  $newUserPath = Prepend-PathEntry $userPath $normalized
+  if ($newUserPath -ne $userPath) {
+    Set-UserPathValue $newUserPath
+    Write-Info "Moved $normalized to the front of your PATH permanently"
+  }
+  $env:PATH = Prepend-PathEntry $env:PATH $normalized
+}
+
+function Get-NpmGlobalBinDir() {
+  $npmCmd = Get-Command npm.cmd -CommandType Application -ErrorAction SilentlyContinue
+  if (-not $npmCmd) { $npmCmd = Get-Command npm -CommandType Application -ErrorAction SilentlyContinue }
+  if (-not $npmCmd) { return $null }
+  try {
+    $prefix = (& $npmCmd.Path config get prefix 2>$null | Out-String).Trim()
+    if ([string]::IsNullOrWhiteSpace($prefix) -or $prefix -eq 'undefined') { return $null }
+    return $prefix.TrimEnd('/','\')
+  } catch { return $null }
+}
+
+function Get-PreferredToolPathDirs([string]$ToolId) {
+  $dirs = @()
+  if ($ToolId -eq 'factory') {
+    $factoryDir = Join-Path $env:USERPROFILE 'bin'
+    if (Test-Path -LiteralPath $factoryDir) { $dirs += $factoryDir }
+  }
+  if ($ToolId -eq 'opencode') {
+    $openCodeDir = Get-OpenCodeUserBinDir
+    if ($openCodeDir) { $dirs += $openCodeDir }
+  }
+  if ($ToolId -in @('claude','codex','gemini','opencode')) {
+    $npmBin = Get-NpmGlobalBinDir
+    if ($npmBin) { $dirs += $npmBin }
+  }
+  return @($dirs | Select-Object -Unique)
+}
+
+function Repair-ToolUserPath([string]$ToolId) {
+  $dirs = @(Get-PreferredToolPathDirs $ToolId)
+  if ($dirs.Count -eq 0) { return $false }
+  for ($i = $dirs.Count - 1; $i -ge 0; $i--) { Ensure-UserPathPrefers $dirs[$i] }
+  return $true
 }
 
 function Install-FactoryFromBootstrap() {
@@ -565,7 +628,7 @@ function Initialize-NpmForRegion() {
   
   if ($currentRegistry.TrimEnd('/') -ne $bestMirror.TrimEnd('/')) {
     Write-Info "Switching npm registry for better speed..."
-    Set-NpmRegistry $bestMirror
+    [void](Set-NpmRegistry $bestMirror)
   } else {
     Write-Info "npm registry already optimal: $currentRegistry"
   }
@@ -577,7 +640,7 @@ function Restore-NpmRegistry() {
     $current = Get-NpmRegistry
     if ($current.TrimEnd('/') -ne $script:OriginalNpmRegistry.TrimEnd('/')) {
       Write-Info "Restoring original npm registry: $($script:OriginalNpmRegistry)"
-      Set-NpmRegistry $script:OriginalNpmRegistry
+      [void](Set-NpmRegistry $script:OriginalNpmRegistry)
     }
   }
 }
@@ -672,7 +735,23 @@ function Get-LocalCommandVersion([string[]]$CommandNames) {
   return $null
 }
 
+function Get-LocalClaudeVersion() {
+  [void](Repair-ToolUserPath 'claude')
+  return Get-LocalCommandVersion @('claude','claude-code')
+}
+
+function Get-LocalCodexVersion() {
+  [void](Repair-ToolUserPath 'codex')
+  return Get-LocalCommandVersion @('codex')
+}
+
+function Get-LocalGeminiVersion() {
+  [void](Repair-ToolUserPath 'gemini')
+  return Get-LocalCommandVersion @('gemini')
+}
+
 function Get-LocalFactoryVersion() {
+  [void](Repair-ToolUserPath 'factory')
   $droid = Get-CommandVersionInfo 'droid'
   $factory = Get-CommandVersionInfo 'factory'
 
@@ -701,25 +780,58 @@ function Get-LatestFactoryVersion() {
   return Get-SemVer $m.Groups[1].Value
 }
 
-# Get latest Claude Code version from npm registry (fallback source)
-function Get-LatestClaudeVersion() {
-  $json = Get-Json 'https://registry.npmjs.org/@anthropic-ai/claude-code/latest'
-  if (-not $json) { return $null }
+function Get-NpmLatestVersion([string]$PackageName) {
+  $json = Get-Json "https://registry.npmjs.org/$PackageName/latest"
+  if (-not $json -or -not $json.version) { return $null }
   return Get-SemVer ([string]$json.version)
 }
 
-# Get latest Codex version from GitHub Releases API
-function Get-LatestCodexVersion() {
-  $json = Get-Json 'https://api.github.com/repos/openai/codex/releases/latest'
-  if (-not $json) { return $null }
+function Get-GitHubLatestReleaseVersion([string]$Repo) {
+  $json = Get-Json "https://api.github.com/repos/$Repo/releases/latest"
+  if (-not $json -or -not $json.tag_name) { return $null }
   return Get-SemVer ([string]$json.tag_name)
 }
 
-# Get latest Gemini CLI version from npm registry
+function Get-ClaudeBootstrapStableVersion() {
+  $text = Get-Text 'https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/claude-code-releases/stable'
+  return Get-SemVer $text
+}
+
+function Get-ClaudeRepoLatestVersion() {
+  return Get-GitHubLatestReleaseVersion 'anthropics/claude-code'
+}
+
+function Select-HigherVersion([string]$First, [string]$Second) {
+  if (-not $First) { return $Second }
+  if (-not $Second) { return $First }
+  if ((Compare-Version $First $Second) -eq -1) { return $Second }
+  return $First
+}
+
+function Resolve-VersionConflict([string]$ToolName, [string]$PrimaryLabel, [string]$Primary, [string]$SecondaryLabel, [string]$Secondary) {
+  $selected = Select-HigherVersion $Primary $Secondary
+  if ($Primary -and $Secondary -and $Primary -ne $Secondary) { Write-Warn "$ToolName latest version conflict: $PrimaryLabel=v$Primary, $SecondaryLabel=v$Secondary. Using v$selected." }
+  return $selected
+}
+
+function Get-LatestClaudeVersion() {
+  $repo = Get-ClaudeRepoLatestVersion
+  if ($repo) { return $repo }
+  $stable = Get-ClaudeBootstrapStableVersion
+  if ($stable) { return $stable }
+  return Get-NpmLatestVersion '@anthropic-ai/claude-code'
+}
+
+function Get-LatestCodexVersion() {
+  $repo = Get-GitHubLatestReleaseVersion 'openai/codex'
+  if ($repo) { return $repo }
+  return Get-NpmLatestVersion '@openai/codex'
+}
+
 function Get-LatestGeminiVersion() {
-  $json = Get-Json 'https://registry.npmjs.org/@google/gemini-cli/latest'
-  if (-not $json) { return $null }
-  return Get-SemVer ([string]$json.version)
+  $repo = Get-GitHubLatestReleaseVersion 'google-gemini/gemini-cli'
+  if ($repo) { return $repo }
+  return Get-NpmLatestVersion '@google/gemini-cli'
 }
 
 function Get-TargetOpenCodeVersion() {
@@ -732,22 +844,12 @@ function Get-LatestOpenCodeVersion() {
   $target = Get-TargetOpenCodeVersion
   if ($target) { return $target }
 
-  try {
-    $json = Get-Json 'https://api.github.com/repos/anomalyco/opencode/releases/latest'
-    if ($json -and $json.tag_name) {
-      return Get-SemVer ([string]$json.tag_name)
-    }
-  } catch {
-    Write-Warn "Failed to fetch latest OpenCode version from GitHub: $($_.Exception.Message)"
-  }
-
-  Write-Warn "Using fallback OpenCode version: 1.1.21"
-  $fallback = Get-SemVer '1.1.21'
-  if (-not $fallback) {
-    Write-Error "Critical: Failed to parse fallback version. This should never happen."
-    throw "Unable to determine OpenCode version"
-  }
-  return $fallback
+  $repo = Get-GitHubLatestReleaseVersion 'anomalyco/opencode'
+  if ($repo) { return $repo }
+  $npm = Get-NpmLatestVersion 'opencode-ai'
+  if ($npm) { return $npm }
+  Write-Warn 'Failed to determine latest OpenCode version from official sources.'
+  return $null
 }
 
 # Run npm install -g in a way that avoids PowerShell npm.ps1 "-Command" parsing edge cases.
@@ -871,20 +973,20 @@ function Update-ClaudeViaBootstrap() {
   }
 }
 
-# Install/update Claude Code (npm preferred, bootstrap fallback)
+# Install/update Claude Code (official stable preferred, npm fallback)
 function Update-Claude() {
   Write-Info "Updating Claude Code..."
 
   try {
-    Write-Info "Trying: npm install"
-    Invoke-NpmInstallGlobal '@anthropic-ai/claude-code@latest'
+    Update-ClaudeViaBootstrap
     return
   } catch {
-    Write-Warn "npm install failed: $($_.Exception.Message)"
+    Write-Warn "official bootstrap failed: $($_.Exception.Message)"
   }
 
   try {
-    Update-ClaudeViaBootstrap
+    Write-Info "Trying: npm install"
+    Invoke-NpmInstallGlobal '@anthropic-ai/claude-code@latest'
   } catch {
     throw "No installer found. Install curl/wget or Node.js (npm) first."
   }
@@ -921,34 +1023,68 @@ function Get-OpenCodeUserInstallPath() {
   return $null
 }
 
+function Get-OpenCodeUserBinDir() {
+  $path = Get-OpenCodeUserInstallPath
+  if (-not $path) { return $null }
+  return (Split-Path -Parent $path)
+}
+
+function Repair-OpenCodeUserPath() {
+  return (Repair-ToolUserPath 'opencode')
+}
+
 function Report-OpenCodeResolutionMismatch() {
+  $resolved = Get-OpenCodeResolvedInfo
   $user = Get-OpenCodeUserInstallPath
-  $cmd = Get-Command opencode -ErrorAction SilentlyContinue
-  if (-not $user -or -not $cmd -or -not $cmd.Source) { return }
-  if ($cmd.Source -eq $user) { return }
-  Write-Warn "PowerShell resolves opencode to: $($cmd.Source)"
-  Write-Warn "OpenCode user install path: $user"
-  Write-Warn "Tip: current session: Set-Alias opencode `"$user`""
-  Write-Warn 'Tip: permanent: add the same line into $PROFILE'
+  if (-not $user) { return }
+  $userVersion = Get-OpenCodeVersionAtPath $user
+  if (-not $resolved.Source) { Write-OpenCodeStandaloneOnly $user $userVersion ; return }
+  if ($resolved.Source -eq $user) { return }
+  Write-OpenCodeResolvedMismatch $resolved $user $userVersion
+}
+
+function Write-OpenCodeResolutionTips([string]$UserPath) {
+  $binDir = Split-Path -Parent $UserPath
+  Write-Warn "Tip: ensure User PATH starts with $binDir"
+  Write-Warn 'Tip: restart PowerShell after PATH changes if this session still resolves an older shim'
+}
+
+function Write-OpenCodeStandaloneOnly([string]$UserPath, [string]$UserVersion) {
+  Write-Warn 'PowerShell cannot resolve opencode from the current PATH.'
+  Write-Warn "OpenCode user install path: $UserPath"
+  if ($UserVersion) { Write-Warn "OpenCode user install version: v$UserVersion" }
+  Write-OpenCodeResolutionTips $UserPath
+}
+
+function Write-OpenCodeResolvedMismatch([hashtable]$Resolved, [string]$UserPath, [string]$UserVersion) {
+  Write-Warn "PowerShell resolves opencode to: $($Resolved.Source)"
+  if ($Resolved.Version) { Write-Warn "Resolved opencode version: v$($Resolved.Version)" }
+  Write-Warn "OpenCode user install path: $UserPath"
+  if ($UserVersion) { Write-Warn "OpenCode user install version: v$UserVersion" }
+  Write-OpenCodeResolutionTips $UserPath
+}
+
+function Get-OpenCodeResolvedInfo() {
+  return Get-CommandVersionInfo 'opencode'
+}
+
+function Get-OpenCodeVersionAtPath([string]$Path) {
+  if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
+  try { return Get-SemVer ((& $Path '--version' 2>&1 | Out-String)) } catch { return $null }
 }
 
 function Get-OpenCodeCommandPath() {
-  $user = Get-OpenCodeUserInstallPath
-  if ($user) { return $user }
-  $cmds = Get-Command opencode -All -ErrorAction SilentlyContinue
-  if (-not $cmds) { return $null }
-  $exe = $cmds | Where-Object { $_.CommandType -eq 'Application' -and $_.Source -match '\.exe$' } | Select-Object -First 1
-  if ($exe) { return $exe.Source }
-  $app = $cmds | Where-Object { $_.CommandType -eq 'Application' } | Select-Object -First 1
-  if ($app) { return $app.Source }
-  return $cmds[0].Source
+  [void](Repair-OpenCodeUserPath)
+  $resolved = Get-OpenCodeResolvedInfo
+  if ($resolved.Source) { return $resolved.Source }
+  return Get-OpenCodeUserInstallPath
 }
 
 function Invoke-OpenCodeVersionProbe() {
-  $path = Get-OpenCodeCommandPath
-  if (-not $path) { return @{ Version = $null; Output = '' } }
+  $resolved = Get-OpenCodeResolvedInfo
+  if (-not $resolved.Source) { return @{ Version = $null; Output = '' } }
   try {
-    $out = & $path '--version' 2>&1 | Out-String
+    $out = & opencode '--version' 2>&1 | Out-String
     return @{ Version = (Get-SemVer $out); Output = $out }
   } catch {
     return @{ Version = $null; Output = $_.Exception.Message }
@@ -966,11 +1102,9 @@ function Get-OpenCodeNpmExePath() {
 }
 
 function Get-LocalOpenCodeVersion() {
-  $probe = Invoke-OpenCodeVersionProbe
-  if ($probe.Version) { return $probe.Version }
-  $exe = Get-OpenCodeNpmExePath
-  if (-not $exe) { return $null }
-  try { return Get-SemVer ((& $exe '--version' 2>&1 | Out-String)) } catch { return $null }
+  [void](Repair-OpenCodeUserPath)
+  Report-OpenCodeResolutionMismatch
+  return (Get-OpenCodeResolvedInfo).Version
 }
 
 function Try-FixOpenCodeNpmShim([string]$ExePath) {
@@ -1007,7 +1141,7 @@ function Try-FixOpenCodeNpmShim([string]$ExePath) {
 }
 
 function Test-OpenCodeRunnable() {
-  return [bool]((Invoke-OpenCodeVersionProbe).Version)
+  return [bool](Get-LocalOpenCodeVersion)
 }
 
 function Try-RepairOpenCodeNpmShim() {
@@ -1199,7 +1333,6 @@ function Report-PostUpdate([string]$Title, [string]$Latest, [scriptblock]$GetLoc
   Write-Info "Re-checking local version..."
   $newLocal = Get-AndPrintLocal $GetLocal
   if (-not $newLocal) { Write-Warn "Update may not have installed correctly." ; return }
-  if ($Title -eq 'OpenCode') { Report-OpenCodeResolutionMismatch }
   if (-not $Latest) { return }
   $cmp = Compare-Version $newLocal $Latest
   if ($cmp -eq -1) {
@@ -1217,7 +1350,6 @@ function Check-OneTool([string]$Title, [scriptblock]$GetLatest, [scriptblock]$Ge
   Write-ToolHeader $Title
   $latest = Get-AndPrintLatest $GetLatest
   $local = Get-AndPrintLocal $GetLocal
-  if ($Title -eq 'OpenCode') { Report-OpenCodeResolutionMismatch }
   $didUpdate = Handle-UpdateFlow $latest $local $DoUpdate
   if ($didUpdate) { Report-PostUpdate $Title $latest $GetLocal }
 }
@@ -1255,13 +1387,13 @@ function Invoke-Selection([string]$Selection) {
     Check-OneTool "Factory CLI (Droid)" { Get-LatestFactoryVersion } { Get-LocalFactoryVersion } { Update-Factory }
   }
   if ($Selection -eq '2' -or $checkAll) {
-    Check-OneTool "Claude Code" { Get-LatestClaudeVersion } { Get-LocalCommandVersion @('claude','claude-code') } { Update-Claude }
+    Check-OneTool "Claude Code" { Get-LatestClaudeVersion } { Get-LocalClaudeVersion } { Update-Claude }
   }
   if ($Selection -eq '3' -or $checkAll) {
-    Check-OneTool "OpenAI Codex" { Get-LatestCodexVersion } { Get-LocalCommandVersion @('codex') } { Update-Codex }
+    Check-OneTool "OpenAI Codex" { Get-LatestCodexVersion } { Get-LocalCodexVersion } { Update-Codex }
   }
   if ($Selection -eq '4' -or $checkAll) {
-    Check-OneTool "Gemini CLI" { Get-LatestGeminiVersion } { Get-LocalCommandVersion @('gemini') } { Update-Gemini }
+    Check-OneTool "Gemini CLI" { Get-LatestGeminiVersion } { Get-LocalGeminiVersion } { Update-Gemini }
   }
   if ($Selection -eq '5' -or $checkAll) {
     Check-OneTool "OpenCode" { Get-LatestOpenCodeVersion } { Get-LocalOpenCodeVersion } { Update-OpenCode }

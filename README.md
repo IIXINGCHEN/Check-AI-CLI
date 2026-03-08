@@ -400,7 +400,14 @@ choco install opencode -y
 npm install -g opencode-ai@latest
 ```
 
-提示: 如果 `curl` 安装成功, 但 PowerShell 里 `opencode --version` 仍然显示旧版本, 通常是因为命中了 `%APPDATA%\\npm\\opencode.ps1` 的 npm shim. 推荐先用 alias 快速修复:
+提示: 脚本现在会优先自动修复 `OpenCode` 的 PATH 冲突, 会把 `~/.opencode/bin` 或对应用户安装目录提升到 PATH 前面, 并刷新当前会话。若 PowerShell 仍命中旧的 `%APPDATA%\\npm\\opencode.ps1`, 先重开终端再检查:
+
+```powershell
+Get-Command opencode
+opencode --version
+```
+
+如果当前会话仍被旧 shim 缓存, 再使用以下临时兜底:
 
 ```powershell
 $exe = Join-Path $env:USERPROFILE ".opencode\\bin\\opencode.exe"
@@ -411,7 +418,7 @@ opencode --version
 #### macOS / Linux
 ```bash
 # 默认: 官方安装脚本 (curl / wget)
-curl -fsSL https://opencode.ai/install | bash -s -- --version 1.1.21
+curl -fsSL https://opencode.ai/install | bash
 
 # 可选: Homebrew
 brew install anomalyco/tap/opencode
@@ -549,10 +556,15 @@ sudo pacman -S nodejs npm
 | 工具 | 主要数据源 | 备用数据源 |
 |------|----------|-----------|
 | Factory CLI | app.factory.ai/cli/install.sh | app.factory.ai/cli/windows |
-| Claude Code | GCS claude-code-releases/stable | registry.npmjs.org |
-| OpenAI Codex | api.github.com/repos/openai/codex | registry.npmjs.org |
-| Gemini CLI | registry.npmjs.org/@google/gemini-cli | github.com/google-gemini/gemini-cli |
-| OpenCode | api.github.com/repos/anomalyco/opencode/releases/latest | opencode.ai/install |
+| Claude Code | github.com/anthropics/claude-code/releases/latest | GCS claude-code-releases/stable, registry.npmjs.org |
+| OpenAI Codex | github.com/openai/codex/releases/latest | registry.npmjs.org/@openai/codex |
+| Gemini CLI | github.com/google-gemini/gemini-cli/releases/latest | registry.npmjs.org/@google/gemini-cli |
+| OpenCode | github.com/anomalyco/opencode/releases/latest | registry.npmjs.org/opencode-ai |
+
+- `Claude Code`、`Codex`、`Gemini CLI`、`OpenCode`: 现在优先使用官方仓库 release 作为 `latest` 来源, 只有仓库源不可用时才回退到其他官方发布源。
+- `Claude Code`: 仓库 release 不可用时, 再回退到官方 stable 发布源, 最后才回退到 npm。
+- `OpenCode`: 仓库源不可用时回退到官方 npm 包; 若官方来源都失败则显示 `unknown`.
+- 五个工具在检查前和更新后都会自动尝试修复 PATH/环境变量冲突, 以减少“已安装但命令未识别”问题。
 
 ## 🎯 高级用法
 
