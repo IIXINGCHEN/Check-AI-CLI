@@ -153,6 +153,43 @@ Run-Test 'Get-LocalOpenCodeVersion repairs PATH when standalone install exists b
   }
 }
 
+Run-Test 'Repair-ToolUserPath is quiet when preferred opencode paths are already ordered' {
+  $originalPath = $env:PATH
+  try {
+    $script:StoredUserPath = 'C:\Users\Tester\.opencode\bin;C:\Users\Tester\AppData\Roaming\npm;C:\Tools'
+    $env:PATH = $script:StoredUserPath
+    $script:CapturedInfo = @()
+
+    function Get-UserPathValue() {
+      return $script:StoredUserPath
+    }
+
+    function Set-UserPathValue([string]$PathValue) {
+      throw "Set-UserPathValue should not be called when PATH is already ordered: $PathValue"
+    }
+
+    function Get-PreferredToolPathDirs([string]$ToolId) {
+      if ($ToolId -eq 'opencode') {
+        return @('C:\Users\Tester\.opencode\bin', 'C:\Users\Tester\AppData\Roaming\npm')
+      }
+      return @()
+    }
+
+    function Write-Info([string]$Message) {
+      $script:CapturedInfo += $Message
+    }
+
+    $result = Repair-ToolUserPath 'opencode'
+
+    Assert-True $result 'Expected Repair-ToolUserPath to report that preferred directories exist.'
+    Assert-Equal $script:StoredUserPath 'C:\Users\Tester\.opencode\bin;C:\Users\Tester\AppData\Roaming\npm;C:\Tools' 'Expected persisted User PATH order to remain unchanged.'
+    Assert-Equal $env:PATH 'C:\Users\Tester\.opencode\bin;C:\Users\Tester\AppData\Roaming\npm;C:\Tools' 'Expected process PATH order to remain unchanged.'
+    Assert-Equal $script:CapturedInfo.Count 0 'Expected no info log when preferred OpenCode paths are already ordered.'
+  } finally {
+    $env:PATH = $originalPath
+  }
+}
+
 Run-Test 'Get-OpenCodeCommandPath prefers standalone install over npm shim when versions match' {
   function Get-OpenCodeResolvedInfo() {
     return @{ Name = 'opencode'; Version = '1.2.27'; Source = 'C:\Users\Tester\AppData\Roaming\npm\opencode.ps1' }

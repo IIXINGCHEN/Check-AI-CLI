@@ -266,10 +266,19 @@ function Get-PreferredToolPathDirs([string]$ToolId) {
   return @($dirs | Select-Object -Unique)
 }
 
+function Get-OrderedPathValue([string]$PathValue, [string[]]$Dirs) {
+  $ordered = $PathValue
+  for ($i = $Dirs.Count - 1; $i -ge 0; $i--) { $ordered = Prepend-PathEntry $ordered $Dirs[$i] }
+  return $ordered
+}
+
 function Repair-ToolUserPath([string]$ToolId) {
   $dirs = @(Get-PreferredToolPathDirs $ToolId)
   if ($dirs.Count -eq 0) { return $false }
-  for ($i = $dirs.Count - 1; $i -ge 0; $i--) { Ensure-UserPathPrefers $dirs[$i] }
+  $userPath = Get-UserPathValue
+  $newUserPath = Get-OrderedPathValue $userPath $dirs
+  if ($newUserPath -ne $userPath) { Set-UserPathValue $newUserPath ; Write-Info "Updated your PATH permanently to prefer $ToolId" }
+  $env:PATH = Get-OrderedPathValue $env:PATH $dirs
   return $true
 }
 
