@@ -153,6 +153,51 @@ Run-Test 'Get-LocalOpenCodeVersion repairs PATH when standalone install exists b
   }
 }
 
+Run-Test 'Get-OpenCodeCommandPath prefers standalone install over npm shim when versions match' {
+  function Get-OpenCodeResolvedInfo() {
+    return @{ Name = 'opencode'; Version = '1.2.27'; Source = 'C:\Users\Tester\AppData\Roaming\npm\opencode.ps1' }
+  }
+
+  function Get-OpenCodeUserInstallPath() {
+    return 'C:\Users\Tester\.opencode\bin\opencode.exe'
+  }
+
+  function Get-OpenCodeVersionAtPath([string]$Path) {
+    return '1.2.27'
+  }
+
+  function Repair-OpenCodeUserPath() {
+    return $true
+  }
+
+  $path = Get-OpenCodeCommandPath
+
+  Assert-Equal $path 'C:\Users\Tester\.opencode\bin\opencode.exe' 'Expected standalone OpenCode install to outrank the npm shim when versions match.'
+}
+
+Run-Test 'Get-LocalOpenCodeVersion suppresses mismatch warning when standalone install is preferred' {
+  function Get-OpenCodeResolvedInfo() {
+    return @{ Name = 'opencode'; Version = '1.2.27'; Source = 'C:\Users\Tester\AppData\Roaming\npm\opencode.ps1' }
+  }
+
+  function Get-OpenCodeUserInstallPath() {
+    return 'C:\Users\Tester\.opencode\bin\opencode.exe'
+  }
+
+  function Get-OpenCodeVersionAtPath([string]$Path) {
+    return '1.2.27'
+  }
+
+  function Repair-OpenCodeUserPath() {
+    return $true
+  }
+
+  $version = Get-LocalOpenCodeVersion
+
+  Assert-Equal $version '1.2.27' 'Expected standalone OpenCode install to supply the local version when it matches the npm shim version.'
+  Assert-Equal $script:CapturedWarnings.Count 0 'Expected no mismatch warning when the standalone OpenCode install is preferred.'
+}
+
 Run-Test 'Restore-NpmRegistry does not leak Set-NpmRegistry return values' {
   function Get-NpmRegistry() {
     return 'https://registry.npmjs.org'

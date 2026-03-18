@@ -1033,14 +1033,40 @@ function Repair-OpenCodeUserPath() {
   return (Repair-ToolUserPath 'opencode')
 }
 
+function New-OpenCodeCommandInfo([string]$Path, [string]$Version) {
+  return @{ Name = 'opencode'; Source = $Path; Version = $Version }
+}
+
+function Get-OpenCodeUserInfo() {
+  $path = Get-OpenCodeUserInstallPath
+  if (-not $path) { return $null }
+  return (New-OpenCodeCommandInfo $path (Get-OpenCodeVersionAtPath $path))
+}
+
+function Should-PreferOpenCodeUserInfo([hashtable]$Resolved, [hashtable]$User) {
+  if (-not $User -or -not $User.Source) { return $false }
+  if (-not $Resolved -or -not $Resolved.Source) { return $true }
+  if ($Resolved.Source -eq $User.Source) { return $true }
+  if (-not $User.Version) { return $false }
+  if (-not $Resolved.Version) { return $true }
+  return (Compare-Version $User.Version $Resolved.Version) -ge 0
+}
+
+function Get-PreferredOpenCodeInfo() {
+  [void](Repair-OpenCodeUserPath)
+  $resolved = Get-OpenCodeResolvedInfo
+  $user = Get-OpenCodeUserInfo
+  if (Should-PreferOpenCodeUserInfo $resolved $user) { return $user }
+  return $resolved
+}
+
 function Report-OpenCodeResolutionMismatch() {
   $resolved = Get-OpenCodeResolvedInfo
-  $user = Get-OpenCodeUserInstallPath
+  $user = Get-OpenCodeUserInfo
   if (-not $user) { return }
-  $userVersion = Get-OpenCodeVersionAtPath $user
-  if (-not $resolved.Source) { Write-OpenCodeStandaloneOnly $user $userVersion ; return }
-  if ($resolved.Source -eq $user) { return }
-  Write-OpenCodeResolvedMismatch $resolved $user $userVersion
+  if (Should-PreferOpenCodeUserInfo $resolved $user) { return }
+  if (-not $resolved.Source) { Write-OpenCodeStandaloneOnly $user.Source $user.Version ; return }
+  Write-OpenCodeResolvedMismatch $resolved $user.Source $user.Version
 }
 
 function Write-OpenCodeResolutionTips([string]$UserPath) {
@@ -1074,17 +1100,14 @@ function Get-OpenCodeVersionAtPath([string]$Path) {
 }
 
 function Get-OpenCodeCommandPath() {
-  [void](Repair-OpenCodeUserPath)
-  $resolved = Get-OpenCodeResolvedInfo
-  if ($resolved.Source) { return $resolved.Source }
-  return Get-OpenCodeUserInstallPath
+  return (Get-PreferredOpenCodeInfo).Source
 }
 
 function Invoke-OpenCodeVersionProbe() {
-  $resolved = Get-OpenCodeResolvedInfo
-  if (-not $resolved.Source) { return @{ Version = $null; Output = '' } }
+  $preferred = Get-PreferredOpenCodeInfo
+  if (-not $preferred.Source) { return @{ Version = $null; Output = '' } }
   try {
-    $out = & opencode '--version' 2>&1 | Out-String
+    $out = & $preferred.Source '--version' 2>&1 | Out-String
     return @{ Version = (Get-SemVer $out); Output = $out }
   } catch {
     return @{ Version = $null; Output = $_.Exception.Message }
@@ -1102,9 +1125,9 @@ function Get-OpenCodeNpmExePath() {
 }
 
 function Get-LocalOpenCodeVersion() {
-  [void](Repair-OpenCodeUserPath)
+  $preferred = Get-PreferredOpenCodeInfo
   Report-OpenCodeResolutionMismatch
-  return (Get-OpenCodeResolvedInfo).Version
+  return $preferred.Version
 }
 
 function Try-FixOpenCodeNpmShim([string]$ExePath) {
