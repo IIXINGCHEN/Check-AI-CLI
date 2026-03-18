@@ -2,7 +2,7 @@ $ErrorActionPreference = 'Stop'
 
 # This script supports "irm ... | iex" one-liner install/update for this repo's files
 # Env vars:
-# - CHECK_AI_CLI_REF: pin tag/commit/main; default latest stable release, fallback main
+# - CHECK_AI_CLI_REF: pin tag/commit/main; default latest stable release, else latest main commit, fallback main
 # - CHECK_AI_CLI_RAW_BASE: raw base URL (mirror)
 # - CHECK_AI_CLI_INSTALL_DIR: install directory (default Program Files)
 # - CHECK_AI_CLI_PATH_SCOPE: CurrentUser or Machine (default Machine)
@@ -38,13 +38,31 @@ function Get-LatestReleaseApiUrl() {
   return 'https://api.github.com/repos/IIXINGCHEN/Check-AI-CLI/releases/latest'
 }
 
+function Get-LatestMainRefApiUrl() {
+  return 'https://api.github.com/repos/IIXINGCHEN/Check-AI-CLI/git/ref/heads/main'
+}
+
+function Get-GitHubApiHeaders() {
+  return @{ 'User-Agent' = 'check-ai-cli-installer'; 'Accept' = 'application/vnd.github+json' }
+}
+
 function Get-LatestStableRef() {
   try {
-    $headers = @{ 'User-Agent' = 'check-ai-cli-installer'; 'Accept' = 'application/vnd.github+json' }
-    $json = Invoke-RestMethod -Uri (Get-LatestReleaseApiUrl) -Headers $headers -ErrorAction Stop
+    $json = Invoke-RestMethod -Uri (Get-LatestReleaseApiUrl) -Headers (Get-GitHubApiHeaders) -ErrorAction Stop
     $tag = [string]$json.tag_name
     if ([string]::IsNullOrWhiteSpace($tag)) { return $null }
     return $tag.Trim()
+  } catch {
+    return $null
+  }
+}
+
+function Get-LatestMainCommitRef() {
+  try {
+    $json = Invoke-RestMethod -Uri (Get-LatestMainRefApiUrl) -Headers (Get-GitHubApiHeaders) -ErrorAction Stop
+    $sha = [string]$json.object.sha
+    if ([string]::IsNullOrWhiteSpace($sha)) { return $null }
+    return $sha.Trim()
   } catch {
     return $null
   }
@@ -54,6 +72,8 @@ function Get-ResolvedRef() {
   if (Test-HasExplicitRef) { return (Get-RequestedRef) }
   $stable = Get-LatestStableRef
   if (-not [string]::IsNullOrWhiteSpace($stable)) { return $stable }
+  $mainCommit = Get-LatestMainCommitRef
+  if (-not [string]::IsNullOrWhiteSpace($mainCommit)) { return $mainCommit }
   $fallback = Get-DefaultRef
   Write-Warn "Latest stable release ref unavailable. Falling back to $fallback."
   return $fallback

@@ -3,7 +3,7 @@ set -euo pipefail
 
 # This script supports "curl | bash" to install/update this repo's files
 # Env vars:
-# - CHECK_AI_CLI_REF: pin tag/commit/main; unset => latest stable release, fallback main
+# - CHECK_AI_CLI_REF: pin tag/commit/main; unset => latest stable release, else latest main commit, fallback main
 # - CHECK_AI_CLI_RAW_BASE: raw base URL (mirror). Default trusts GitHub official raw only
 # - CHECK_AI_CLI_ALLOW_UNTRUSTED_MIRROR: set to 1 to allow untrusted mirrors
 # - CHECK_AI_CLI_INSTALL_DIR: install directory, default current dir
@@ -43,6 +43,10 @@ get_latest_release_api_url() {
   printf '%s' 'https://api.github.com/repos/IIXINGCHEN/Check-AI-CLI/releases/latest'
 }
 
+get_latest_main_ref_api_url() {
+  printf '%s' 'https://api.github.com/repos/IIXINGCHEN/Check-AI-CLI/git/ref/heads/main'
+}
+
 fetch_text() {
   local url="$1"
   if command_exists curl; then curl -fsSL "$url"; return 0; fi
@@ -54,6 +58,10 @@ extract_release_tag() {
   tr -d '\r\n' | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p'
 }
 
+extract_main_ref_sha() {
+  tr -d '\r\n' | sed -n 's/.*"object"[[:space:]]*:[[:space:]]*{[^}]*"sha"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p'
+}
+
 get_latest_stable_ref() {
   local text tag
   text="$(fetch_text "$(get_latest_release_api_url)" 2>/dev/null || true)"
@@ -62,11 +70,21 @@ get_latest_stable_ref() {
   printf '%s' "$tag"
 }
 
+get_latest_main_commit_ref() {
+  local text sha
+  text="$(fetch_text "$(get_latest_main_ref_api_url)" 2>/dev/null || true)"
+  sha="$(printf '%s' "$text" | extract_main_ref_sha)"
+  [ -n "$sha" ] || return 1
+  printf '%s' "$sha"
+}
+
 get_resolved_ref() {
-  local stable fallback
+  local stable main_commit fallback
   if has_explicit_ref; then get_requested_ref; return 0; fi
   stable="$(get_latest_stable_ref || true)"
   if [ -n "$stable" ]; then printf '%s' "$stable"; return 0; fi
+  main_commit="$(get_latest_main_commit_ref || true)"
+  if [ -n "$main_commit" ]; then printf '%s' "$main_commit"; return 0; fi
   fallback="$(get_requested_ref)"
   log_warn "Latest stable release ref unavailable. Falling back to $fallback." >&2
   printf '%s' "$fallback"

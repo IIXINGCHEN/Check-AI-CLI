@@ -119,7 +119,31 @@ Get-BaseUrl
   Assert-Equal $result 'https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/v1.2.3' 'Expected implicit installer ref to resolve to the latest stable release tag.'
 }
 
-Run-Test 'Get-BaseUrl falls back to main when stable release lookup fails' {
+Run-Test 'Get-BaseUrl falls back to latest main commit when stable release lookup fails' {
+  $script = @"
+`$env:CHECK_AI_CLI_SKIP_MAIN = '1'
+Remove-Item Env:CHECK_AI_CLI_REF -ErrorAction SilentlyContinue
+Remove-Item Env:CHECK_AI_CLI_RAW_BASE -ErrorAction SilentlyContinue
+. '$repoRoot\install.ps1'
+function Invoke-RestMethod {
+  param([string]`$Uri, [hashtable]`$Headers)
+  if (`$Uri -like '*/releases/latest') { throw 'boom' }
+  if (`$Uri -like '*/git/ref/heads/main') {
+    return [pscustomobject]@{
+      object = [pscustomobject]@{ sha = '0123456789abcdef0123456789abcdef01234567' }
+    }
+  }
+  throw \"unexpected uri: `$Uri\"
+}
+Get-BaseUrl
+"@
+
+  $result = Invoke-PwshSnippet $script
+
+  Assert-Equal $result 'https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/0123456789abcdef0123456789abcdef01234567' 'Expected installer to fall back to the latest main commit when latest release lookup fails.'
+}
+
+Run-Test 'Get-BaseUrl falls back to main when stable release and main commit lookups fail' {
   $script = @"
 `$env:CHECK_AI_CLI_SKIP_MAIN = '1'
 Remove-Item Env:CHECK_AI_CLI_REF -ErrorAction SilentlyContinue
@@ -134,7 +158,7 @@ function Invoke-RestMethod { throw 'boom' }
 
   $result = Invoke-PwshSnippet $script
 
-  Assert-Equal $result 'https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main|Latest stable release ref unavailable. Falling back to main.' 'Expected installer to fall back to main when latest release lookup fails.'
+  Assert-Equal $result 'https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main|Latest stable release ref unavailable. Falling back to main.' 'Expected installer to fall back to main only when both latest release and latest main commit lookups fail.'
 }
 
 Run-Test 'Get-BaseUrl respects explicit CHECK_AI_CLI_REF' {

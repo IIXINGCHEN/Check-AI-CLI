@@ -71,13 +71,13 @@ $env:CHECK_AI_CLI_AUTO = '1'
 
 ### Windows (无需 clone, 一行命令安装到默认目录并加入 PATH)
 ```powershell
-# 推荐: stable bootstrap asset
+# 推荐: self-healing raw bootstrap
 # 管理员 PowerShell: 默认安装到 C:\Program Files\Tools\Check-AI-CLI, 写入 Machine PATH
 # 非管理员 PowerShell: 默认安装到 %LOCALAPPDATA%\Programs\Tools\Check-AI-CLI, 写入 CurrentUser PATH
-irm https://github.com/IIXINGCHEN/Check-AI-CLI/releases/latest/download/install.ps1 | iex
+irm https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main/install.ps1 | iex
 
 # 兼容入口: raw main bootstrap
-# 若未显式设置 CHECK_AI_CLI_REF / CHECK_AI_CLI_RAW_BASE, bootstrap 会自动解析 latest stable release tag
+# 若未显式设置 CHECK_AI_CLI_REF / CHECK_AI_CLI_RAW_BASE, bootstrap 会优先解析 latest release tag, 其次解析 latest main commit SHA
 irm https://github.com/IIXINGCHEN/Check-AI-CLI/raw/main/install.ps1 | iex
 ```
 
@@ -85,7 +85,7 @@ irm https://github.com/IIXINGCHEN/Check-AI-CLI/raw/main/install.ps1 | iex
 ```powershell
 $env:CHECK_AI_CLI_INSTALL_DIR = (Get-Location).Path
 $env:CHECK_AI_CLI_PATH_SCOPE = 'CurrentUser'
-irm https://github.com/IIXINGCHEN/Check-AI-CLI/releases/latest/download/install.ps1 | iex
+irm https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main/install.ps1 | iex
 ```
 
 ### 安全与稳定(推荐设置)
@@ -94,20 +94,21 @@ irm https://github.com/IIXINGCHEN/Check-AI-CLI/releases/latest/download/install.
 ```powershell
 $env:HTTP_PROXY  = 'http://127.0.0.1:7890'
 $env:HTTPS_PROXY = 'http://127.0.0.1:7890'
-irm https://github.com/IIXINGCHEN/Check-AI-CLI/releases/latest/download/install.ps1 | iex
-```
-
-#### 默认: latest stable release
-```powershell
-# 未设置 CHECK_AI_CLI_REF 时, bootstrap 会自动解析 GitHub latest release tag
 irm https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main/install.ps1 | iex
 ```
 
-#### 推荐: 固定版本(避免 release 继续前进)
+#### 默认: immutable ref auto-resolution
+```powershell
+# 未设置 CHECK_AI_CLI_REF 时, bootstrap 会优先解析 GitHub latest release tag
+# 如果仓库还没有 release, 则继续解析 latest main commit SHA
+irm https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main/install.ps1 | iex
+```
+
+#### 推荐: 固定版本(避免默认解析继续前进)
 ```powershell
 # 你可以固定到 tag 或 commit SHA
 $env:CHECK_AI_CLI_REF = 'v1.2.3'
-irm https://github.com/IIXINGCHEN/Check-AI-CLI/releases/latest/download/install.ps1 | iex
+irm https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main/install.ps1 | iex
 ```
 
 #### 开发/排障: 强制使用 main
@@ -159,19 +160,20 @@ curl -fsSL https://github.com/IIXINGCHEN/Check-AI-CLI/raw/main/install.sh | bash
 export HTTP_PROXY="http://127.0.0.1:7890"
 export HTTPS_PROXY="http://127.0.0.1:7890"
 
-# 推荐: stable bootstrap asset
-curl -fsSL https://github.com/IIXINGCHEN/Check-AI-CLI/releases/latest/download/install.sh | bash
+# 推荐: self-healing raw bootstrap
+curl -fsSL https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main/install.sh | bash
 ```
 
 ```bash
-# 默认: 若未设置 CHECK_AI_CLI_REF, raw main bootstrap 会自动解析 latest stable release tag
+# 默认: 若未设置 CHECK_AI_CLI_REF, raw main bootstrap 会优先解析 latest release tag
+# 如果仓库还没有 release, 则继续解析 latest main commit SHA
 curl -fsSL https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main/install.sh | bash
 ```
 
 ```bash
 # 固定到 tag 或 commit
 export CHECK_AI_CLI_REF="v1.2.3"
-curl -fsSL https://github.com/IIXINGCHEN/Check-AI-CLI/releases/latest/download/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main/install.sh | bash
 ```
 
 ```bash
@@ -201,7 +203,7 @@ git commit -m "Update checksums"
 $env:CHECK_AI_CLI_SHOW_PROGRESS = '1'
 $env:HTTP_PROXY  = 'http://127.0.0.1:7890'
 $env:HTTPS_PROXY = 'http://127.0.0.1:7890'
-irm https://github.com/IIXINGCHEN/Check-AI-CLI/releases/latest/download/install.ps1 | iex
+irm https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main/install.ps1 | iex
 ```
 
 #### Bash
@@ -209,7 +211,7 @@ irm https://github.com/IIXINGCHEN/Check-AI-CLI/releases/latest/download/install.
 export CHECK_AI_CLI_SHOW_PROGRESS=1
 export HTTP_PROXY="http://127.0.0.1:7890"
 export HTTPS_PROXY="http://127.0.0.1:7890"
-curl -fsSL https://github.com/IIXINGCHEN/Check-AI-CLI/releases/latest/download/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main/install.sh | bash
 ```
 
 启用 `CHECK_AI_CLI_SHOW_PROGRESS=1` 后, 安装阶段会输出统一的字节进度条:

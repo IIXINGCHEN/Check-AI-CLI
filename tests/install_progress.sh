@@ -86,7 +86,28 @@ test_resolve_base_prefers_latest_stable_release() {
   assert_equal "$output" 'https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/v1.2.3' 'Expected implicit shell installer ref to resolve to the latest stable release tag.'
 }
 
-test_resolve_base_falls_back_to_main_on_release_lookup_failure() {
+test_resolve_base_falls_back_to_latest_main_commit_on_release_lookup_failure() {
+  local output
+  output="$(
+    CHECK_AI_CLI_SKIP_MAIN=1 bash --noprofile --norc -c "
+      source \"$ROOT_DIR/install.sh\"
+      fetch_text() {
+        if [ \"\$1\" = 'https://api.github.com/repos/IIXINGCHEN/Check-AI-CLI/releases/latest' ]; then
+          return 1
+        fi
+        if [ \"\$1\" = 'https://api.github.com/repos/IIXINGCHEN/Check-AI-CLI/git/ref/heads/main' ]; then
+          printf '{\"object\":{\"sha\":\"0123456789abcdef0123456789abcdef01234567\"}}'
+          return 0
+        fi
+        return 2
+      }
+      resolve_base
+    "
+  )"
+  assert_equal "$output" 'https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/0123456789abcdef0123456789abcdef01234567' 'Expected shell installer to fall back to the latest main commit when stable release lookup fails.'
+}
+
+test_resolve_base_falls_back_to_main_when_all_ref_lookups_fail() {
   local output
   output="$(
     CHECK_AI_CLI_SKIP_MAIN=1 bash --noprofile --norc -c "
@@ -95,7 +116,7 @@ test_resolve_base_falls_back_to_main_on_release_lookup_failure() {
       resolve_base 2>/dev/null
     "
   )"
-  assert_equal "$output" 'https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main' 'Expected shell installer to fall back to main when stable release lookup fails.'
+  assert_equal "$output" 'https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main' 'Expected shell installer to fall back to main only when release and main commit lookups both fail.'
 }
 
 test_resolve_base_respects_explicit_ref() {
@@ -152,7 +173,8 @@ run_test 'Shell byte progress renders hash bar at fifty percent' test_render_fif
 run_test 'Shell byte progress clamps at one hundred percent' test_clamp_to_hundred
 run_test 'download_with_retry works under nounset' test_download_with_retry_under_nounset
 run_test 'resolve_base prefers latest stable release' test_resolve_base_prefers_latest_stable_release
-run_test 'resolve_base falls back to main on release lookup failure' test_resolve_base_falls_back_to_main_on_release_lookup_failure
+run_test 'resolve_base falls back to latest main commit on release lookup failure' test_resolve_base_falls_back_to_latest_main_commit_on_release_lookup_failure
+run_test 'resolve_base falls back to main when all ref lookups fail' test_resolve_base_falls_back_to_main_when_all_ref_lookups_fail
 run_test 'resolve_base respects explicit ref' test_resolve_base_respects_explicit_ref
 run_test 'resolve_base respects explicit raw base' test_resolve_base_respects_explicit_raw_base
 run_test 'main exits cleanly under nounset' test_main_exit_trap_under_nounset
