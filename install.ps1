@@ -465,6 +465,33 @@ function Add-ToPath([string]$Dir, [string]$Scope) {
   $env:Path = $newPath
 }
 
+function Get-MachineInstallDir() {
+  return (Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'Tools\Check-AI-CLI')
+}
+
+function Get-InstallCommandCandidates() {
+  return @('check-ai-cli.ps1', 'check-ai-cli.cmd', 'check-ai-cli')
+}
+
+function Test-InstallHasCommand([string]$Dir) {
+  $binDir = Join-Path $Dir 'bin'
+  foreach ($name in (Get-InstallCommandCandidates)) {
+    if (Test-Path -LiteralPath (Join-Path $binDir $name)) { return $true }
+  }
+  return $false
+}
+
+function Warn-ShadowedCurrentUserInstall([string]$Dir, [string]$Scope) {
+  if ($Scope -ne 'CurrentUser') { return }
+  if (Test-IsUnderProgramFiles $Dir) { return }
+  $machineDir = Get-MachineInstallDir
+  if ((Normalize-Dir $machineDir).ToLowerInvariant() -eq (Normalize-Dir $Dir).ToLowerInvariant()) { return }
+  if (-not (Test-InstallHasCommand $machineDir)) { return }
+  Write-Warn "Detected another Check-AI-CLI install at: $machineDir"
+  Write-Warn 'A machine-wide install may still resolve before this CurrentUser install in new PowerShell sessions.'
+  Write-Warn 'Fix: rerun the installer as Administrator to update the machine-wide copy, or uninstall the older Program Files install.'
+}
+
 function Print-NextSteps([string]$Dir) {
   Write-Host ""
   Write-Host "Next:"
@@ -520,6 +547,7 @@ function Install-All([string]$Dir, [string]$Scope, [bool]$Run) {
   Add-ToPath $binDir $Scope
   Write-Success "Installed to: $Dir"
   Print-NextSteps $Dir
+  Warn-ShadowedCurrentUserInstall $Dir $Scope
   Print-ChinaTip
   if ($Run) { & (Join-Path $Dir 'bin\check-ai-cli.ps1') }
 }

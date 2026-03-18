@@ -101,4 +101,40 @@ function Invoke-WebRequest {
   Assert-Equal $result '216|Head,Get' 'Expected Get-RemoteFileSize to retry with GET and use RawContentLength when HEAD lacks Content-Length.'
 }
 
+Run-Test 'Warn-ShadowedCurrentUserInstall reports an older machine-wide install' {
+  $script = @"
+`$env:CHECK_AI_CLI_SKIP_MAIN = '1'
+. '$repoRoot\install.ps1'
+`$script:Warnings = @()
+function Write-Warn([string]`$Message) { `$script:Warnings += `$Message }
+function Get-MachineInstallDir() { return 'C:\Program Files\Tools\Check-AI-CLI' }
+function Test-InstallHasCommand([string]`$Dir) {
+  return `$Dir -eq 'C:\Program Files\Tools\Check-AI-CLI'
+}
+Warn-ShadowedCurrentUserInstall 'C:\Users\Tester\AppData\Local\Programs\Tools\Check-AI-CLI' 'CurrentUser'
+`$script:Warnings -join '|'
+"@
+
+  $result = Invoke-PwshSnippet $script
+
+  Assert-Equal $result 'Detected another Check-AI-CLI install at: C:\Program Files\Tools\Check-AI-CLI|A machine-wide install may still resolve before this CurrentUser install in new PowerShell sessions.|Fix: rerun the installer as Administrator to update the machine-wide copy, or uninstall the older Program Files install.' 'Expected installer to warn when a stale Program Files install can shadow a CurrentUser install.'
+}
+
+Run-Test 'Warn-ShadowedCurrentUserInstall stays quiet when no machine-wide install exists' {
+  $script = @"
+`$env:CHECK_AI_CLI_SKIP_MAIN = '1'
+. '$repoRoot\install.ps1'
+`$script:Warnings = @()
+function Write-Warn([string]`$Message) { `$script:Warnings += `$Message }
+function Get-MachineInstallDir() { return 'C:\Program Files\Tools\Check-AI-CLI' }
+function Test-InstallHasCommand([string]`$Dir) { return `$false }
+Warn-ShadowedCurrentUserInstall 'C:\Users\Tester\AppData\Local\Programs\Tools\Check-AI-CLI' 'CurrentUser'
+`$script:Warnings.Count
+"@
+
+  $result = Invoke-PwshSnippet $script
+
+  Assert-Equal $result '0' 'Expected no shadowing warning when no machine-wide install is present.'
+}
+
 Write-Host '[PASS] All install progress PowerShell tests passed.' -ForegroundColor Green
