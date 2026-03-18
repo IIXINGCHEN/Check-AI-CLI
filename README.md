@@ -97,7 +97,6 @@ irm https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main/install.ps1 |
 
 #### 推荐: 使用代理加速, 不改下载源
 ```powershell
-$ProgressPreference = 'SilentlyContinue'
 $env:HTTP_PROXY  = 'http://127.0.0.1:7890'
 $env:HTTPS_PROXY = 'http://127.0.0.1:7890'
 irm https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main/install.ps1 | iex
@@ -177,7 +176,6 @@ git commit -m "Update checksums"
 
 #### PowerShell
 ```powershell
-$ProgressPreference = 'SilentlyContinue'
 $env:CHECK_AI_CLI_SHOW_PROGRESS = '1'
 $env:HTTP_PROXY  = 'http://127.0.0.1:7890'
 $env:HTTPS_PROXY = 'http://127.0.0.1:7890'
@@ -190,6 +188,12 @@ export CHECK_AI_CLI_SHOW_PROGRESS=1
 export HTTP_PROXY="http://127.0.0.1:7890"
 export HTTPS_PROXY="http://127.0.0.1:7890"
 curl -fsSL https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main/install.sh | bash
+```
+
+启用 `CHECK_AI_CLI_SHOW_PROGRESS=1` 后, 安装阶段会输出统一的字节进度条:
+
+```text
+[##########..........] 50%
 ```
 
 ### 核心依赖检查

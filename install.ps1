@@ -138,6 +138,42 @@ function Download-ToFile([string]$Url, [string]$OutFile) {
   Invoke-WebRequest -Uri $Url -Headers $headers -UseBasicParsing -OutFile $OutFile | Out-Null
 }
 
+function Convert-ToPositiveInt64([object]$Value) {
+  $result = 0L
+  if ($null -eq $Value) { return 0L }
+  if (-not [long]::TryParse(([string]$Value).Trim(), [ref]$result)) { return 0L }
+  if ($result -lt 1) { return 0L }
+  return $result
+}
+
+function Get-ContentLengthHeader($Headers) {
+  if ($null -eq $Headers) { return 0L }
+  $value = $Headers['Content-Length']
+  if ($null -eq $value) { $value = $Headers.'Content-Length' }
+  if ($value -is [array]) { $value = $value[-1] }
+  return (Convert-ToPositiveInt64 $value)
+}
+
+function Get-RemoteFileSize([string]$Url) {
+  $headers = @{ 'User-Agent' = 'check-ai-cli-installer' }
+  $response = $null
+  try {
+    $response = Invoke-WebRequest -Uri $Url -Headers $headers -UseBasicParsing -Method Head
+  } catch {
+    $response = $null
+  }
+  $size = Get-ContentLengthHeader $response.Headers
+  if ($size -gt 0) { return $size }
+  try {
+    $response = Invoke-WebRequest -Uri $Url -Headers $headers -UseBasicParsing -Method Get
+  } catch {
+    return 0L
+  }
+  $size = Convert-ToPositiveInt64 $response.RawContentLength
+  if ($size -gt 0) { return $size }
+  return (Get-ContentLengthHeader $response.Headers)
+}
+
 function Download-FileWithRetry([string]$Url, [string]$OutFile) {
   $tries = Get-RetryCount
   $tmp = Get-TempFilePath $OutFile
@@ -175,6 +211,71 @@ function Ensure-ParentDirectory([string]$Path) {
   Ensure-Directory $parent
 }
 
+function Get-FileSize([string]$Path) {
+  if (-not (Test-Path -LiteralPath $Path)) { return 0L }
+  return (Get-Item -LiteralPath $Path).Length
+}
+
+function New-ByteProgressState([long]$TotalBytes, [int]$Width = 20) {
+  return @{
+    TotalBytes = [Math]::Max(1L, $TotalBytes)
+    CurrentBytes = 0L
+    Width = [Math]::Max(1, $Width)
+    Visible = $false
+  }
+}
+
+function Get-ByteProgressPercent([hashtable]$State) {
+  $value = [int](($State.CurrentBytes * 100) / $State.TotalBytes)
+  if ($value -lt 0) { return 0 }
+  if ($value -gt 100) { return 100 }
+  return $value
+}
+
+function Get-ByteProgressFill([hashtable]$State) {
+  $fill = [int](([double](Get-ByteProgressPercent $State) / 100) * $State.Width)
+  if ($fill -lt 0) { return 0 }
+  if ($fill -gt $State.Width) { return $State.Width }
+  return $fill
+}
+
+function New-BarText([string]$Character, [int]$Count) {
+  if ($Count -le 0) { return '' }
+  return ($Character * $Count)
+}
+
+function Get-ByteProgressLine([hashtable]$State) {
+  $fill = Get-ByteProgressFill $State
+  $rest = $State.Width - $fill
+  $bar = (New-BarText '#' $fill) + (New-BarText '.' $rest)
+  return "[{0}] {1}%" -f $bar, (Get-ByteProgressPercent $State)
+}
+
+function Add-ByteProgress([hashtable]$State, [long]$Bytes) {
+  $next = $State.CurrentBytes + [Math]::Max(0L, $Bytes)
+  if ($next -gt $State.TotalBytes) { $next = $State.TotalBytes }
+  $State.CurrentBytes = $next
+  return $State
+}
+
+function Test-ProgressOutputEnabled() {
+  if (-not (Get-ShowProgress)) { return $false }
+  try { $null = $Host.UI.RawUI; return $true } catch { return $false }
+}
+
+function Write-ByteProgress([hashtable]$State) {
+  if (-not $script:UseByteProgress) { return }
+  Write-Host "`r$(Get-ByteProgressLine $State)" -NoNewline
+  $State.Visible = $true
+}
+
+function Close-ByteProgress([hashtable]$State) {
+  if (-not $script:UseByteProgress) { return }
+  if (-not $State.Visible) { return }
+  Write-Host ""
+  $State.Visible = $false
+}
+
 function Install-OneFile([string]$Base, [string]$InstallDir, [hashtable]$Entry) {
   $url = "$Base/$($Entry.Remote)"
   $out = Join-Path $InstallDir $Entry.Local
@@ -203,6 +304,18 @@ function Read-Manifest([string]$Text) {
   return $map
 }
 
+function Get-InstallEntries([hashtable]$Manifest) {
+  $files = @()
+  foreach ($remote in ($Manifest.Keys | Sort-Object)) {
+    $files += @{
+      Remote = $remote
+      Local = ($remote -replace '/', '\')
+      Size = 0L
+    }
+  }
+  return $files
+}
+
 function Get-ExpectedHash([hashtable]$Manifest, [string]$RemotePath) {
   if ($Manifest.ContainsKey($RemotePath)) { return [string]$Manifest[$RemotePath] }
   return $null
@@ -223,6 +336,36 @@ function New-StagingDir() {
   $root = Join-Path ([IO.Path]::GetTempPath()) ('check-ai-cli\' + [Guid]::NewGuid().ToString('N'))
   Ensure-Directory $root
   return $root
+}
+
+function Resolve-EntrySizes([string]$Base, [object[]]$Entries) {
+  foreach ($entry in $Entries) {
+    $entry.Size = Get-RemoteFileSize "$Base/$($entry.Remote)"
+    if ($entry.Size -lt 1) { return $false }
+  }
+  return $true
+}
+
+function Get-DownloadTotalBytes([long]$ManifestSize, [object[]]$Entries) {
+  $total = $ManifestSize
+  foreach ($entry in $Entries) { $total += $entry.Size }
+  return $total
+}
+
+function Start-ByteProgress([string]$Base, [string]$ManifestFile, [object[]]$Entries) {
+  if (-not $script:UseByteProgress) { return $null }
+  $manifestSize = Get-FileSize $ManifestFile
+  if ($manifestSize -lt 1) { return $null }
+  if (-not (Resolve-EntrySizes $Base $Entries)) {
+    $script:UseByteProgress = $false
+    Write-Warn 'Progress disabled: could not resolve remote content lengths.'
+    return $null
+  }
+  $state = New-ByteProgressState (Get-DownloadTotalBytes $manifestSize $Entries)
+  Write-ByteProgress $state
+  Add-ByteProgress $state $manifestSize | Out-Null
+  Write-ByteProgress $state
+  return $state
 }
 
 function Stage-OneFile([string]$Base, [string]$StageDir, [hashtable]$Entry) {
@@ -341,7 +484,7 @@ function Print-ChinaTip() {
   Write-Host "  Set `$env:CHECK_AI_CLI_REF to pin a tag/commit for stability."
   Write-Host "  Set `$env:CHECK_AI_CLI_RAW_BASE only if you trust the mirror."
   Write-Host "  Set `$env:CHECK_AI_CLI_ALLOW_UNTRUSTED_MIRROR = '1' to bypass mirror check."
-  Write-Host "  Set `$ProgressPreference = 'SilentlyContinue' to speed up downloads."
+  Write-Host "  Set `$env:CHECK_AI_CLI_SHOW_PROGRESS = '1' to view byte progress."
   Write-Host ""
 }
 
@@ -355,17 +498,19 @@ function Install-All([string]$Dir, [string]$Scope, [bool]$Run) {
     $manifestText = Get-Content -Raw -LiteralPath $manifestFile
     if ([string]::IsNullOrWhiteSpace($manifestText)) { throw "Failed to download checksums.sha256" }
     $manifest = Read-Manifest $manifestText
-
-    $files = @()
-    foreach ($remote in ($manifest.Keys | Sort-Object)) {
-      $files += @{ Remote = $remote; Local = ($remote -replace '/', '\') }
-    }
+    $files = Get-InstallEntries $manifest
+    $progress = Start-ByteProgress $base $manifestFile $files
 
     foreach ($f in $files) {
-      Write-Info "Downloading: $($f.Remote)"
+      if (-not $progress) { Write-Info "Downloading: $($f.Remote)" }
       $staged = Stage-OneFile $base $stage $f
       Verify-FileHash $manifest $f.Remote $staged
+      if ($progress) {
+        Add-ByteProgress $progress (Get-FileSize $staged) | Out-Null
+        Write-ByteProgress $progress
+      }
     }
+    if ($progress) { Close-ByteProgress $progress }
     Deploy-All $stage $Dir $files
   } finally {
     if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue }
@@ -381,6 +526,12 @@ function Install-All([string]$Dir, [string]$Scope, [bool]$Run) {
 
 function Get-ShowProgress() {
   $v = $env:CHECK_AI_CLI_SHOW_PROGRESS
+  if ([string]::IsNullOrWhiteSpace($v)) { return $false }
+  return $v.Trim() -eq '1'
+}
+
+function Get-SkipMain() {
+  $v = $env:CHECK_AI_CLI_SKIP_MAIN
   if ([string]::IsNullOrWhiteSpace($v)) { return $false }
   return $v.Trim() -eq '1'
 }
@@ -406,27 +557,31 @@ function Print-AdminHint() {
   Write-Host ""
 }
 
-try {
+function Invoke-InstallerMain() {
   $installDir = Get-InstallDir
   $pathScope = Get-PathScope
   $runAfter = Get-RunFlag
 
-  if (Test-IsUnderProgramFiles $installDir) { Require-Admin "writing to Program Files: $installDir" }
-  if ($pathScope -eq 'Machine') { Require-Admin "updating Machine PATH" }
+  try {
+    if (Test-IsUnderProgramFiles $installDir) { Require-Admin "writing to Program Files: $installDir" }
+    if ($pathScope -eq 'Machine') { Require-Admin "updating Machine PATH" }
 
-  Require-WebRequest
-  if (Get-ShowProgress) {
-    Set-ProgressMode 'Continue'
-  } else {
+    Require-WebRequest
+    $script:UseByteProgress = Test-ProgressOutputEnabled
     Set-ProgressMode 'SilentlyContinue'
+    Ensure-Directory $installDir
+    Install-All $installDir $pathScope $runAfter
+  } catch {
+    if ($script:UseByteProgress) { Write-Host "" }
+    Write-Fail $_.Exception.Message
+    Print-AdminHint
+    Print-ChinaTip
+    exit 1
+  } finally {
+    Restore-Progress
   }
-  Ensure-Directory $installDir
-  Install-All $installDir $pathScope $runAfter
-} catch {
-  Write-Fail $_.Exception.Message
-  Print-AdminHint
-  Print-ChinaTip
-  exit 1
-} finally {
-  Restore-Progress
+}
+
+if (-not (Get-SkipMain)) {
+  Invoke-InstallerMain
 }
