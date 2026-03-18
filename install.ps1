@@ -2,6 +2,7 @@ $ErrorActionPreference = 'Stop'
 
 # This script supports "irm ... | iex" one-liner install/update for this repo's files
 # Env vars:
+# - CHECK_AI_CLI_REF: pin tag/commit/main; default latest stable release, fallback main
 # - CHECK_AI_CLI_RAW_BASE: raw base URL (mirror)
 # - CHECK_AI_CLI_INSTALL_DIR: install directory (default Program Files)
 # - CHECK_AI_CLI_PATH_SCOPE: CurrentUser or Machine (default Machine)
@@ -18,14 +19,44 @@ function Get-AllowUntrustedMirrorFlag() {
   return $v.Trim() -eq '1'
 }
 
+function Get-DefaultRef() { return 'main' }
+
+function Test-HasExplicitRef() {
+  return -not [string]::IsNullOrWhiteSpace($env:CHECK_AI_CLI_REF)
+}
+
 function Get-RequestedRef() {
-  $v = $env:CHECK_AI_CLI_REF
-  if ([string]::IsNullOrWhiteSpace($v)) { return 'main' }
-  return $v.Trim()
+  if (-not (Test-HasExplicitRef)) { return (Get-DefaultRef) }
+  return $env:CHECK_AI_CLI_REF.Trim()
 }
 
 function Get-GitHubRawBase([string]$Ref) {
   return "https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/$Ref"
+}
+
+function Get-LatestReleaseApiUrl() {
+  return 'https://api.github.com/repos/IIXINGCHEN/Check-AI-CLI/releases/latest'
+}
+
+function Get-LatestStableRef() {
+  try {
+    $headers = @{ 'User-Agent' = 'check-ai-cli-installer'; 'Accept' = 'application/vnd.github+json' }
+    $json = Invoke-RestMethod -Uri (Get-LatestReleaseApiUrl) -Headers $headers -ErrorAction Stop
+    $tag = [string]$json.tag_name
+    if ([string]::IsNullOrWhiteSpace($tag)) { return $null }
+    return $tag.Trim()
+  } catch {
+    return $null
+  }
+}
+
+function Get-ResolvedRef() {
+  if (Test-HasExplicitRef) { return (Get-RequestedRef) }
+  $stable = Get-LatestStableRef
+  if (-not [string]::IsNullOrWhiteSpace($stable)) { return $stable }
+  $fallback = Get-DefaultRef
+  Write-Warn "Latest stable release ref unavailable. Falling back to $fallback."
+  return $fallback
 }
 
 function Test-IsTrustedBase([string]$Base) {
@@ -60,7 +91,7 @@ function Get-BaseUrl() {
     Require-TrustedBase $base
     return $base
   }
-  return (Get-GitHubRawBase (Get-RequestedRef))
+  return (Get-GitHubRawBase (Get-ResolvedRef))
 }
 
 function Get-InstallDir() {

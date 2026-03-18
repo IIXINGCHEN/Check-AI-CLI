@@ -74,11 +74,60 @@ test_download_with_retry_under_nounset() {
   assert_equal "$output" 'ready' 'Expected download_with_retry to work under set -u after local variable initialization.'
 }
 
+test_resolve_base_prefers_latest_stable_release() {
+  local output
+  output="$(
+    CHECK_AI_CLI_SKIP_MAIN=1 bash --noprofile --norc -c "
+      source \"$ROOT_DIR/install.sh\"
+      fetch_text() { printf '{\"tag_name\":\"v1.2.3\"}'; }
+      resolve_base
+    "
+  )"
+  assert_equal "$output" 'https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/v1.2.3' 'Expected implicit shell installer ref to resolve to the latest stable release tag.'
+}
+
+test_resolve_base_falls_back_to_main_on_release_lookup_failure() {
+  local output
+  output="$(
+    CHECK_AI_CLI_SKIP_MAIN=1 bash --noprofile --norc -c "
+      source \"$ROOT_DIR/install.sh\"
+      fetch_text() { return 1; }
+      resolve_base 2>/dev/null
+    "
+  )"
+  assert_equal "$output" 'https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main' 'Expected shell installer to fall back to main when stable release lookup fails.'
+}
+
+test_resolve_base_respects_explicit_ref() {
+  local output
+  output="$(
+    CHECK_AI_CLI_SKIP_MAIN=1 CHECK_AI_CLI_REF=main bash --noprofile --norc -c "
+      source \"$ROOT_DIR/install.sh\"
+      fetch_text() { exit 99; }
+      resolve_base
+    "
+  )"
+  assert_equal "$output" 'https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main' 'Expected explicit CHECK_AI_CLI_REF to bypass shell stable release resolution.'
+}
+
+test_resolve_base_respects_explicit_raw_base() {
+  local output
+  output="$(
+    CHECK_AI_CLI_SKIP_MAIN=1 CHECK_AI_CLI_RAW_BASE='https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main' bash --noprofile --norc -c "
+      source \"$ROOT_DIR/install.sh\"
+      fetch_text() { exit 99; }
+      resolve_base
+    "
+  )"
+  assert_equal "$output" 'https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main' 'Expected explicit CHECK_AI_CLI_RAW_BASE to bypass shell stable release resolution.'
+}
+
 test_main_exit_trap_under_nounset() {
   local output
   output="$(
     CHECK_AI_CLI_SKIP_MAIN=1 bash --noprofile --norc -c "
       set -euo pipefail
+      CHECK_AI_CLI_REF=main
       source \"$ROOT_DIR/install.sh\"
       require_fetch_tool() { return 0; }
       require_sha256_tool() { return 0; }
@@ -102,6 +151,10 @@ run_test 'install.sh can load helpers without executing main flow' test_source_w
 run_test 'Shell byte progress renders hash bar at fifty percent' test_render_fifty_percent
 run_test 'Shell byte progress clamps at one hundred percent' test_clamp_to_hundred
 run_test 'download_with_retry works under nounset' test_download_with_retry_under_nounset
+run_test 'resolve_base prefers latest stable release' test_resolve_base_prefers_latest_stable_release
+run_test 'resolve_base falls back to main on release lookup failure' test_resolve_base_falls_back_to_main_on_release_lookup_failure
+run_test 'resolve_base respects explicit ref' test_resolve_base_respects_explicit_ref
+run_test 'resolve_base respects explicit raw base' test_resolve_base_respects_explicit_raw_base
 run_test 'main exits cleanly under nounset' test_main_exit_trap_under_nounset
 
 printf '[PASS] All install progress shell tests passed.\n'

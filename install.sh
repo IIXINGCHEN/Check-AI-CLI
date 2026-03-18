@@ -3,13 +3,14 @@ set -euo pipefail
 
 # This script supports "curl | bash" to install/update this repo's files
 # Env vars:
-# - CHECK_AI_CLI_REF: pin tag/commit/main, default main
+# - CHECK_AI_CLI_REF: pin tag/commit/main; unset => latest stable release, fallback main
 # - CHECK_AI_CLI_RAW_BASE: raw base URL (mirror). Default trusts GitHub official raw only
 # - CHECK_AI_CLI_ALLOW_UNTRUSTED_MIRROR: set to 1 to allow untrusted mirrors
 # - CHECK_AI_CLI_INSTALL_DIR: install directory, default current dir
 # - CHECK_AI_CLI_RETRY: download retry count, default 3
 
-REF="${CHECK_AI_CLI_REF:-main}"
+DEFAULT_REF="main"
+REF="${CHECK_AI_CLI_REF:-}"
 RAW_BASE="${CHECK_AI_CLI_RAW_BASE:-}"
 ALLOW_UNTRUSTED="${CHECK_AI_CLI_ALLOW_UNTRUSTED_MIRROR:-0}"
 RETRY="${CHECK_AI_CLI_RETRY:-3}"
@@ -29,6 +30,46 @@ is_trusted_base() {
     https://github.com/IIXINGCHEN/Check-AI-CLI/raw/*) return 0 ;;
     *) return 1 ;;
   esac
+}
+
+has_explicit_ref() { [ -n "$REF" ]; }
+
+get_requested_ref() {
+  if has_explicit_ref; then printf '%s' "$REF"; return 0; fi
+  printf '%s' "$DEFAULT_REF"
+}
+
+get_latest_release_api_url() {
+  printf '%s' 'https://api.github.com/repos/IIXINGCHEN/Check-AI-CLI/releases/latest'
+}
+
+fetch_text() {
+  local url="$1"
+  if command_exists curl; then curl -fsSL "$url"; return 0; fi
+  if command_exists wget; then wget -qO- "$url"; return 0; fi
+  return 1
+}
+
+extract_release_tag() {
+  tr -d '\r\n' | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p'
+}
+
+get_latest_stable_ref() {
+  local text tag
+  text="$(fetch_text "$(get_latest_release_api_url)" 2>/dev/null || true)"
+  tag="$(printf '%s' "$text" | extract_release_tag)"
+  [ -n "$tag" ] || return 1
+  printf '%s' "$tag"
+}
+
+get_resolved_ref() {
+  local stable fallback
+  if has_explicit_ref; then get_requested_ref; return 0; fi
+  stable="$(get_latest_stable_ref || true)"
+  if [ -n "$stable" ]; then printf '%s' "$stable"; return 0; fi
+  fallback="$(get_requested_ref)"
+  log_warn "Latest stable release ref unavailable. Falling back to $fallback." >&2
+  printf '%s' "$fallback"
 }
 
 resolve_base() {
@@ -56,11 +97,11 @@ resolve_base() {
     echo "$base"
     return 0
   fi
-  echo "https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/$REF"
+  echo "https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/$(get_resolved_ref)"
 }
 
 clamp_retry
-BASE="$(resolve_base)"
+BASE=""
 INSTALL_DIR="${CHECK_AI_CLI_INSTALL_DIR:-.}"
 
 log_info() { printf "[INFO] %s\n" "$*"; }
@@ -349,6 +390,7 @@ skip_main() {
 
 main() {
   local stage
+  BASE="$(resolve_base)"
   stage="$(mktemp -d 2>/dev/null || mktemp -d -t check-ai-cli)"
   trap "rm -rf \"$stage\" >/dev/null 2>&1 || true" EXIT
 

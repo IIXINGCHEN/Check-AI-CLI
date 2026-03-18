@@ -101,6 +101,72 @@ function Invoke-WebRequest {
   Assert-Equal $result '216|Head,Get' 'Expected Get-RemoteFileSize to retry with GET and use RawContentLength when HEAD lacks Content-Length.'
 }
 
+Run-Test 'Get-BaseUrl prefers latest stable release when ref is implicit' {
+  $script = @"
+`$env:CHECK_AI_CLI_SKIP_MAIN = '1'
+Remove-Item Env:CHECK_AI_CLI_REF -ErrorAction SilentlyContinue
+Remove-Item Env:CHECK_AI_CLI_RAW_BASE -ErrorAction SilentlyContinue
+. '$repoRoot\install.ps1'
+function Invoke-RestMethod {
+  param([string]`$Uri, [hashtable]`$Headers)
+  return [pscustomobject]@{ tag_name = 'v1.2.3' }
+}
+Get-BaseUrl
+"@
+
+  $result = Invoke-PwshSnippet $script
+
+  Assert-Equal $result 'https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/v1.2.3' 'Expected implicit installer ref to resolve to the latest stable release tag.'
+}
+
+Run-Test 'Get-BaseUrl falls back to main when stable release lookup fails' {
+  $script = @"
+`$env:CHECK_AI_CLI_SKIP_MAIN = '1'
+Remove-Item Env:CHECK_AI_CLI_REF -ErrorAction SilentlyContinue
+Remove-Item Env:CHECK_AI_CLI_RAW_BASE -ErrorAction SilentlyContinue
+. '$repoRoot\install.ps1'
+`$script:Warnings = @()
+function Write-Warn([string]`$Message) { `$script:Warnings += `$Message }
+function Invoke-RestMethod { throw 'boom' }
+`$url = Get-BaseUrl
+'{0}|{1}' -f `$url, (`$script:Warnings -join ',')
+"@
+
+  $result = Invoke-PwshSnippet $script
+
+  Assert-Equal $result 'https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main|Latest stable release ref unavailable. Falling back to main.' 'Expected installer to fall back to main when latest release lookup fails.'
+}
+
+Run-Test 'Get-BaseUrl respects explicit CHECK_AI_CLI_REF' {
+  $script = @"
+`$env:CHECK_AI_CLI_SKIP_MAIN = '1'
+`$env:CHECK_AI_CLI_REF = 'main'
+Remove-Item Env:CHECK_AI_CLI_RAW_BASE -ErrorAction SilentlyContinue
+. '$repoRoot\install.ps1'
+function Invoke-RestMethod { throw 'should not call releases api' }
+Get-BaseUrl
+"@
+
+  $result = Invoke-PwshSnippet $script
+
+  Assert-Equal $result 'https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main' 'Expected explicit CHECK_AI_CLI_REF to bypass stable release resolution.'
+}
+
+Run-Test 'Get-BaseUrl respects explicit CHECK_AI_CLI_RAW_BASE' {
+  $script = @"
+`$env:CHECK_AI_CLI_SKIP_MAIN = '1'
+Remove-Item Env:CHECK_AI_CLI_REF -ErrorAction SilentlyContinue
+`$env:CHECK_AI_CLI_RAW_BASE = 'https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main'
+. '$repoRoot\install.ps1'
+function Invoke-RestMethod { throw 'should not call releases api' }
+Get-BaseUrl
+"@
+
+  $result = Invoke-PwshSnippet $script
+
+  Assert-Equal $result 'https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main' 'Expected explicit CHECK_AI_CLI_RAW_BASE to bypass stable release resolution.'
+}
+
 Run-Test 'Warn-ShadowedCurrentUserInstall reports an older machine-wide install' {
   $script = @"
 `$env:CHECK_AI_CLI_SKIP_MAIN = '1'
