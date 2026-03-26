@@ -70,6 +70,77 @@ Run-Test 'Get-LocalClaudeVersion repairs npm global bin into User PATH' {
   }
 }
 
+Run-Test 'Get-PreferredToolPathDirs prioritizes Claude native user bin over npm global bin on Windows' {
+  $originalUserProfile = $env:USERPROFILE
+  try {
+    $env:USERPROFILE = 'C:\Users\Tester'
+
+    function Get-NpmGlobalBinDir() {
+      return 'C:\Users\Tester\AppData\Roaming\npm'
+    }
+
+    function Test-Path([string]$Path, [string]$LiteralPath) {
+      $target = if ($PSBoundParameters.ContainsKey('LiteralPath')) { $LiteralPath } else { $Path }
+      return $target -like 'C:\Users\Tester\.local\bin*'
+    }
+
+    $dirs = @(Get-PreferredToolPathDirs 'claude')
+
+    Assert-Equal $dirs.Count 2 'Expected Claude path repair candidates to include native user bin and npm global bin.'
+    Assert-Equal $dirs[0] 'C:\Users\Tester\.local\bin' 'Expected Claude native user bin to outrank npm global bin on Windows.'
+    Assert-Equal $dirs[1] 'C:\Users\Tester\AppData\Roaming\npm' 'Expected npm global bin to remain as Claude fallback candidate.'
+  } finally {
+    $env:USERPROFILE = $originalUserProfile
+  }
+}
+
+Run-Test 'Get-LocalClaudeVersion repairs native user bin before npm shim on Windows' {
+  $originalPath = $env:PATH
+  $originalUserProfile = $env:USERPROFILE
+  try {
+    $env:USERPROFILE = 'C:\Users\Tester'
+    $script:StoredUserPath = 'C:\Tools'
+    $script:ResolvedClaude = @{ Name = 'claude'; Version = '0.9.0'; Source = 'C:\Users\Tester\AppData\Roaming\npm\claude.cmd' }
+    $env:PATH = 'C:\Windows\System32;C:\Users\Tester\AppData\Roaming\npm;C:\Legacy'
+
+    function Get-UserPathValue() {
+      return $script:StoredUserPath
+    }
+
+    function Set-UserPathValue([string]$PathValue) {
+      $script:StoredUserPath = $PathValue
+      if ($PathValue.StartsWith('C:\Users\Tester\.local\bin', [System.StringComparison]::OrdinalIgnoreCase)) {
+        $script:ResolvedClaude = @{ Name = 'claude'; Version = '2.1.84'; Source = 'C:\Users\Tester\.local\bin\claude' }
+        return
+      }
+      $script:ResolvedClaude = @{ Name = 'claude'; Version = '0.9.0'; Source = 'C:\Users\Tester\AppData\Roaming\npm\claude.cmd' }
+    }
+
+    function Get-NpmGlobalBinDir() {
+      return 'C:\Users\Tester\AppData\Roaming\npm'
+    }
+
+    function Test-Path([string]$Path, [string]$LiteralPath) {
+      $target = if ($PSBoundParameters.ContainsKey('LiteralPath')) { $LiteralPath } else { $Path }
+      return $target -like 'C:\Users\Tester\.local\bin*'
+    }
+
+    function Get-CommandVersionInfo([string]$CommandName) {
+      if ($CommandName -in @('claude', 'claude-code')) { return $script:ResolvedClaude }
+      return @{ Name = $CommandName; Version = $null; Source = $null }
+    }
+
+    $version = Get-LocalClaudeVersion
+
+    Assert-Equal $version '2.1.84' 'Expected Claude version detection to prefer the native Windows install over an older npm shim.'
+    Assert-StartsWith $script:StoredUserPath 'C:\Users\Tester\.local\bin' 'Expected User PATH to prioritize Claude native user bin.'
+    Assert-StartsWith $env:PATH 'C:\Users\Tester\.local\bin' 'Expected process PATH to prioritize Claude native user bin.'
+  } finally {
+    $env:PATH = $originalPath
+    $env:USERPROFILE = $originalUserProfile
+  }
+}
+
 Run-Test 'Get-LocalFactoryVersion repairs user bin before probing droid' {
   $originalPath = $env:PATH
   try {

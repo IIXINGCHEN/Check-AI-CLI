@@ -249,11 +249,23 @@ function Get-NpmGlobalBinDir() {
   } catch { return $null }
 }
 
+function Get-ClaudeUserBinDir() {
+  $dir = Join-Path $env:USERPROFILE '.local/bin'
+  foreach ($name in @('claude','claude.cmd','claude.exe')) {
+    if (Test-Path -LiteralPath (Join-Path $dir $name)) { return $dir }
+  }
+  return $null
+}
+
 function Get-PreferredToolPathDirs([string]$ToolId) {
   $dirs = @()
   if ($ToolId -eq 'factory') {
     $factoryDir = Join-Path $env:USERPROFILE 'bin'
     if (Test-Path -LiteralPath $factoryDir) { $dirs += $factoryDir }
+  }
+  if ($ToolId -eq 'claude') {
+    $claudeDir = Get-ClaudeUserBinDir
+    if ($claudeDir) { $dirs += $claudeDir }
   }
   if ($ToolId -eq 'opencode') {
     $openCodeDir = Get-OpenCodeUserBinDir
