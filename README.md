@@ -344,6 +344,17 @@ curl -fsSL https://app.factory.ai/cli/install.sh | bash
 irm https://claude.ai/install.ps1 | iex
 ```
 
+提示: Windows 下如果已经安装了 Claude Code, 本项目脚本现在会优先尝试 `claude update` 做原生更新; 只有原生更新失败时, 才会回退到官方 `install.ps1` 重装路径。若更新后版本仍旧偏旧, 推荐按以下顺序排查:
+
+```powershell
+claude update
+claude --version
+
+# 如仍异常, 再执行官方安装脚本重装
+irm https://claude.ai/install.ps1 | iex
+claude --version
+```
+
 #### macOS
 ```bash
 # 方法 1: Homebrew (推荐)
@@ -568,6 +579,31 @@ sudo dnf install nodejs npm
 
 # Arch Linux
 sudo pacman -S nodejs npm
+```
+
+### 问题：Windows 下 Claude Code 更新后仍显示旧版本
+
+**现象**:
+```text
+[WARNING] Update may have failed (still older than latest).
+```
+
+**原因**:
+- Windows 下 Claude Code 优先使用原生安装路径, 推荐先走 `claude update`
+- npm 安装方式已不再是 Windows Claude Code 的首选更新路径
+
+**解决方案**:
+```powershell
+# 1) 先使用 Claude 自身原生更新
+claude update
+claude --version
+
+# 2) 若仍未更新成功, 使用官方安装脚本重装
+irm https://claude.ai/install.ps1 | iex
+claude --version
+
+# 3) 如需确认当前命中的命令位置
+where.exe claude
 ```
 
 ## 🔐 安全说明
