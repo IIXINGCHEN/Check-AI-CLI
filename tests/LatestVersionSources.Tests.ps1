@@ -94,21 +94,53 @@ Run-Test 'Get-LatestOpenCodeVersion falls back to npm only when repo source is u
 }
 
 Run-Test 'Update-Claude prefers official bootstrap before npm fallback' {
-  $script:BootstrapCalls = 0
-  $script:NpmCalls = 0
+  $script:NativeUpdateCalls = 0
+  $script:InstallScriptCalls = 0
 
-  function Update-ClaudeViaBootstrap() {
-    $script:BootstrapCalls += 1
+  function Invoke-ClaudeNativeUpdate() {
+    $script:NativeUpdateCalls += 1
   }
 
-  function Invoke-NpmInstallGlobal([string]$PackageSpec) {
-    $script:NpmCalls += 1
+  function Update-ClaudeViaInstallScript() {
+    $script:InstallScriptCalls += 1
   }
 
   Update-Claude
 
-  Assert-Equal $script:BootstrapCalls 1 'Expected Claude update to try the official bootstrap first.'
-  Assert-Equal $script:NpmCalls 0 'Expected npm fallback to stay unused when the official bootstrap succeeds.'
+  Assert-Equal $script:NativeUpdateCalls 1 'Expected Claude update to try the native Claude updater first on Windows.'
+  Assert-Equal $script:InstallScriptCalls 0 'Expected the official install script to stay unused when native Claude update succeeds.'
+}
+
+Run-Test 'Update-Claude falls back to official install script when native Claude update fails' {
+  $script:NativeUpdateCalls = 0
+  $script:InstallScriptCalls = 0
+
+  function Invoke-ClaudeNativeUpdate() {
+    $script:NativeUpdateCalls += 1
+    throw 'native update failed'
+  }
+
+  function Update-ClaudeViaInstallScript() {
+    $script:InstallScriptCalls += 1
+  }
+
+  Update-Claude
+
+  Assert-Equal $script:NativeUpdateCalls 1 'Expected Claude update to attempt the native updater before falling back.'
+  Assert-Equal $script:InstallScriptCalls 1 'Expected Claude update to fall back to the official install script when native update fails.'
+  Assert-True ($script:CapturedWarnings -contains 'native Claude update failed: native update failed') 'Expected a warning when the native Claude updater fails.'
+}
+
+Run-Test 'Report-PostUpdate recommends native Claude recovery steps instead of npm' {
+  function Get-AndPrintLocal([scriptblock]$GetLocal) {
+    return '2.1.84'
+  }
+
+  Report-PostUpdate 'Claude Code' '2.1.91' { '2.1.84' }
+
+  Assert-True ($script:CapturedWarnings -contains 'Update may have failed (still older than latest).') 'Expected stale-version warning after Claude post-update recheck.'
+  Assert-True ($script:CapturedWarnings -contains 'Tip: try claude update') 'Expected native Claude update remediation hint.'
+  Assert-True ($script:CapturedWarnings -contains 'Tip: if needed, reinstall via irm https://claude.ai/install.ps1 | iex') 'Expected official Claude install script remediation hint.'
 }
 
 Write-Host '[PASS] All latest version source regression tests passed.' -ForegroundColor Green

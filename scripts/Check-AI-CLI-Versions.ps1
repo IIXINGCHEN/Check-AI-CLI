@@ -71,11 +71,11 @@ function Invoke-WebRequestWithHeaders([string]$Uri, [string]$OutFile) {
     $mode = 'Continue'
     if (Get-QuietProgressMode) { $mode = 'SilentlyContinue' }
     Invoke-WithTempProgressPreference $mode {
-      Invoke-WebRequest -Uri $Uri -Headers $headers -UseBasicParsing -OutFile $OutFile -ErrorAction Stop | Out-Null
+      Invoke-WebRequest -Uri $Uri -Headers $headers -UseBasicParsing -OutFile $OutFile -TimeoutSec 300 -ErrorAction Stop | Out-Null
     }
     return
   }
-  return Invoke-WebRequest -Uri $Uri -Headers $headers -UseBasicParsing -ErrorAction Stop
+  return Invoke-WebRequest -Uri $Uri -Headers $headers -UseBasicParsing -TimeoutSec 30 -ErrorAction Stop
 }
 
 function Download-FileWithRetry([string]$Url, [string]$OutFile, [string]$Label) {
@@ -934,82 +934,54 @@ function Update-Factory() {
   }
 }
 
-# Install/update Claude Code via official bootstrap (GCS binary)
-function Update-ClaudeViaBootstrap() {
-  Write-Info "Trying: official bootstrap"
+# Install/update Claude Code via native updater
+function Invoke-ClaudeNativeUpdate() {
+  Write-Info "Trying: claude update"
+  $cmd = Get-Command claude -ErrorAction SilentlyContinue
+  if (-not $cmd -or [string]::IsNullOrWhiteSpace($cmd.Source)) {
+    throw 'claude command not found in PATH'
+  }
 
-  # Check for 32-bit Windows
+  & $cmd.Source update
+  if ($LASTEXITCODE -ne 0) {
+    throw "claude update failed with exit code $LASTEXITCODE"
+  }
+}
+
+# Install/update Claude Code via official install.ps1
+function Update-ClaudeViaInstallScript() {
+  Write-Info "Trying: official install.ps1"
   if (-not [Environment]::Is64BitProcess) {
     throw "Claude Code does not support 32-bit Windows."
   }
 
-  $GCS_BUCKET = "https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/claude-code-releases"
-  $DOWNLOAD_DIR = "$env:USERPROFILE\.claude\downloads"
-  $platform = "win32-x64"
-
-  New-Item -ItemType Directory -Force -Path $DOWNLOAD_DIR | Out-Null
-
-  # Get stable version
-  try {
-    $version = Invoke-RestMethod -Uri "$GCS_BUCKET/stable" -ErrorAction Stop
-  } catch {
-    throw "Failed to get stable version: $($_.Exception.Message)"
+  $url = 'https://claude.ai/install.ps1'
+  $scriptText = Get-Text $url
+  if ([string]::IsNullOrWhiteSpace($scriptText)) {
+    throw 'Failed to download install.ps1'
   }
 
-  # Get manifest and checksum
-  try {
-    $manifest = Invoke-RestMethod -Uri "$GCS_BUCKET/$version/manifest.json" -ErrorAction Stop
-    $checksum = $manifest.platforms.$platform.checksum
-    if (-not $checksum) { throw "Platform $platform not found in manifest" }
-  } catch {
-    throw "Failed to get manifest: $($_.Exception.Message)"
-  }
-
-  # Download binary
-  $binaryPath = "$DOWNLOAD_DIR\claude-$version-$platform.exe"
-  try {
-    $mode = 'Continue'
-    if (Get-QuietProgressMode) { $mode = 'SilentlyContinue' }
-    Invoke-WithTempProgressPreference $mode {
-      Invoke-WebRequest -Uri "$GCS_BUCKET/$version/$platform/claude.exe" -OutFile $binaryPath -ErrorAction Stop
-    }
-  } catch {
-    if (Test-Path $binaryPath) { Remove-Item -Force $binaryPath }
-    throw "Failed to download binary: $($_.Exception.Message)"
-  }
-
-  # Verify checksum
-  $actualChecksum = (Get-FileHash -Path $binaryPath -Algorithm SHA256).Hash.ToLower()
-  if ($actualChecksum -ne $checksum) {
-    Remove-Item -Force $binaryPath
-    throw "Checksum verification failed"
-  }
-
-  # Run claude install
-  try {
-    & $binaryPath install
-  } finally {
-    Start-Sleep -Seconds 1
-    try { Remove-Item -Force $binaryPath } catch { Write-Warn "Could not remove temporary file: $binaryPath" }
-  }
+  $installer = [scriptblock]::Create($scriptText)
+  & $installer
 }
 
-# Install/update Claude Code (official stable preferred, npm fallback)
+# Install/update Claude Code (native updater preferred, official install fallback)
 function Update-Claude() {
   Write-Info "Updating Claude Code..."
 
+  [void](Repair-ToolUserPath 'claude')
+
   try {
-    Update-ClaudeViaBootstrap
+    Invoke-ClaudeNativeUpdate
     return
   } catch {
-    Write-Warn "official bootstrap failed: $($_.Exception.Message)"
+    Write-Warn "native Claude update failed: $($_.Exception.Message)"
   }
 
   try {
-    Write-Info "Trying: npm install"
-    Invoke-NpmInstallGlobal '@anthropic-ai/claude-code@latest'
+    Update-ClaudeViaInstallScript
   } catch {
-    throw "No installer found. Install curl/wget or Node.js (npm) first."
+    throw "Claude Code update failed. Try 'claude update' or reinstall via irm https://claude.ai/install.ps1 | iex"
   }
 }
 
@@ -1381,7 +1353,10 @@ function Report-PostUpdate([string]$Title, [string]$Latest, [scriptblock]$GetLoc
   $cmp = Compare-Version $newLocal $Latest
   if ($cmp -eq -1) {
     Write-Warn "Update may have failed (still older than latest)."
-    if ($Title -eq 'Claude Code') { Write-Warn "Tip: try npm install -g @anthropic-ai/claude-code@latest" }
+    if ($Title -eq 'Claude Code') {
+      Write-Warn "Tip: try claude update"
+      Write-Warn "Tip: if needed, reinstall via irm https://claude.ai/install.ps1 | iex"
+    }
     if ($Title -eq 'OpenCode') {
       if ($Latest) { Write-Warn "Tip: try opencode upgrade v$Latest" } else { Write-Warn "Tip: try opencode upgrade" }
       Write-Warn "Tip: override target via CHECK_AI_CLI_OPENCODE_VERSION"
