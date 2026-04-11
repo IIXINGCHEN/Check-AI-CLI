@@ -12,39 +12,24 @@
 | **Gemini CLI** | Google 的 Gemini CLI 工具 | https://github.com/google-gemini/gemini-cli |
 | **OpenCode (opencode)** | OpenCode 的 AI 编程助手 CLI 工具 | https://opencode.ai |
 
-## 📦 脚本文件
+## 📦 项目结构
 
-- `install.ps1` - Windows 一键安装器(支持 PATH)
-- `install.sh` - macOS/Linux 一键安装器
-- `uninstall.ps1` - Windows 卸载器(需要确认 DELETE)
-- `uninstall.sh` - macOS/Linux 卸载器(需要确认 DELETE)
-- `checksums.sha256` - 下载文件校验(安装时自动验证)
-- `scripts/` - 版本检查脚本(主逻辑)
-- `bin/` - 命令入口(用于 PATH)
+| 目录/文件 | 职责 |
+|-----------|------|
+| `scripts/Check-AI-CLI-Versions.ps1` | Windows 主脚本 (PowerShell) |
+| `scripts/check-ai-cli-versions.sh` | macOS/Linux 主脚本 (Bash) |
+| `bin/check-ai-cli.cmd` / `.ps1` | PATH 命令入口 (转发到 scripts/) |
+| `install.ps1` / `install.sh` | 一键安装器 (支持 PATH) |
+| `uninstall.ps1` / `uninstall.sh` | 卸载器 (需要确认 DELETE) |
+| `checksums.sha256` | 下载文件校验 (安装时自动验证) |
+| `tools/` | 发布和维护辅助脚本 |
+| `tests/` | 回归测试 |
+| `.github/` | CI 与自动校验工作流 |
 
-## 目录结构
-
-- `scripts/Check-AI-CLI-Versions.ps1` - Windows PowerShell 版本(主脚本)
-- `scripts/check-ai-cli-versions.sh` - macOS/Linux Bash 版本
-- `bin/check-ai-cli.cmd` - Windows PATH 命令入口
-- `bin/check-ai-cli.ps1` - PowerShell PATH 命令入口
-
-## 目录职责说明
-
-- `scripts/` - 项目主逻辑, 优先修改这里的实现
-- `bin/` - 安装到 PATH 后使用的真实命令入口
-- 根目录同名脚本 - 兼容旧路径/旧调用方式的 legacy wrapper, 仅做转发
-- `tools/` - 发布和维护辅助脚本
-- `tests/` - 回归测试与自检脚本
-- `.github/` - CI 与自动校验工作流
-- 其他本地 AI/IDE 工具目录 - 不属于项目运行必需内容, 已建议忽略, 避免把本地工具状态混入仓库
-
-
-## 兼容入口
-
-- `Check-AI-CLI-Versions.ps1` - 兼容旧路径, 会转发到 `scripts/Check-AI-CLI-Versions.ps1`
-- `Check-FactoryCLI-Version.ps1` - 兼容旧路径, 会转发到 `scripts/Check-AI-CLI-Versions.ps1 -FactoryOnly`
-- `check-ai-cli-versions.sh` - 兼容旧路径, 会转发到 `scripts/check-ai-cli-versions.sh`
+**兼容入口** (根目录 legacy wrapper, 仅做转发):
+- `Check-AI-CLI-Versions.ps1` → `scripts/Check-AI-CLI-Versions.ps1`
+- `Check-FactoryCLI-Version.ps1` → `scripts/Check-AI-CLI-Versions.ps1 -FactoryOnly`
+- `check-ai-cli-versions.sh` → `scripts/check-ai-cli-versions.sh`
 
 
 ## 🚀 快速使用
@@ -58,7 +43,7 @@
 powershell -ExecutionPolicy Bypass -File ".\Check-AI-CLI-Versions.ps1"
 
 # 方法 3: 从任意位置运行
-powershell -ExecutionPolicy Bypass -File "G:\shell\Check-AI-CLI-Versions.ps1"
+powershell -ExecutionPolicy Bypass -File "C:\path\to\Check-AI-CLI-Versions.ps1"
 
 # 自动模式: 未安装自动安装, 非最新自动更新
 $env:CHECK_AI_CLI_AUTO = '1'
@@ -97,16 +82,8 @@ $env:HTTPS_PROXY = 'http://127.0.0.1:7890'
 irm https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main/install.ps1 | iex
 ```
 
-#### 默认: immutable ref auto-resolution
-```powershell
-# 未设置 CHECK_AI_CLI_REF 时, bootstrap 会优先解析 GitHub latest release tag
-# 如果仓库还没有 release, 则继续解析 latest main commit SHA
-irm https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main/install.ps1 | iex
-```
-
 #### 推荐: 固定版本(避免默认解析继续前进)
 ```powershell
-# 你可以固定到 tag 或 commit SHA
 $env:CHECK_AI_CLI_REF = 'v1.2.3'
 irm https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main/install.ps1 | iex
 ```
@@ -159,24 +136,12 @@ curl -fsSL https://github.com/IIXINGCHEN/Check-AI-CLI/raw/main/install.sh | bash
 # 推荐: 用代理加速, 不改下载源
 export HTTP_PROXY="http://127.0.0.1:7890"
 export HTTPS_PROXY="http://127.0.0.1:7890"
-
-# 推荐: self-healing raw bootstrap
 curl -fsSL https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main/install.sh | bash
-```
 
-```bash
-# 默认: 若未设置 CHECK_AI_CLI_REF, raw main bootstrap 会优先解析 latest release tag
-# 如果仓库还没有 release, 则继续解析 latest main commit SHA
-curl -fsSL https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main/install.sh | bash
-```
-
-```bash
-# 固定到 tag 或 commit
+# 固定版本
 export CHECK_AI_CLI_REF="v1.2.3"
 curl -fsSL https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main/install.sh | bash
-```
 
-```bash
 # 开发/排障: 强制使用 main
 export CHECK_AI_CLI_REF="main"
 curl -fsSL https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main/install.sh | bash
@@ -196,28 +161,20 @@ git add checksums.sha256
 git commit -m "Update checksums"
 ```
 
-### 中国大陆网络较慢时, 推荐使用代理环境变量
+### 常用环境变量
 
-#### PowerShell
-```powershell
-$env:CHECK_AI_CLI_SHOW_PROGRESS = '1'
-$env:HTTP_PROXY  = 'http://127.0.0.1:7890'
-$env:HTTPS_PROXY = 'http://127.0.0.1:7890'
-irm https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main/install.ps1 | iex
-```
+| 变量 | 用途 | 示例 |
+|------|------|------|
+| `HTTP_PROXY` / `HTTPS_PROXY` | 代理加速 | `http://127.0.0.1:7890` |
+| `CHECK_AI_CLI_SHOW_PROGRESS` | 显示下载进度条 | `1` |
+| `CHECK_AI_CLI_REF` | 固定安装版本 (tag/commit/main) | `v1.2.3` |
+| `CHECK_AI_CLI_INSTALL_DIR` | 自定义安装目录 | 绝对路径 |
+| `CHECK_AI_CLI_OPENCODE_VERSION` | 覆盖 OpenCode 目标版本 | `1.4.3` |
 
-#### Bash
-```bash
-export CHECK_AI_CLI_SHOW_PROGRESS=1
-export HTTP_PROXY="http://127.0.0.1:7890"
-export HTTPS_PROXY="http://127.0.0.1:7890"
-curl -fsSL https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main/install.sh | bash
-```
-
-启用 `CHECK_AI_CLI_SHOW_PROGRESS=1` 后, 安装阶段会输出统一的字节进度条:
+启用 `CHECK_AI_CLI_SHOW_PROGRESS=1` 后, 安装和更新阶段会输出字节进度条:
 
 ```text
-[##########..........] 50%
+[###############...............] 50%
 ```
 
 ### 核心依赖检查
@@ -240,64 +197,74 @@ curl -fsSL https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main/instal
 
 ### 🔄 多数据源支持
 - **Factory CLI**: 官方安装脚本
-- **Claude Code**: Google Cloud Storage + npm 备用
+- **Claude Code**: GCS stable channel + GitHub releases + npm 备用
 - **OpenAI Codex**: GitHub Releases API + npm 备用
 - **Gemini CLI**: npm registry
 - **OpenCode**: GitHub Releases API (anomalyco/opencode) + opencode.ai/install 备用 (可用 CHECK_AI_CLI_OPENCODE_VERSION 覆盖)
 
 ### 🎨 交互式界面
-- 彩色输出，清晰易读
-- 交互式菜单选择
-- 实时进度显示
+- 彩色输出, 清晰易读
+- 交互式菜单选择 (5 个工具 + 全部检查/更新/退出)
+- 下载进度条 (`[###############...............] 50%`)
 
 ### 🛠️ 一键安装/更新
 - 自动选择最佳安装方式
 - macOS 优先使用 Homebrew
 - 提供多种备用安装方案
+- 更新后自动重检版本, 失败时给出针对性修复建议
 
 ## 📊 使用示例
 
 ### 场景 1: 检查所有工具
 ```
-$ ./check-ai-cli-versions.sh
+$ check-ai-cli
 
-╔════════════════════════════════════════════════╗
-║     AI CLI 工具版本检查器                      ║
-║   Factory CLI | Claude Code | OpenAI Codex    ║
-╚════════════════════════════════════════════════╝
+===============================================
+ AI CLI Version Checker
+ Factory CLI (Droid) | Claude Code | OpenAI Codex | Gemini CLI | OpenCode
+===============================================
 
-请选择要检查的工具:
+Select tools to check:
   [1] Factory CLI (Droid)
   [2] Claude Code
   [3] OpenAI Codex
-  [A] 全部检查 (默认)
+  [4] Gemini CLI
+  [5] OpenCode
+  [A] Check all (default)
+  [U] Check all and Update all (auto-yes)
+  [Q] Quit
+Enter choice (1-5/A/U/Q): A
 
-请输入选项 (1/2/3/A): A
+Factory CLI (Droid)
+===================
+[INFO] Fetching latest version...
+[SUCCESS] Latest version: v0.99.0
+[SUCCESS] Local version: v0.93.0
 
-1. Factory CLI (Droid)
-======================
-[INFO] 正在获取 Factory CLI (Droid) 最新版本...
-[SUCCESS] 官方最新版本: v0.36.0
-[SUCCESS] 本地版本: v0.35.0
+[INFO] Updating Factory CLI (Droid)...
+[INFO] Trying: official bootstrap
+[INFO] Downloading Factory CLI v0.99.0 for Windows-x64
+[##############################....] 93%
+[SUCCESS] Factory CLI v0.99.0 installed successfully.
 
-[WARNING] 发现新版本！
-  当前: v0.35.0 → 最新: v0.36.0
-
-是否更新? (Y/N): Y
-[INFO] 正在更新 Factory CLI (Droid)...
-[SUCCESS] 完成！
+Claude Code
+===========
+[INFO] Fetching latest version...
+[SUCCESS] Latest version: v2.1.91
+[SUCCESS] Local version: v2.1.91
+[SUCCESS] Already up to date.
 ```
 
 ### 场景 2: 仅检查单个工具
 ```
-请输入选项 (1/2/3/A): 2
+Enter choice (1-5/A/U/Q): 2
 
 Claude Code
 ===========
-[INFO] 正在获取 Claude Code 最新版本...
-[SUCCESS] 官方最新版本: v2.0.67
-[SUCCESS] 本地版本: v2.0.67
-[SUCCESS] ✓ 已是最新版本 v2.0.67
+[INFO] Fetching latest version...
+[SUCCESS] Latest version: v2.1.91
+[SUCCESS] Local version: v2.1.91
+[SUCCESS] Already up to date.
 ```
 
 ## 🔧 系统要求
@@ -380,7 +347,7 @@ npm install -g @anthropic-ai/claude-code
 
 #### Windows
 ```powershell
-npm install -g @openai/codex
+npm install -g @openai/codex@latest
 ```
 
 #### macOS
@@ -389,12 +356,12 @@ npm install -g @openai/codex
 brew install --cask codex
 
 # 方法 2: npm
-npm install -g @openai/codex
+npm install -g @openai/codex@latest
 ```
 
 #### Linux
 ```bash
-npm install -g @openai/codex
+npm install -g @openai/codex@latest
 ```
 
 ### Gemini CLI
@@ -583,27 +550,32 @@ sudo pacman -S nodejs npm
 
 ### 问题：Windows 下 Claude Code 更新后仍显示旧版本
 
-**现象**:
-```text
-[WARNING] Update may have failed (still older than latest).
-```
-
-**原因**:
-- Windows 下 Claude Code 优先使用原生安装路径, 推荐先走 `claude update`
-- npm 安装方式已不再是 Windows Claude Code 的首选更新路径
+**原因**: Claude Code 使用 staged rollout, GitHub releases 可能领先于 stable 分发渠道。脚本检测到的 "latest" 来自 stable channel, 与实际可安装版本一致, 不影响使用。
 
 **解决方案**:
 ```powershell
-# 1) 先使用 Claude 自身原生更新
+# 确认当前版本是否为 stable channel 最新
 claude update
 claude --version
 
-# 2) 若仍未更新成功, 使用官方安装脚本重装
-irm https://claude.ai/install.ps1 | iex
-claude --version
-
-# 3) 如需确认当前命中的命令位置
+# 如需确认命令位置
 where.exe claude
+```
+
+### 问题：OpenAI Codex 安装后 `codex --version` 报错
+
+**现象**:
+```
+Error: Missing optional dependency @openai/codex-win32-x64
+```
+
+**原因**: npm 上的 `@openai/codex` 平台包 (如 `win32-x64`) 可能未同步发布。
+
+**解决方案**:
+```powershell
+# 回退到已知可用的版本
+npm install -g @openai/codex@0.119.0
+codex --version
 ```
 
 ## 🔐 安全说明
@@ -620,15 +592,15 @@ where.exe claude
 | 工具 | 主要数据源 | 备用数据源 |
 |------|----------|-----------|
 | Factory CLI | app.factory.ai/cli/install.sh | app.factory.ai/cli/windows |
-| Claude Code | github.com/anthropics/claude-code/releases/latest | GCS claude-code-releases/stable, registry.npmjs.org |
+| Claude Code | GCS claude-code-releases/stable | github.com/anthropics/claude-code/releases/latest, registry.npmjs.org |
 | OpenAI Codex | github.com/openai/codex/releases/latest | registry.npmjs.org/@openai/codex |
 | Gemini CLI | github.com/google-gemini/gemini-cli/releases/latest | registry.npmjs.org/@google/gemini-cli |
 | OpenCode | github.com/anomalyco/opencode/releases/latest | registry.npmjs.org/opencode-ai |
 
-- `Claude Code`、`Codex`、`Gemini CLI`、`OpenCode`: 现在优先使用官方仓库 release 作为 `latest` 来源, 只有仓库源不可用时才回退到其他官方发布源。
-- `Claude Code`: 仓库 release 不可用时, 再回退到官方 stable 发布源, 最后才回退到 npm。
-- `OpenCode`: 仓库源不可用时回退到官方 npm 包; 若官方来源都失败则显示 `unknown`.
-- 五个工具在检查前和更新后都会自动尝试修复 PATH/环境变量冲突, 以减少“已安装但命令未识别”问题。
+- `Claude Code`: 优先使用 GCS stable channel (与原生更新器和 install.ps1 实际可安装的版本一致), 避免 GitHub releases staged rollout 导致假阳性 “update available”; stable 不可用时回退到 GitHub releases, 最后回退到 npm。
+- `Codex`、`Gemini CLI`、`OpenCode`: 优先使用官方仓库 release 作为 `latest` 来源, 只有仓库源不可用时才回退到其他官方发布源。
+- `OpenCode`: 仓库源不可用时回退到官方 npm 包; 若官方来源都失败则显示 `unknown`。可通过 `CHECK_AI_CLI_OPENCODE_VERSION` 覆盖。
+- 五个工具在检查前和更新后都会自动尝试修复 PATH/环境变量冲突, 以减少”已安装但命令未识别”问题。
 
 ## 🚢 自动发布 GitHub Releases
 
@@ -684,7 +656,7 @@ crontab -e
 ```powershell
 # 创建每日检查任务
 $action = New-ScheduledTaskAction -Execute "powershell.exe" `
-    -Argument "-ExecutionPolicy Bypass -File G:\wwwroot\CRS\code\USA\droid2api-v3\shell\Check-AI-CLI-Versions.ps1"
+    -Argument "-ExecutionPolicy Bypass -File C:\path\to\Check-AI-CLI-Versions.ps1"
 
 $trigger = New-ScheduledTaskTrigger -Daily -At 9am
 
