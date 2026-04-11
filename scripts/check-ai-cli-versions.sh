@@ -474,11 +474,16 @@ resolve_version_conflict() {
 get_latest_claude() {
   local repo stable npm
   repo="$(get_claude_repo_latest_version)"
-  [ -n "$repo" ] && printf '%s\n' "$repo" && return
   stable="$(get_claude_bootstrap_stable_version)"
+  if [ -z "$repo" ] && [ -z "$stable" ]; then
+    npm="$(get_npm_latest_version '@anthropic-ai/claude-code')"
+    printf '%s\n' "$npm"
+    return
+  fi
+  # Prefer bootstrap stable: the native updater installs from the stable channel,
+  # which may lag behind GitHub releases due to staged rollout.
   [ -n "$stable" ] && printf '%s\n' "$stable" && return
-  npm="$(get_npm_latest_version '@anthropic-ai/claude-code')"
-  printf '%s\n' "$npm"
+  printf '%s\n' "$repo"
 }
 
 get_latest_codex() {
@@ -583,7 +588,7 @@ update_codex() {
   log_info "Updating OpenAI Codex..."
   if command_exists npm; then
     log_info "Trying: npm install"
-    npm install -g '@openai/codex' || return 1
+    npm install -g '@openai/codex@latest' || return 1
     repair_tool_path codex >/dev/null 2>&1 || true
     return 0
   fi

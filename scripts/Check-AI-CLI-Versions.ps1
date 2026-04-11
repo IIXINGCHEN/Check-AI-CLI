@@ -65,14 +65,141 @@ function Test-NonEmptyFile([string]$Path) {
   return (Get-Item -LiteralPath $Path).Length -gt 0
 }
 
+# --- Byte-level progress bar helpers ---
+
+function New-ByteProgressState([long]$TotalBytes, [int]$Width = 30) {
+  return @{
+    TotalBytes = [Math]::Max(1L, $TotalBytes)
+    CurrentBytes = 0L
+    Width = [Math]::Max(1, $Width)
+    Visible = $false
+  }
+}
+
+function Get-ByteProgressPercent([hashtable]$State) {
+  $value = [int](($State.CurrentBytes * 100) / $State.TotalBytes)
+  if ($value -lt 0) { return 0 }
+  if ($value -gt 100) { return 100 }
+  return $value
+}
+
+function Get-ByteProgressFill([hashtable]$State) {
+  $fill = [int](([double](Get-ByteProgressPercent $State) / 100) * $State.Width)
+  if ($fill -lt 0) { return 0 }
+  if ($fill -gt $State.Width) { return $State.Width }
+  return $fill
+}
+
+function New-BarText([string]$Character, [int]$Count) {
+  if ($Count -le 0) { return '' }
+  return ($Character * $Count)
+}
+
+function Get-ByteProgressLine([hashtable]$State) {
+  $fill = Get-ByteProgressFill $State
+  $rest = $State.Width - $fill
+  $bar = (New-BarText '#' $fill) + (New-BarText '.' $rest)
+  return "[{0}] {1}%" -f $bar, (Get-ByteProgressPercent $State)
+}
+
+function Add-ByteProgress([hashtable]$State, [long]$Bytes) {
+  $next = $State.CurrentBytes + [Math]::Max(0L, $Bytes)
+  if ($next -gt $State.TotalBytes) { $next = $State.TotalBytes }
+  $State.CurrentBytes = $next
+  return $State
+}
+
+function Write-ByteProgress([hashtable]$State) {
+  Write-Host "`r$(Get-ByteProgressLine $State)" -NoNewline
+  $State.Visible = $true
+}
+
+function Close-ByteProgress([hashtable]$State) {
+  if (-not $State.Visible) { return }
+  Write-Host ''
+  $State.Visible = $false
+}
+
+# --- Download with ##### progress bar ---
+
+function Get-RemoteFileSize([string]$Uri) {
+  $headers = @{ 'User-Agent' = 'ai-cli-version-checker' }
+  try {
+    $resp = Invoke-WebRequest -Uri $Uri -Headers $headers -UseBasicParsing -Method Head -TimeoutSec 15 -ErrorAction Stop
+    if ($resp.Headers -and $resp.Headers['Content-Length']) {
+      return [long]$resp.Headers['Content-Length']
+    }
+  } catch {}
+  # HEAD failed or returned no Content-Length — download proceeds without progress bar.
+  return 0L
+}
+
+# Internal: raw download without progress tracking (avoids recursion)
+function Invoke-RawDownload([string]$Uri, [string]$OutFile) {
+  $headers = @{ 'User-Agent' = 'ai-cli-version-checker' }
+  $mode = 'SilentlyContinue'
+  Invoke-WithTempProgressPreference $mode {
+    Invoke-WebRequest -Uri $Uri -Headers $headers -UseBasicParsing -OutFile $OutFile -TimeoutSec 300 -ErrorAction Stop | Out-Null
+  }
+}
+
+function Download-FileWithProgress([string]$Uri, [string]$OutFile, [string]$Label) {
+  $headers = @{ 'User-Agent' = 'ai-cli-version-checker' }
+  $totalBytes = Get-RemoteFileSize $Uri
+  $state = $null
+  if ($totalBytes -gt 0) {
+    $state = New-ByteProgressState $totalBytes
+  }
+
+  if ($state) {
+    # Stream download with chunk-based progress
+    $prevProgress = $ProgressPreference
+    $ProgressPreference = 'SilentlyContinue'
+    try {
+      $response = Invoke-WebRequest -Uri $Uri -Headers $headers -UseBasicParsing -TimeoutSec 300 -ErrorAction Stop
+      if ($response.RawContentStream) {
+        $response.RawContentStream.Position = 0
+        $fs = [System.IO.FileStream]::new($OutFile, 'Create', 'Write', 'None')
+        try {
+          $chunk = New-Object byte[] 81920
+          $stream = $response.RawContentStream
+          $read = 0
+          do {
+            $read = $stream.Read($chunk, 0, $chunk.Length)
+            if ($read -gt 0) {
+              $fs.Write($chunk, 0, $read)
+              Add-ByteProgress $state $read | Out-Null
+              Write-ByteProgress $state
+            }
+          } while ($read -gt 0)
+          if ($state.CurrentBytes -lt $state.TotalBytes) {
+            throw "Download incomplete: received $($state.CurrentBytes) of $($state.TotalBytes) bytes"
+          }
+          Close-ByteProgress $state
+        } finally {
+          $fs.Dispose()
+        }
+      } else {
+        # Fallback: write Content directly (PowerShell 5.1)
+        $buffer = $response.Content
+        [System.IO.File]::WriteAllBytes($OutFile, $buffer)
+        Add-ByteProgress $state $buffer.Length | Out-Null
+        Write-ByteProgress $state
+        Close-ByteProgress $state
+      }
+    } finally {
+      $ProgressPreference = $prevProgress
+    }
+  } else {
+    # Unknown size: fallback to raw download without progress bar
+    Invoke-RawDownload $Uri $OutFile
+  }
+}
+
 function Invoke-WebRequestWithHeaders([string]$Uri, [string]$OutFile) {
   $headers = @{ 'User-Agent' = 'ai-cli-version-checker' }
   if ($OutFile) {
-    $mode = 'Continue'
-    if (Get-QuietProgressMode) { $mode = 'SilentlyContinue' }
-    Invoke-WithTempProgressPreference $mode {
-      Invoke-WebRequest -Uri $Uri -Headers $headers -UseBasicParsing -OutFile $OutFile -TimeoutSec 300 -ErrorAction Stop | Out-Null
-    }
+    Download-FileWithProgress $Uri $OutFile ''
     return
   }
   return Invoke-WebRequest -Uri $Uri -Headers $headers -UseBasicParsing -TimeoutSec 30 -ErrorAction Stop
@@ -837,10 +964,14 @@ function Resolve-VersionConflict([string]$ToolName, [string]$PrimaryLabel, [stri
 
 function Get-LatestClaudeVersion() {
   $repo = Get-ClaudeRepoLatestVersion
-  if ($repo) { return $repo }
   $stable = Get-ClaudeBootstrapStableVersion
+  if (-not $repo -and -not $stable) { return Get-NpmLatestVersion '@anthropic-ai/claude-code' }
+  # The native updater and install.ps1 both install from the stable channel,
+  # which may lag behind GitHub releases due to staged rollout.
+  # Use bootstrap stable as the "installable latest" to avoid false-positive
+  # "update available" warnings when the updater cannot reach the GitHub version.
   if ($stable) { return $stable }
-  return Get-NpmLatestVersion '@anthropic-ai/claude-code'
+  return $repo
 }
 
 function Get-LatestCodexVersion() {
@@ -990,7 +1121,7 @@ function Update-Codex() {
   Write-Info "Updating OpenAI Codex..."
   try {
     Write-Info "Trying: npm install"
-    Invoke-NpmInstallGlobal '@openai/codex'
+    Invoke-NpmInstallGlobal '@openai/codex@latest'
   } catch {
     throw "No installer found. Install Node.js (npm) first."
   }
@@ -1356,6 +1487,10 @@ function Report-PostUpdate([string]$Title, [string]$Latest, [scriptblock]$GetLoc
     if ($Title -eq 'Claude Code') {
       Write-Warn "Tip: try claude update"
       Write-Warn "Tip: if needed, reinstall via irm https://claude.ai/install.ps1 | iex"
+    }
+    if ($Title -eq 'OpenAI Codex') {
+      Write-Warn "Tip: try npm install -g @openai/codex@latest"
+      Write-Warn "Tip: verify Node.js version (node -v) meets codex requirements"
     }
     if ($Title -eq 'OpenCode') {
       if ($Latest) { Write-Warn "Tip: try opencode upgrade v$Latest" } else { Write-Warn "Tip: try opencode upgrade" }

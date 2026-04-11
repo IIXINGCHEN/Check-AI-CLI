@@ -33,13 +33,13 @@ function Write-Warn([string]$Message) {
   $script:CapturedWarnings += $Message
 }
 
-Run-Test 'Get-LatestClaudeVersion prefers official repo release over other official channels' {
+Run-Test 'Get-LatestClaudeVersion prefers bootstrap stable over repo (installable channel)' {
   function Get-ClaudeRepoLatestVersion() {
-    return '2.1.72'
+    return '2.1.101'
   }
 
   function Get-ClaudeBootstrapStableVersion() {
-    return '2.1.71'
+    return '2.1.91'
   }
 
   function Get-NpmLatestVersion([string]$PackageName) {
@@ -48,7 +48,27 @@ Run-Test 'Get-LatestClaudeVersion prefers official repo release over other offic
 
   $version = Get-LatestClaudeVersion
 
-  Assert-Equal $version '2.1.72' 'Expected Claude latest version to come from the official GitHub release channel.'
+  # Bootstrap stable is what the native updater and install.ps1 can actually install.
+  # GitHub releases may be ahead due to staged rollout.
+  Assert-Equal $version '2.1.91' 'Expected Claude latest version to reflect the installable stable channel, not the GitHub release that may be staged.'
+}
+
+Run-Test 'Get-LatestClaudeVersion falls back to repo when bootstrap stable is unavailable' {
+  function Get-ClaudeRepoLatestVersion() {
+    return '2.1.72'
+  }
+
+  function Get-ClaudeBootstrapStableVersion() {
+    return $null
+  }
+
+  function Get-NpmLatestVersion([string]$PackageName) {
+    return '2.1.69'
+  }
+
+  $version = Get-LatestClaudeVersion
+
+  Assert-Equal $version '2.1.72' 'Expected Claude latest version to fall back to GitHub repo when bootstrap stable is unavailable.'
 }
 
 Run-Test 'Get-LatestCodexVersion prefers official repo release over npm metadata' {
