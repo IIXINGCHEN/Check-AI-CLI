@@ -922,10 +922,11 @@ function Get-LocalFactoryVersion() {
 # Extract latest Factory CLI version from its Windows installer script
 function Get-LatestFactoryVersion() {
   $text = Get-Text 'https://app.factory.ai/cli/windows'
-  if (-not $text) { return $null }
-  $m = [regex]::Match($text, '\$version\s*=\s*"([^"]+)"')
-  if (-not $m.Success) { return $null }
-  return Get-SemVer $m.Groups[1].Value
+  if ($text) {
+    $m = [regex]::Match($text, '\$version\s*=\s*"([^"]+)"')
+    if ($m.Success) { return Get-SemVer $m.Groups[1].Value }
+  }
+  return Get-NpmLatestVersion 'droid'
 }
 
 function Get-NpmLatestVersion([string]$PackageName) {

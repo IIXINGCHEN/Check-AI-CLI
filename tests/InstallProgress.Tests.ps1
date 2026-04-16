@@ -71,7 +71,7 @@ Get-ByteProgressLine `$state
   Assert-Equal $result '[####################] 100%' 'Expected byte progress to clamp at 100%.'
 }
 
-Run-Test 'Get-RemoteFileSize falls back to GET RawContentLength when HEAD lacks content length' {
+Run-Test 'Get-RemoteFileSize returns unknown size when HEAD lacks content length' {
   $script = @"
 `$env:CHECK_AI_CLI_SKIP_MAIN = '1'
 . '$repoRoot\install.ps1'
@@ -84,13 +84,7 @@ function Invoke-WebRequest {
     [switch]`$UseBasicParsing
   )
   `$script:Methods += `$Method
-  if (`$Method -eq 'Head') {
-    return [pscustomobject]@{ Headers = @{} }
-  }
-  return [pscustomobject]@{
-    Headers = @{}
-    RawContentLength = 216
-  }
+  return [pscustomobject]@{ Headers = @{} }
 }
 `$size = Get-RemoteFileSize 'https://example.test/file'
 ('{0}|{1}' -f `$size, (`$script:Methods -join ','))
@@ -98,7 +92,7 @@ function Invoke-WebRequest {
 
   $result = Invoke-PwshSnippet $script
 
-  Assert-Equal $result '216|Head,Get' 'Expected Get-RemoteFileSize to retry with GET and use RawContentLength when HEAD lacks Content-Length.'
+  Assert-Equal $result '0|Head' 'Expected Get-RemoteFileSize to stop after HEAD and return unknown size when Content-Length is unavailable.'
 }
 
 Run-Test 'Get-BaseUrl prefers latest stable release when ref is implicit' {
@@ -207,7 +201,7 @@ Warn-ShadowedCurrentUserInstall 'C:\Users\Tester\AppData\Local\Programs\Tools\Ch
 
   $result = Invoke-PwshSnippet $script
 
-  Assert-Equal $result 'Detected another Check-AI-CLI install at: C:\Program Files\Tools\Check-AI-CLI|A machine-wide install may still resolve before this CurrentUser install in new PowerShell sessions.|Fix: rerun the installer as Administrator to update the machine-wide copy, or uninstall the older Program Files install.' 'Expected installer to warn when a stale Program Files install can shadow a CurrentUser install.'
+  Assert-Equal $result 'Detected another Check-AI-CLI install at: C:\Program Files\Tools\Check-AI-CLI|New PowerShell sessions may still launch the older Program Files copy before this CurrentUser install.|Recovery: run C:\Users\Tester\AppData\Local\Programs\Tools\Check-AI-CLI\bin\check-ai-cli.cmd directly, or rerun the installer as Administrator to update the machine-wide copy, or uninstall the older Program Files install.' 'Expected installer to warn when a stale Program Files install can shadow a CurrentUser install.'
 }
 
 Run-Test 'Warn-ShadowedCurrentUserInstall stays quiet when no machine-wide install exists' {

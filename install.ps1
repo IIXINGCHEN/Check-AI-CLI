@@ -215,14 +215,7 @@ function Get-RemoteFileSize([string]$Url) {
   }
   $size = Get-ContentLengthHeader $response.Headers
   if ($size -gt 0) { return $size }
-  try {
-    $response = Invoke-WebRequest -Uri $Url -Headers $headers -UseBasicParsing -Method Get
-  } catch {
-    return 0L
-  }
-  $size = Convert-ToPositiveInt64 $response.RawContentLength
-  if ($size -gt 0) { return $size }
-  return (Get-ContentLengthHeader $response.Headers)
+  return 0L
 }
 
 function Download-FileWithRetry([string]$Url, [string]$OutFile) {
@@ -538,9 +531,10 @@ function Warn-ShadowedCurrentUserInstall([string]$Dir, [string]$Scope) {
   $machineDir = Get-MachineInstallDir
   if ((Normalize-Dir $machineDir).ToLowerInvariant() -eq (Normalize-Dir $Dir).ToLowerInvariant()) { return }
   if (-not (Test-InstallHasCommand $machineDir)) { return }
+  $cmdPath = Join-Path $Dir 'bin\check-ai-cli.cmd'
   Write-Warn "Detected another Check-AI-CLI install at: $machineDir"
-  Write-Warn 'A machine-wide install may still resolve before this CurrentUser install in new PowerShell sessions.'
-  Write-Warn 'Fix: rerun the installer as Administrator to update the machine-wide copy, or uninstall the older Program Files install.'
+  Write-Warn 'New PowerShell sessions may still launch the older Program Files copy before this CurrentUser install.'
+  Write-Warn "Recovery: run $cmdPath directly, or rerun the installer as Administrator to update the machine-wide copy, or uninstall the older Program Files install."
 }
 
 function Print-NextSteps([string]$Dir) {

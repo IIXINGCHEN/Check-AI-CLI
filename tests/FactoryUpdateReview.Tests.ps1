@@ -161,6 +161,21 @@ Write-Host "bootstrap without base url"
   Assert-ThrowsContains { Get-FactoryBootstrapInfo } 'Failed to parse Factory base URL from installer script.' 'Expected bootstrap parsing to fail when baseUrl metadata disappears.'
 }
 
+Run-Test 'Get-LatestFactoryVersion falls back to npm when bootstrap endpoint is unavailable' {
+  function Get-Text([string]$Url) {
+    return $null
+  }
+
+  function Get-NpmLatestVersion([string]$PackageName) {
+    Assert-Equal $PackageName 'droid' 'Expected Factory fallback to query the official droid npm package.'
+    return '0.100.0'
+  }
+
+  $version = Get-LatestFactoryVersion
+
+  Assert-Equal $version '0.100.0' 'Expected Factory latest version to fall back to npm when bootstrap metadata is unavailable.'
+}
+
 Run-Test 'Install-FactoryFromBootstrap stops before install when checksum verification fails' {
   $script:InstallSequence = @()
 
