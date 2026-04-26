@@ -32,6 +32,19 @@ function Get-TargetPaths() {
   return $paths | Sort-Object
 }
 
+function Get-UnstagedTargetChanges([string[]]$Paths) {
+  if (-not $Paths -or $Paths.Count -eq 0) { return @() }
+  $changed = (& git diff --name-only -- @Paths 2>$null)
+  return @($changed | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object)
+}
+
+function Assert-NoUnstagedTargetChanges([string[]]$Paths) {
+  $changed = Get-UnstagedTargetChanges $Paths
+  if ($changed.Count -eq 0) { return }
+  $list = ($changed -join ', ')
+  throw "Target files have unstaged changes: $list. Run git add for changed target files before updating checksums."
+}
+
 function Get-BlobSha([string]$Path) {
   $sha = (git rev-parse ":$Path" 2>$null)
   if ([string]::IsNullOrWhiteSpace($sha)) { throw "Missing in index: $Path" }
@@ -91,6 +104,7 @@ function Main() {
 
   $paths = Get-TargetPaths
   if (-not $paths -or $paths.Count -eq 0) { throw "No target files found." }
+  Assert-NoUnstagedTargetChanges $paths
 
   $content = Render-Manifest $paths
   $outFile = Join-Path $root 'checksums.sha256'
