@@ -1004,6 +1004,17 @@ function Get-LatestGeminiVersion() {
   return Get-NpmLatestVersion '@google/gemini-cli'
 }
 
+function Get-ClaudeNativeUpdateTimeoutSeconds() {
+  $default = 120
+  $v = $env:CHECK_AI_CLI_CLAUDE_UPDATE_TIMEOUT_SECONDS
+  if ([string]::IsNullOrWhiteSpace($v)) { return $default }
+  $n = 0
+  if (-not [int]::TryParse($v.Trim(), [ref]$n)) { return $default }
+  if ($n -lt 10) { return 10 }
+  if ($n -gt 900) { return 900 }
+  return $n
+}
+
 function Get-TargetOpenCodeVersion() {
   $v = $env:CHECK_AI_CLI_OPENCODE_VERSION
   if ([string]::IsNullOrWhiteSpace($v)) { return $null }
@@ -1091,9 +1102,25 @@ function Invoke-ClaudeNativeUpdate() {
     throw 'claude command not found in PATH'
   }
 
-  & $cmd.Source update
-  if ($LASTEXITCODE -ne 0) {
-    throw "claude update failed with exit code $LASTEXITCODE"
+  Invoke-ClaudeNativeUpdateProcess $cmd.Source (Get-ClaudeNativeUpdateTimeoutSeconds)
+}
+
+function Invoke-ClaudeNativeUpdateProcess([string]$ClaudePath, [int]$TimeoutSeconds) {
+  $proc = $null
+  try {
+    $proc = Start-Process -FilePath $ClaudePath -ArgumentList @('update') -NoNewWindow -PassThru
+    if (-not $proc.WaitForExit($TimeoutSeconds * 1000)) {
+      try { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue } catch {}
+      throw "claude update timed out after ${TimeoutSeconds}s"
+    }
+    if ($proc.ExitCode -ne 0) {
+      throw "claude update failed with exit code $($proc.ExitCode)"
+    }
+  } catch {
+    if ($proc -and -not $proc.HasExited) {
+      try { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue } catch {}
+    }
+    throw
   }
 }
 

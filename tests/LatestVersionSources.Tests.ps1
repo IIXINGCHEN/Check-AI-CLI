@@ -13,9 +13,21 @@ function Assert-True([bool]$Condition, [string]$Message) {
   if (-not $Condition) { throw $Message }
 }
 
+function Assert-ThrowsContains([scriptblock]$Action, [string]$ExpectedSubstring, [string]$Message) {
+  try {
+    & $Action
+  } catch {
+    if ($_.Exception.Message.Contains($ExpectedSubstring)) { return }
+    throw "$Message`nExpected exception containing: $ExpectedSubstring`nActual: $($_.Exception.Message)"
+  }
+
+  throw "$Message`nExpected exception containing: $ExpectedSubstring"
+}
+
 function Reset-TestState {
   $script:CapturedWarnings = @()
   $env:CHECK_AI_CLI_OPENCODE_VERSION = ''
+  $env:CHECK_AI_CLI_CLAUDE_UPDATE_TIMEOUT_SECONDS = ''
 }
 
 function Run-Test([string]$Name, [scriptblock]$Body) {
@@ -153,6 +165,28 @@ Run-Test 'Update-Claude falls back to official install script when native Claude
   Assert-Equal $script:NativeUpdateCalls 1 'Expected Claude update to attempt the native updater before falling back.'
   Assert-Equal $script:InstallScriptCalls 1 'Expected Claude update to fall back to the official install script when native update fails.'
   Assert-True ($script:CapturedWarnings -contains 'native Claude update failed: native update failed') 'Expected a warning when the native Claude updater fails.'
+}
+
+Run-Test 'Invoke-ClaudeNativeUpdate uses bounded timeout for claude update' {
+  function Get-Command([string]$Name, [object[]]$ArgumentList) {
+    if ($Name -eq 'claude') { return [pscustomobject]@{ Source = 'C:\Tools\claude.exe' } }
+    return $null
+  }
+
+  $script:CapturedClaudePath = ''
+  $script:CapturedTimeout = 0
+
+  function Invoke-ClaudeNativeUpdateProcess([string]$ClaudePath, [int]$TimeoutSeconds) {
+    $script:CapturedClaudePath = $ClaudePath
+    $script:CapturedTimeout = $TimeoutSeconds
+    throw 'simulated timeout'
+  }
+
+  $env:CHECK_AI_CLI_CLAUDE_UPDATE_TIMEOUT_SECONDS = '17'
+
+  Assert-ThrowsContains { Invoke-ClaudeNativeUpdate } 'simulated timeout' 'Expected native Claude update process failures to surface.'
+  Assert-Equal $script:CapturedClaudePath 'C:\Tools\claude.exe' 'Expected native Claude update to invoke the resolved claude executable.'
+  Assert-Equal $script:CapturedTimeout 17 'Expected native Claude update to use the configured timeout.'
 }
 
 Run-Test 'Report-PostUpdate recommends native Claude recovery steps without npm' {
