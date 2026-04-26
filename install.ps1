@@ -184,9 +184,17 @@ function Test-NonEmptyFile([string]$Path) {
   return $len -gt 0
 }
 
+function Invoke-WithTempProgressPreference([string]$Mode, [scriptblock]$Action) {
+  $prev = $ProgressPreference
+  $ProgressPreference = $Mode
+  try { & $Action } finally { $ProgressPreference = $prev }
+}
+
 function Download-ToFile([string]$Url, [string]$OutFile) {
   $headers = @{ 'User-Agent' = 'check-ai-cli-installer' }
-  Invoke-WebRequest -Uri $Url -Headers $headers -UseBasicParsing -OutFile $OutFile | Out-Null
+  Invoke-WithTempProgressPreference 'SilentlyContinue' {
+    Invoke-WebRequest -Uri $Url -Headers $headers -UseBasicParsing -OutFile $OutFile | Out-Null
+  }
 }
 
 function Convert-ToPositiveInt64([object]$Value) {
@@ -209,7 +217,9 @@ function Get-RemoteFileSize([string]$Url) {
   $headers = @{ 'User-Agent' = 'check-ai-cli-installer' }
   $response = $null
   try {
-    $response = Invoke-WebRequest -Uri $Url -Headers $headers -UseBasicParsing -Method Head
+    Invoke-WithTempProgressPreference 'SilentlyContinue' {
+      $response = Invoke-WebRequest -Uri $Url -Headers $headers -UseBasicParsing -Method Head
+    }
   } catch {
     $response = $null
   }
@@ -340,7 +350,11 @@ function Install-OneFile([string]$Base, [string]$InstallDir, [hashtable]$Entry) 
 
 function Download-Text([string]$Url) {
   $headers = @{ 'User-Agent' = 'check-ai-cli-installer' }
-  return (Invoke-WebRequest -Uri $Url -Headers $headers -UseBasicParsing).Content
+  $response = $null
+  Invoke-WithTempProgressPreference 'SilentlyContinue' {
+    $response = Invoke-WebRequest -Uri $Url -Headers $headers -UseBasicParsing
+  }
+  return $response.Content
 }
 
 function Read-Manifest([string]$Text) {

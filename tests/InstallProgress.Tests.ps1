@@ -84,6 +84,64 @@ Get-ByteProgressLine `$state
   Assert-Equal $result '##### 25.0%' 'Expected checker progress to use the same hash-only one-decimal format.'
 }
 
+Run-Test 'install.ps1 Download-ToFile suppresses native web progress' {
+  $script = @"
+`$env:CHECK_AI_CLI_SKIP_MAIN = '1'
+. '$repoRoot\install.ps1'
+`$ProgressPreference = 'Continue'
+function Invoke-WebRequest {
+  param([string]`$Uri, [hashtable]`$Headers, [switch]`$UseBasicParsing, [string]`$OutFile)
+  `$script:SeenProgress = `$ProgressPreference
+  Set-Content -LiteralPath `$OutFile -Value 'payload'
+  return [pscustomobject]@{}
+}
+`$out = Join-Path ([IO.Path]::GetTempPath()) 'check-ai-cli-progress-test.txt'
+Download-ToFile 'https://example.test/file' `$out
+`$script:SeenProgress
+"@
+
+  $result = Invoke-PwshSnippet $script
+
+  Assert-Equal $result 'SilentlyContinue' 'Expected installer file downloads to suppress PowerShell native web progress.'
+}
+
+Run-Test 'install.ps1 Download-Text suppresses native web progress' {
+  $script = @"
+`$env:CHECK_AI_CLI_SKIP_MAIN = '1'
+. '$repoRoot\install.ps1'
+`$ProgressPreference = 'Continue'
+function Invoke-WebRequest {
+  param([string]`$Uri, [hashtable]`$Headers, [switch]`$UseBasicParsing)
+  `$script:SeenProgress = `$ProgressPreference
+  return [pscustomobject]@{ Content = 'payload' }
+}
+`$null = Download-Text 'https://example.test/text'
+`$script:SeenProgress
+"@
+
+  $result = Invoke-PwshSnippet $script
+
+  Assert-Equal $result 'SilentlyContinue' 'Expected installer text downloads to suppress PowerShell native web progress.'
+}
+
+Run-Test 'PowerShell checker Get-Text suppresses native web progress' {
+  $script = @"
+. '$repoRoot\scripts\Check-AI-CLI-Versions.ps1'
+`$ProgressPreference = 'Continue'
+function Invoke-WebRequest {
+  param([string]`$Uri, [hashtable]`$Headers, [switch]`$UseBasicParsing, [int]`$TimeoutSec)
+  `$script:SeenProgress = `$ProgressPreference
+  return [pscustomobject]@{ Content = 'payload' }
+}
+`$null = Get-Text 'https://example.test/text'
+`$script:SeenProgress
+"@
+
+  $result = Invoke-PwshSnippet $script
+
+  Assert-Equal $result 'SilentlyContinue' 'Expected checker text downloads to suppress PowerShell native web progress.'
+}
+
 Run-Test 'Get-RemoteFileSize returns unknown size when HEAD lacks content length' {
   $script = @"
 `$env:CHECK_AI_CLI_SKIP_MAIN = '1'
