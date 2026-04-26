@@ -127,6 +127,8 @@ Run-Test 'Get-LatestOpenCodeVersion falls back to npm only when repo source is u
 
 Run-Test 'Update-Claude prefers native updater before official install script' {
   function Repair-ToolUserPath([string]$ToolId) { return $true }
+  function Get-LatestClaudeVersion() { return '2.1.119' }
+  function Get-LocalClaudeVersion() { return '2.1.119' }
 
   $script:NativeUpdateCalls = 0
   $script:InstallScriptCalls = 0
@@ -165,6 +167,29 @@ Run-Test 'Update-Claude falls back to official install script when native Claude
   Assert-Equal $script:NativeUpdateCalls 1 'Expected Claude update to attempt the native updater before falling back.'
   Assert-Equal $script:InstallScriptCalls 1 'Expected Claude update to fall back to the official install script when native update fails.'
   Assert-True ($script:CapturedWarnings -contains 'native Claude update failed: native update failed') 'Expected a warning when the native Claude updater fails.'
+}
+
+Run-Test 'Update-Claude falls back to official install script when native update leaves Claude below target' {
+  function Repair-ToolUserPath([string]$ToolId) { return $true }
+  function Get-LatestClaudeVersion() { return '2.1.119' }
+  function Get-LocalClaudeVersion() { return '2.1.112' }
+
+  $script:NativeUpdateCalls = 0
+  $script:InstallScriptCalls = 0
+
+  function Invoke-ClaudeNativeUpdate() {
+    $script:NativeUpdateCalls += 1
+  }
+
+  function Update-ClaudeViaInstallScript() {
+    $script:InstallScriptCalls += 1
+  }
+
+  Update-Claude
+
+  Assert-Equal $script:NativeUpdateCalls 1 'Expected Claude update to try native updater first.'
+  Assert-Equal $script:InstallScriptCalls 1 'Expected Claude update to fall back when native updater exits successfully but leaves Claude below target.'
+  Assert-True ($script:CapturedWarnings -contains 'native Claude update completed but local version is still older than target v2.1.119.') 'Expected no-op native updater warning.'
 }
 
 Run-Test 'Invoke-ClaudeNativeUpdate uses bounded timeout for claude update' {

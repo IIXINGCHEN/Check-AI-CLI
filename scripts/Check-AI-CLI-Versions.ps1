@@ -1124,6 +1124,13 @@ function Invoke-ClaudeNativeUpdateProcess([string]$ClaudePath, [int]$TimeoutSeco
   }
 }
 
+function Test-ClaudeVersionAtLeast([string]$TargetVersion) {
+  if ([string]::IsNullOrWhiteSpace($TargetVersion)) { return $true }
+  $local = Get-LocalClaudeVersion
+  if ([string]::IsNullOrWhiteSpace($local)) { return $false }
+  return (Compare-Version $local $TargetVersion) -ge 0
+}
+
 # Install/update Claude Code via official install.ps1
 function Update-ClaudeViaInstallScript() {
   Write-Info "Trying: official install.ps1"
@@ -1146,10 +1153,16 @@ function Update-Claude() {
   Write-Info "Updating Claude Code..."
 
   [void](Repair-ToolUserPath 'claude')
+  $target = Get-LatestClaudeVersion
 
   try {
     Invoke-ClaudeNativeUpdate
-    return
+    if (Test-ClaudeVersionAtLeast $target) { return }
+    if ($target) {
+      Write-Warn "native Claude update completed but local version is still older than target v$target."
+    } else {
+      Write-Warn "native Claude update completed but local Claude version could not be verified."
+    }
   } catch {
     Write-Warn "native Claude update failed: $($_.Exception.Message)"
   }
