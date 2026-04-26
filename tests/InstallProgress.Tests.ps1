@@ -43,7 +43,7 @@ if (-not (Get-Command New-ByteProgressState -ErrorAction SilentlyContinue)) {
   Assert-Equal $result 'ready' 'Expected install.ps1 to expose helper functions in test mode.'
 }
 
-Run-Test 'PowerShell byte progress renders hash bar at fifty percent' {
+Run-Test 'PowerShell installer progress renders hash-only bar at fifty percent' {
   $script = @"
 `$env:CHECK_AI_CLI_SKIP_MAIN = '1'
 . '$repoRoot\install.ps1'
@@ -54,10 +54,10 @@ Get-ByteProgressLine `$state
 
   $result = Invoke-PwshSnippet $script
 
-  Assert-Equal $result '[##########..........] 50%' 'Expected byte progress to render ten filled segments at 50%.'
+  Assert-Equal $result '########## 50.0%' 'Expected installer progress to render only filled hash segments and one-decimal percent.'
 }
 
-Run-Test 'PowerShell byte progress clamps at one hundred percent' {
+Run-Test 'PowerShell installer progress clamps at one hundred percent' {
   $script = @"
 `$env:CHECK_AI_CLI_SKIP_MAIN = '1'
 . '$repoRoot\install.ps1'
@@ -68,7 +68,20 @@ Get-ByteProgressLine `$state
 
   $result = Invoke-PwshSnippet $script
 
-  Assert-Equal $result '[####################] 100%' 'Expected byte progress to clamp at 100%.'
+  Assert-Equal $result '#################### 100.0%' 'Expected installer progress to clamp at 100.0% with hash-only output.'
+}
+
+Run-Test 'PowerShell checker progress renders project format' {
+  $script = @"
+. '$repoRoot\scripts\Check-AI-CLI-Versions.ps1'
+`$state = New-ByteProgressState 400 20
+Add-ByteProgress `$state 100 | Out-Null
+Get-ByteProgressLine `$state
+"@
+
+  $result = Invoke-PwshSnippet $script
+
+  Assert-Equal $result '##### 25.0%' 'Expected checker progress to use the same hash-only one-decimal format.'
 }
 
 Run-Test 'Get-RemoteFileSize returns unknown size when HEAD lacks content length' {

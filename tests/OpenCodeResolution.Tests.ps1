@@ -250,4 +250,48 @@ Run-Test 'Restore-NpmRegistry does not leak Set-NpmRegistry return values' {
   Assert-Equal $output.Count 0 'Expected Restore-NpmRegistry to avoid emitting helper return values.'
 }
 
+Run-Test 'Update-OpenCode prefers native self upgrade before curl install' {
+  $script:CapturedInfo = @()
+  $script:CallOrder = @()
+
+  function Write-Info([string]$Message) {
+    $script:CapturedInfo += $Message
+  }
+
+  function Get-TargetOpenCodeVersion() {
+    return $null
+  }
+
+  function Get-LatestOpenCodeVersion() {
+    return '1.14.22'
+  }
+
+  function Get-OpenCodeCommandPath() {
+    return 'C:\Users\Tester\.opencode\bin\opencode.exe'
+  }
+
+  function Try-OpenCodeSelfUpgrade([string]$TargetVersion) {
+    $script:CallOrder += "native:$TargetVersion"
+    return $TargetVersion -eq '1.14.22'
+  }
+
+  function Test-OpenCodeAtLeast([string]$TargetVersion) {
+    $script:CallOrder += "verify:$TargetVersion"
+    return $TargetVersion -eq '1.14.22'
+  }
+
+  function Try-InstallOpenCodeWithCurl([string]$TargetVersion) {
+    $script:CallOrder += "curl:$TargetVersion"
+    throw 'curl install should not run when native upgrade succeeds'
+  }
+
+  function Try-InstallOpenCodeWithScoop() { throw 'scoop should not run' }
+  function Try-InstallOpenCodeWithChoco() { throw 'choco should not run' }
+  function Try-InstallOpenCodeWithNpm([string]$TargetVersion) { throw 'npm should not run' }
+
+  Update-OpenCode
+
+  Assert-Equal ($script:CallOrder -join ',') 'native:1.14.22,verify:1.14.22' 'Expected native opencode upgrade to run before curl and verify against latest target.'
+  Assert-True ($script:CapturedInfo -contains 'Trying: opencode upgrade') 'Expected update flow to log the native OpenCode upgrade attempt.'
+}
 Write-Host '[PASS] All OpenCode resolution regression tests passed.' -ForegroundColor Green

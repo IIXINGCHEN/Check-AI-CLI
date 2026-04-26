@@ -297,11 +297,11 @@ show_progress_enabled() {
 fetch_text() {
   local url="$1"
   if command_exists curl; then
-    if show_progress_enabled; then curl -fSL --progress-bar "$url" || return 1; else curl -fsSL "$url" 2>/dev/null || return 1; fi
+    curl -fsSL "$url" 2>/dev/null || return 1
     return 0
   fi
   if command_exists wget; then
-    if show_progress_enabled; then wget -O- --progress=bar:force "$url" || return 1; else wget -qO- "$url" 2>/dev/null || return 1; fi
+    wget -qO- "$url" 2>/dev/null || return 1
     return 0
   fi
   return 1

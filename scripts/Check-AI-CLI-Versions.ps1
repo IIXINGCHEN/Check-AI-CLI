@@ -77,14 +77,25 @@ function New-ByteProgressState([long]$TotalBytes, [int]$Width = 30) {
 }
 
 function Get-ByteProgressPercent([hashtable]$State) {
-  $value = [int](($State.CurrentBytes * 100) / $State.TotalBytes)
+  $value = [int][Math]::Floor((Get-ByteProgressPercentValue $State))
   if ($value -lt 0) { return 0 }
   if ($value -gt 100) { return 100 }
   return $value
 }
 
+function Get-ByteProgressPercentValue([hashtable]$State) {
+  $value = ([double]$State.CurrentBytes * 100.0) / [double]$State.TotalBytes
+  if ($value -lt 0) { return 0.0 }
+  if ($value -gt 100) { return 100.0 }
+  return $value
+}
+
+function Get-ByteProgressPercentText([hashtable]$State) {
+  return (Get-ByteProgressPercentValue $State).ToString('0.0', [System.Globalization.CultureInfo]::InvariantCulture)
+}
+
 function Get-ByteProgressFill([hashtable]$State) {
-  $fill = [int](([double](Get-ByteProgressPercent $State) / 100) * $State.Width)
+  $fill = [int][Math]::Floor(((Get-ByteProgressPercentValue $State) / 100.0) * $State.Width)
   if ($fill -lt 0) { return 0 }
   if ($fill -gt $State.Width) { return $State.Width }
   return $fill
@@ -97,9 +108,8 @@ function New-BarText([string]$Character, [int]$Count) {
 
 function Get-ByteProgressLine([hashtable]$State) {
   $fill = Get-ByteProgressFill $State
-  $rest = $State.Width - $fill
-  $bar = (New-BarText '#' $fill) + (New-BarText '.' $rest)
-  return "[{0}] {1}%" -f $bar, (Get-ByteProgressPercent $State)
+  $bar = New-BarText '#' $fill
+  return "{0} {1}%" -f $bar, (Get-ByteProgressPercentText $State)
 }
 
 function Add-ByteProgress([hashtable]$State, [long]$Bytes) {
@@ -130,7 +140,7 @@ function Get-RemoteFileSize([string]$Uri) {
       return [long]$resp.Headers['Content-Length']
     }
   } catch {}
-  # HEAD failed or returned no Content-Length — download proceeds without progress bar.
+  # HEAD failed or returned no Content-Length; download proceeds without progress bar.
   return 0L
 }
 
@@ -1422,11 +1432,9 @@ function Try-InstallOpenCodeWithNpm([string]$TargetVersion) {
 function Update-OpenCode() {
   Write-Info "Updating OpenCode..."
   $target = Get-TargetOpenCodeVersion
-  if ($target) { Write-Info "Target OpenCode version: v$target" }
-  Write-Info "Trying: curl/wget install"
-  if (Try-InstallOpenCodeWithCurl $target -and (Test-OpenCodeAtLeast $target)) { return }
-  $installed = [bool](Get-Command opencode -ErrorAction SilentlyContinue)
-  if ($installed) {
+  if ($target) { Write-Info "Target OpenCode version: v$target" } else { $target = Get-LatestOpenCodeVersion }
+  $hasNative = [bool](Get-OpenCodeCommandPath)
+  if ($hasNative) {
     Write-Info "Trying: opencode upgrade"
     Try-OpenCodeSelfUpgrade $target | Out-Null
     if (Test-OpenCodeAtLeast $target) { return }
@@ -1437,7 +1445,9 @@ function Update-OpenCode() {
   if (Try-InstallOpenCodeWithChoco) { Try-OpenCodeSelfUpgrade $target | Out-Null ; if (Test-OpenCodeAtLeast $target) { return } }
   Write-Info "Trying: npm install"
   if (Try-InstallOpenCodeWithNpm $target -and (Test-OpenCodeAtLeast $target)) { return }
-  throw "No installer found. Install Git Bash (for curl), scoop/choco, or Node.js (npm) first."
+  Write-Info "Trying: curl/wget install"
+  if (Try-InstallOpenCodeWithCurl $target -and (Test-OpenCodeAtLeast $target)) { return }
+  throw "No installer found. Install scoop/choco, Node.js (npm), or Git Bash (for curl) first."
 }
 
 function Write-ToolHeader([string]$Title) {
@@ -1488,6 +1498,7 @@ function Report-PostUpdate([string]$Title, [string]$Latest, [scriptblock]$GetLoc
     if ($Title -eq 'Claude Code') {
       Write-Warn "Tip: try claude update"
       Write-Warn "Tip: if needed, reinstall via irm https://claude.ai/install.ps1 | iex"
+      return
     }
     if ($Title -eq 'OpenAI Codex') {
       Write-Warn "Tip: try npm install -g @openai/codex@latest"

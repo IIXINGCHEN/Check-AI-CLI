@@ -270,14 +270,25 @@ function New-ByteProgressState([long]$TotalBytes, [int]$Width = 20) {
 }
 
 function Get-ByteProgressPercent([hashtable]$State) {
-  $value = [int](($State.CurrentBytes * 100) / $State.TotalBytes)
+  $value = [int][Math]::Floor((Get-ByteProgressPercentValue $State))
   if ($value -lt 0) { return 0 }
   if ($value -gt 100) { return 100 }
   return $value
 }
 
+function Get-ByteProgressPercentValue([hashtable]$State) {
+  $value = ([double]$State.CurrentBytes * 100.0) / [double]$State.TotalBytes
+  if ($value -lt 0) { return 0.0 }
+  if ($value -gt 100) { return 100.0 }
+  return $value
+}
+
+function Get-ByteProgressPercentText([hashtable]$State) {
+  return (Get-ByteProgressPercentValue $State).ToString('0.0', [System.Globalization.CultureInfo]::InvariantCulture)
+}
+
 function Get-ByteProgressFill([hashtable]$State) {
-  $fill = [int](([double](Get-ByteProgressPercent $State) / 100) * $State.Width)
+  $fill = [int][Math]::Floor(((Get-ByteProgressPercentValue $State) / 100.0) * $State.Width)
   if ($fill -lt 0) { return 0 }
   if ($fill -gt $State.Width) { return $State.Width }
   return $fill
@@ -290,9 +301,8 @@ function New-BarText([string]$Character, [int]$Count) {
 
 function Get-ByteProgressLine([hashtable]$State) {
   $fill = Get-ByteProgressFill $State
-  $rest = $State.Width - $fill
-  $bar = (New-BarText '#' $fill) + (New-BarText '.' $rest)
-  return "[{0}] {1}%" -f $bar, (Get-ByteProgressPercent $State)
+  $bar = New-BarText '#' $fill
+  return "{0} {1}%" -f $bar, (Get-ByteProgressPercentText $State)
 }
 
 function Add-ByteProgress([hashtable]$State, [long]$Bytes) {

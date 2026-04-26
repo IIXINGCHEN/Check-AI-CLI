@@ -113,7 +113,9 @@ Run-Test 'Get-LatestOpenCodeVersion falls back to npm only when repo source is u
   Assert-Equal $version '1.2.21' 'Expected OpenCode to fall back to the official npm package only when GitHub release metadata is unavailable.'
 }
 
-Run-Test 'Update-Claude prefers official bootstrap before npm fallback' {
+Run-Test 'Update-Claude prefers native updater before official install script' {
+  function Repair-ToolUserPath([string]$ToolId) { return $true }
+
   $script:NativeUpdateCalls = 0
   $script:InstallScriptCalls = 0
 
@@ -132,6 +134,8 @@ Run-Test 'Update-Claude prefers official bootstrap before npm fallback' {
 }
 
 Run-Test 'Update-Claude falls back to official install script when native Claude update fails' {
+  function Repair-ToolUserPath([string]$ToolId) { return $true }
+
   $script:NativeUpdateCalls = 0
   $script:InstallScriptCalls = 0
 
@@ -151,7 +155,7 @@ Run-Test 'Update-Claude falls back to official install script when native Claude
   Assert-True ($script:CapturedWarnings -contains 'native Claude update failed: native update failed') 'Expected a warning when the native Claude updater fails.'
 }
 
-Run-Test 'Report-PostUpdate recommends native Claude recovery steps instead of npm' {
+Run-Test 'Report-PostUpdate recommends native Claude recovery steps without npm' {
   function Get-AndPrintLocal([scriptblock]$GetLocal) {
     return '2.1.84'
   }
@@ -161,6 +165,7 @@ Run-Test 'Report-PostUpdate recommends native Claude recovery steps instead of n
   Assert-True ($script:CapturedWarnings -contains 'Update may have failed (still older than latest).') 'Expected stale-version warning after Claude post-update recheck.'
   Assert-True ($script:CapturedWarnings -contains 'Tip: try claude update') 'Expected native Claude update remediation hint.'
   Assert-True ($script:CapturedWarnings -contains 'Tip: if needed, reinstall via irm https://claude.ai/install.ps1 | iex') 'Expected official Claude install script remediation hint.'
+  Assert-True (-not ($script:CapturedWarnings -contains 'Tip: try npm install -g @anthropic-ai/claude-code@latest')) 'Expected Claude post-update guidance to avoid obsolete npm remediation.'
 }
 
 Write-Host '[PASS] All latest version source regression tests passed.' -ForegroundColor Green

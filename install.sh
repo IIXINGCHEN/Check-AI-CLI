@@ -160,23 +160,32 @@ repeat_char() {
 }
 
 byte_progress_percent() {
-  local current="$1" total="$2" percent=0
+  local tenths
+  tenths="$(byte_progress_tenths "$1" "$2")"
+  printf '%s' "$((tenths / 10))"
+}
+
+byte_progress_tenths() {
+  local current="$1" total="$2" tenths=0
   if ! is_number "$total" || [ "$total" -lt 1 ]; then printf '0'; return 0; fi
   if ! is_number "$current" || [ "$current" -lt 0 ]; then current=0; fi
-  percent=$((current * 100 / total))
-  if [ "$percent" -gt 100 ]; then percent=100; fi
-  printf '%s' "$percent"
+  tenths=$((current * 1000 / total))
+  if [ "$tenths" -gt 1000 ]; then tenths=1000; fi
+  printf '%s' "$tenths"
+}
+
+byte_progress_percent_text() {
+  local tenths="$1"
+  printf '%d.%d' "$((tenths / 10))" "$((tenths % 10))"
 }
 
 render_byte_progress() {
-  local current="$1" total="$2" width="${3:-20}" percent fill empty
-  percent="$(byte_progress_percent "$current" "$total")"
-  fill=$((percent * width / 100))
-  empty=$((width - fill))
-  printf '[%s%s] %s%%' \
+  local current="$1" total="$2" width="${3:-20}" tenths fill
+  tenths="$(byte_progress_tenths "$current" "$total")"
+  fill=$((tenths * width / 1000))
+  printf '%s %s%%' \
     "$(repeat_char '#' "$fill")" \
-    "$(repeat_char '.' "$empty")" \
-    "$percent"
+    "$(byte_progress_percent_text "$tenths")"
 }
 
 write_byte_progress() {

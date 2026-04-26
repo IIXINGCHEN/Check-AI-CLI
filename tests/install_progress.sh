@@ -42,7 +42,7 @@ test_render_fifty_percent() {
       render_byte_progress 100 200 20
     "
   )"
-  assert_equal "$output" '[##########..........] 50%' 'Expected shell progress to render ten filled segments at 50%.'
+  assert_equal "$output" '########## 50.0%' 'Expected shell progress to render only filled hash segments and one-decimal percent.'
 }
 
 test_clamp_to_hundred() {
@@ -53,7 +53,21 @@ test_clamp_to_hundred() {
       render_byte_progress 120 80 20
     "
   )"
-  assert_equal "$output" '[####################] 100%' 'Expected shell progress to clamp at 100%.'
+  assert_equal "$output" '#################### 100.0%' 'Expected shell progress to clamp at 100.0% with hash-only output.'
+}
+
+test_main_checker_fetch_text_suppresses_native_progress() {
+  local output
+  output="$(
+    bash --noprofile --norc -c "
+      source \"$ROOT_DIR/scripts/check-ai-cli-versions.sh\"
+      show_progress_enabled() { return 0; }
+      command_exists() { [ \"\$1\" = curl ]; }
+      curl() { printf 'args:%s\n' \"\$*\"; }
+      fetch_text 'https://example.test/file'
+    "
+  )"
+  assert_equal "$output" 'args:-fsSL https://example.test/file' 'Expected main checker fetch_text to suppress curl native progress output.'
 }
 
 test_download_with_retry_under_nounset() {
@@ -169,8 +183,9 @@ test_main_exit_trap_under_nounset() {
 }
 
 run_test 'install.sh can load helpers without executing main flow' test_source_without_main
-run_test 'Shell byte progress renders hash bar at fifty percent' test_render_fifty_percent
+run_test 'Shell byte progress renders hash-only bar at fifty percent' test_render_fifty_percent
 run_test 'Shell byte progress clamps at one hundred percent' test_clamp_to_hundred
+run_test 'Main shell checker suppresses native fetch progress' test_main_checker_fetch_text_suppresses_native_progress
 run_test 'download_with_retry works under nounset' test_download_with_retry_under_nounset
 run_test 'resolve_base prefers latest stable release' test_resolve_base_prefers_latest_stable_release
 run_test 'resolve_base falls back to latest main commit on release lookup failure' test_resolve_base_falls_back_to_latest_main_commit_on_release_lookup_failure
