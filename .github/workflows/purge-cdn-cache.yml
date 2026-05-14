@@ -18,8 +18,8 @@ jobs:
         run: |
           echo "Purging GitHub raw.githubusercontent.com CDN cache..."
           
-          REPO_OWNER="IIXINGCHEN"
-          REPO_NAME="Check-AI-CLI"
+          REPO_OWNER="${{ github.repository_owner }}"
+          REPO_NAME="${{ github.event.repository.name }}"
           BRANCH="main"
           BASE_URL="https://raw.githubusercontent.com/$REPO_OWNER/$REPO_NAME/$BRANCH"
           PURGE_JSDELIVR_URL="https://purge.jsdelivr.net/gh/$REPO_OWNER/$REPO_NAME@$BRANCH"
@@ -72,8 +72,8 @@ jobs:
         run: |
           echo "Verifying cache status..."
           
-          REPO_OWNER="IIXINGCHEN"
-          REPO_NAME="Check-AI-CLI"
+          REPO_OWNER="${{ github.repository_owner }}"
+          REPO_NAME="${{ github.event.repository.name }}"
           BRANCH="main"
           BASE_URL="https://raw.githubusercontent.com/$REPO_OWNER/$REPO_NAME/$BRANCH"
           

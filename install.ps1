@@ -119,7 +119,7 @@ function Get-InstallDir() {
   if (-not [string]::IsNullOrWhiteSpace($envDir)) { return $envDir }
   if (Test-IsAdmin) { return 'C:\Program Files\Tools\Check-AI-CLI' }
   $localAppData = $env:LOCALAPPDATA
-  if ([string]::IsNullOrWhiteSpace($localAppData)) { return (Join-Path $env:USERPROFILE 'AppData\Local\Check-AI-CLI') }
+  if ([string]::IsNullOrWhiteSpace($localAppData)) { return (Join-Path $env:USERPROFILE 'AppData\Local\Programs\Tools\Check-AI-CLI') }
   return (Join-Path $localAppData 'Programs\Tools\Check-AI-CLI')
 }
 
