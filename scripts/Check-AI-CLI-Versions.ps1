@@ -243,7 +243,10 @@ function Download-FileWithRetry([string]$Url, [string]$OutFile, [string]$Label) 
 
 function Get-FactoryBootstrapInfo() {
   $text = Get-Text 'https://app.factory.ai/cli/windows'
-  if (-not $text) { throw 'Failed to download Factory installer script.' }
+  if (-not $text) {
+    $detail = if ($script:LastGetTextError) { " ($script:LastGetTextError)" } else { '' }
+    throw "Failed to download Factory installer script.$detail"
+  }
   $versionMatch = [regex]::Match($text, '\$version\s*=\s*"([^"]+)"')
   if (-not $versionMatch.Success) { throw 'Failed to parse Factory version from installer script.' }
   $baseUrlMatch = [regex]::Match($text, '\$baseUrl\s*=\s*"([^"]+)"')
@@ -812,7 +815,9 @@ function Restore-NpmRegistry() {
 
 # Fetch text content, return $null on failure
 function Get-Text([string]$Uri) {
+  $script:LastGetTextError = $null
   $tries = Get-RetryCount
+  $lastErr = $null
   for ($i = 1; $i -le $tries; $i++) {
     try {
       $content = (Invoke-WebRequestWithHeaders $Uri $null).Content
@@ -821,10 +826,18 @@ function Get-Text([string]$Uri) {
       if ($content -is [byte[]]) { return [Text.Encoding]::UTF8.GetString($content) }
       return ($content | Out-String)
     } catch {
+      $lastErr = $_.Exception.Message
+      $statusCode = ''
+      try {
+        $resp = $_.Exception.Response
+        if ($resp) { $statusCode = " [HTTP $([int]$resp.StatusCode)]" }
+      } catch {}
       if ($i -eq $tries) {
-        Write-Warn "Request failed: $Uri ($($_.Exception.Message))"
+        Write-Warn "Request failed: $Uri ($lastErr)$statusCode"
+        $script:LastGetTextError = "Request to $Uri failed after $tries attempt(s): $lastErr$statusCode"
         return $null
       }
+      Write-Warn "Request attempt $i/$tries failed: $Uri ($lastErr)$statusCode"
       Start-Sleep -Seconds 2
     }
   }
@@ -1089,8 +1102,16 @@ function Update-Factory() {
   }
   try {
     Install-FactoryFromBootstrap
+    return
   } catch {
-    throw "Factory CLI installer failed: $($_.Exception.Message)"
+    Write-Warn "Official bootstrap failed: $($_.Exception.Message)"
+  }
+  Write-Info "Trying: npm install (fallback)"
+  try {
+    Invoke-NpmInstallGlobal 'droid@latest'
+    Write-Info "Factory CLI installed via npm."
+  } catch {
+    throw "Factory CLI installer failed. Both official bootstrap and npm fallback failed."
   }
 }
 
@@ -1369,19 +1390,58 @@ function Try-InstallOpenCodeRuntimePackage([string]$TargetVersion) {
   return (Test-OpenCodeRunnable)
 }
 
+function Get-OpenCodeUpgradeTimeoutSeconds() {
+  $default = 120
+  $v = $env:CHECK_AI_CLI_OPENCODE_UPGRADE_TIMEOUT_SECONDS
+  if ([string]::IsNullOrWhiteSpace($v)) { return $default }
+  $n = 0
+  if (-not [int]::TryParse($v.Trim(), [ref]$n)) { return $default }
+  if ($n -lt 10) { return 10 }
+  if ($n -gt 900) { return 900 }
+  return $n
+}
+
+function Invoke-OpenCodeUpgradeMethod([string]$Path, [string]$ArgString, [string]$Method) {
+  $proc = $null
+  $timeout = Get-OpenCodeUpgradeTimeoutSeconds
+  try {
+    $upgradeArgs = if ($ArgString) { @('upgrade',$ArgString,'--pure') } else { @('upgrade','--pure') }
+    if ($Method) { $upgradeArgs += @('--method',$Method) }
+    $proc = Start-Process -FilePath $Path -ArgumentList $upgradeArgs -NoNewWindow -PassThru
+    if (-not $proc.WaitForExit($timeout * 1000)) {
+      try { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue } catch {}
+      return "opencode upgrade timed out after ${timeout}s"
+    }
+    if ($proc.ExitCode -ne 0) {
+      return "opencode upgrade failed with exit code $($proc.ExitCode)"
+    }
+    return ''
+  } catch {
+    return "opencode upgrade exception: $($_.Exception.Message)"
+  }
+}
+
 function Try-OpenCodeSelfUpgrade([string]$TargetVersion) {
   $path = Get-OpenCodeCommandPath
   if (-not $path) { return $false }
   $arg = $null
   if ($TargetVersion) { $arg = "v$TargetVersion" }
-  try {
-    if ($arg) { & $path upgrade $arg } else { & $path upgrade }
-    if ($LASTEXITCODE -ne 0) { throw "opencode upgrade failed with exit code $LASTEXITCODE" }
-    return $true
-  } catch {
-    Write-Warn "opencode upgrade failed: $($_.Exception.Message)"
-    return $false
-  }
+
+  $lastErr = ''
+
+  # Attempt 1: auto-detect method (default)
+  $err = Invoke-OpenCodeUpgradeMethod $path $arg ''
+  if (-not $err -and (Test-OpenCodeAtLeast $TargetVersion)) { return $true }
+  if ($err) { $lastErr = $err }
+
+  # Attempt 2: npm method (more reliable behind proxies)
+  Write-Info "Trying: opencode upgrade --method npm"
+  $err = Invoke-OpenCodeUpgradeMethod $path $arg 'npm'
+  if (-not $err -and (Test-OpenCodeAtLeast $TargetVersion)) { return $true }
+  if ($err) { $lastErr = $err }
+
+  if ($lastErr) { Write-Warn $lastErr }
+  return $false
 }
 
 function Get-BashCommandPath() {
@@ -1462,9 +1522,56 @@ function Try-InstallOpenCodeWithChoco() {
   return $true
 }
 
+function Get-OpenCodeNpmBinDir() {
+  $prefix = Get-NpmGlobalBinDir
+  if (-not $prefix) { return $null }
+  $nodeModules = Join-Path $prefix 'node_modules'
+  if (-not (Test-Path -LiteralPath $nodeModules)) { return $null }
+  $pkgDir = Join-Path $nodeModules 'opencode-ai'
+  if (-not (Test-Path -LiteralPath $pkgDir)) { return $null }
+  $innerModules = Join-Path $pkgDir 'node_modules'
+  if (-not (Test-Path -LiteralPath $innerModules)) { return $null }
+  # Prefer x64 baseline (wider compatibility), fallback to x64
+  foreach ($arch in @('opencode-windows-x64-baseline','opencode-windows-x64')) {
+    $exe = Join-Path $innerModules "$arch\bin\opencode.exe"
+    if (Test-Path -LiteralPath $exe) { return (Split-Path -Parent $exe) }
+  }
+  return $null
+}
+
+function Sync-OpenCodeStandaloneFromNpm() {
+  $npmBinDir = Get-OpenCodeNpmBinDir
+  if (-not $npmBinDir) { return $false }
+  $npmExe = Join-Path $npmBinDir 'opencode.exe'
+  if (-not (Test-Path -LiteralPath $npmExe)) { return $false }
+
+  $npmVersion = Get-OpenCodeVersionAtPath $npmExe
+  if (-not $npmVersion) { return $false }
+
+  $standaloneDir = Join-Path $env:USERPROFILE '.opencode\bin'
+  $standaloneExe = Join-Path $standaloneDir 'opencode.exe'
+  $standaloneVersion = Get-OpenCodeVersionAtPath $standaloneExe
+
+  $cmp = Compare-Version $standaloneVersion $npmVersion
+  if ($cmp -ne -1) { return $false }
+
+  Write-Info "Syncing standalone opencode from npm (v$npmVersion)"
+  try {
+    Stop-Process -Name 'opencode' -Force -ErrorAction SilentlyContinue
+    if (-not (Test-Path -LiteralPath $standaloneDir)) { New-Item -ItemType Directory -Path $standaloneDir -Force | Out-Null }
+    Copy-Item -Path $npmExe -Destination $standaloneExe -Force
+    Write-Info "Standalone opencode synced to v$npmVersion"
+    return $true
+  } catch {
+    Write-Warn "Failed to sync standalone opencode: $($_.Exception.Message)"
+    return $false
+  }
+}
+
 function Try-InstallOpenCodeWithNpm([string]$TargetVersion) {
   try {
     Invoke-NpmInstallGlobal 'opencode-ai@latest'
+    [void](Sync-OpenCodeStandaloneFromNpm)
     if (Test-OpenCodeRunnable) { return $true }
     if (Try-RepairOpenCodeNpmShim -and (Test-OpenCodeRunnable)) { return $true }
     if (Try-InstallOpenCodeRuntimePackage $TargetVersion -and (Test-OpenCodeRunnable)) { return $true }
@@ -1483,13 +1590,12 @@ function Update-OpenCode() {
   $hasNative = [bool](Get-OpenCodeCommandPath)
   if ($hasNative) {
     Write-Info "Trying: opencode upgrade"
-    Try-OpenCodeSelfUpgrade $target | Out-Null
-    if (Test-OpenCodeAtLeast $target) { return }
+    if ((Try-OpenCodeSelfUpgrade $target) -and (Test-OpenCodeAtLeast $target)) { return }
   }
   Write-Info "Trying: scoop install"
-  if (Try-InstallOpenCodeWithScoop) { Try-OpenCodeSelfUpgrade $target | Out-Null ; if (Test-OpenCodeAtLeast $target) { return } }
+  if (Try-InstallOpenCodeWithScoop) { if ((Try-OpenCodeSelfUpgrade $target) -and (Test-OpenCodeAtLeast $target)) { return } }
   Write-Info "Trying: choco install"
-  if (Try-InstallOpenCodeWithChoco) { Try-OpenCodeSelfUpgrade $target | Out-Null ; if (Test-OpenCodeAtLeast $target) { return } }
+  if (Try-InstallOpenCodeWithChoco) { if ((Try-OpenCodeSelfUpgrade $target) -and (Test-OpenCodeAtLeast $target)) { return } }
   Write-Info "Trying: npm install"
   if (Try-InstallOpenCodeWithNpm $target -and (Test-OpenCodeAtLeast $target)) { return }
   Write-Info "Trying: curl/wget install"
@@ -1542,6 +1648,11 @@ function Report-PostUpdate([string]$Title, [string]$Latest, [scriptblock]$GetLoc
   $cmp = Compare-Version $newLocal $Latest
   if ($cmp -eq -1) {
     Write-Warn "Update may have failed (still older than latest)."
+    if ($Title -eq 'Factory CLI (Droid)') {
+      Write-Warn "Tip: try npm install -g droid@latest"
+      Write-Warn "Tip: manually reinstall from https://app.factory.ai/cli/windows"
+      return
+    }
     if ($Title -eq 'Claude Code') {
       Write-Warn "Tip: try claude update"
       Write-Warn "Tip: if needed, reinstall via irm https://claude.ai/install.ps1 | iex"
