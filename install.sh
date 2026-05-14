@@ -398,14 +398,48 @@ deploy_all() {
   done < <(list_manifest_paths "$stage/checksums.sha256")
 }
 
+get_profile_file() {
+  local shell_name
+  shell_name="$(basename "${SHELL:-bash}")"
+  case "$shell_name" in
+    fish) printf '%s\n' "$HOME/.config/fish/config.fish" ;;
+    zsh) printf '%s\n' "${ZDOTDIR:-$HOME}/.zshrc" ;;
+    bash) [ -f "$HOME/.bashrc" ] && printf '%s\n' "$HOME/.bashrc" || printf '%s\n' "$HOME/.profile" ;;
+    *) printf '%s\n' "$HOME/.profile" ;;
+  esac
+}
+
+add_to_path() {
+  local dir="$1" file marker tmp shell_name
+  file="$(get_profile_file)"
+  marker="check-ai-cli:path:$(printf '%s' "$dir" | tr '/\\: .' '_')"
+  mkdir -p "$(dirname "$file")"
+  [ -f "$file" ] || : > "$file"
+  if grep -qF "$marker" "$file" 2>/dev/null; then
+    log_info "PATH entry already present for $dir"
+    return 0
+  fi
+  tmp="$file.tmp.$$"
+  grep -Fv "$marker" "$file" > "$tmp" 2>/dev/null || true
+  shell_name="$(basename "${SHELL:-bash}")"
+  if [ "$shell_name" = "fish" ]; then
+    printf 'fish_add_path -m "%s" # %s\n' "$dir" "$marker" >> "$tmp"
+  else
+    printf 'export PATH="%s:$PATH" # %s\n' "$dir" "$marker" >> "$tmp"
+  fi
+  mv "$tmp" "$file"
+  export PATH="$dir:$PATH"
+  log_info "Added $dir to PATH permanently"
+}
+
 print_next_steps() {
   local dir="$1"
   chmod +x "$dir/scripts/check-ai-cli-versions.sh" 2>/dev/null || true
   chmod +x "$dir/bin/check-ai-cli" 2>/dev/null || true
   chmod +x "$dir/uninstall.sh" 2>/dev/null || true
   log_ok "Installed to: $dir"
-  printf "\nNext:\n  cd \"%s\"\n  ./bin/check-ai-cli\n\n" "$dir"
-  log_warn "Tip: add \"$dir/bin\" to PATH for global usage."
+  add_to_path "$dir/bin"
+  printf "\nNext:\n  check-ai-cli\n\n"
   log_warn "Tip: set CHECK_AI_CLI_REF to pin a tag/commit for stability."
   log_warn "Tip: prefer HTTP_PROXY/HTTPS_PROXY instead of third-party mirrors."
   log_warn "Tip: set CHECK_AI_CLI_SHOW_PROGRESS=1 to view byte progress."

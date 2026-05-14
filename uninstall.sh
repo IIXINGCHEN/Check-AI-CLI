@@ -21,7 +21,14 @@ confirm_delete() {
 
 main() {
   local dir
-  dir="$(cd "$INSTALL_DIR" && pwd)"
+  if [ -d "$INSTALL_DIR" ]; then
+    dir="$(cd "$INSTALL_DIR" && pwd)"
+  else
+    dir="$(cd "$(dirname "$INSTALL_DIR")" 2>/dev/null && pwd || pwd)/$(basename "$INSTALL_DIR")"
+    log_warn "Install directory does not exist: $dir"
+    log_warn "Nothing to uninstall."
+    exit 0
+  fi
   if ! confirm_delete "$dir"; then log_warn "Canceled."; exit 0; fi
   rm -rf -- "$dir"
   log_ok "Uninstalled: $dir"

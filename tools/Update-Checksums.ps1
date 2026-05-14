@@ -28,7 +28,8 @@ function Get-RepoRoot() {
 function Get-TargetPaths() {
   $paths = @()
   $paths += (git ls-files scripts bin install.ps1 install.sh uninstall.ps1 uninstall.sh 2>$null)
-  $paths = $paths | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+  $paths += (git ls-files Check-AI-CLI-Versions.ps1 check-ai-cli-versions.sh check-ai-cli.ps1 check-ai-cli.cmd Check-FactoryCLI-Version.ps1 2>$null)
+  $paths = $paths | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
   return $paths | Sort-Object
 }
 
