@@ -135,15 +135,17 @@ function Close-ByteProgress([hashtable]$State) {
 function Get-RemoteFileSize([string]$Uri) {
   $headers = @{ 'User-Agent' = 'ai-cli-version-checker' }
   try {
-    $resp = $null
-    Invoke-WithTempProgressPreference 'SilentlyContinue' {
+    $prev = $ProgressPreference
+    $ProgressPreference = 'SilentlyContinue'
+    try {
       $resp = Invoke-WebRequest -Uri $Uri -Headers $headers -UseBasicParsing -Method Head -TimeoutSec 15 -ErrorAction Stop
+    } finally {
+      $ProgressPreference = $prev
     }
     if ($resp.Headers -and $resp.Headers['Content-Length']) {
       return [long]$resp.Headers['Content-Length']
     }
   } catch {}
-  # HEAD failed or returned no Content-Length; download proceeds without progress bar.
   return 0L
 }
 
@@ -215,11 +217,13 @@ function Invoke-WebRequestWithHeaders([string]$Uri, [string]$OutFile) {
     Download-FileWithProgress $Uri $OutFile ''
     return
   }
-  $response = $null
-  Invoke-WithTempProgressPreference 'SilentlyContinue' {
-    $response = Invoke-WebRequest -Uri $Uri -Headers $headers -UseBasicParsing -TimeoutSec 30 -ErrorAction Stop
+  $prev = $ProgressPreference
+  $ProgressPreference = 'SilentlyContinue'
+  try {
+    return Invoke-WebRequest -Uri $Uri -Headers $headers -UseBasicParsing -TimeoutSec 30 -ErrorAction Stop
+  } finally {
+    $ProgressPreference = $prev
   }
-  return $response
 }
 
 function Download-FileWithRetry([string]$Url, [string]$OutFile, [string]$Label) {
