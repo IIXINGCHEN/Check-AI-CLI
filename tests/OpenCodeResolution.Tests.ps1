@@ -294,4 +294,34 @@ Run-Test 'Update-OpenCode prefers native self upgrade before curl install' {
   Assert-Equal ($script:CallOrder -join ',') 'native:1.14.22,verify:1.14.22' 'Expected native opencode upgrade to run before curl and verify against latest target.'
   Assert-True ($script:CapturedInfo -contains 'Trying: opencode upgrade') 'Expected update flow to log the native OpenCode upgrade attempt.'
 }
+
+Run-Test 'Try-OpenCodeSelfUpgrade accepts target version even when upgrade exit status is unreliable' {
+  $script:CapturedWarnings = @()
+  $script:CallOrder = @()
+
+  function Get-OpenCodeCommandPath() {
+    return 'C:\Users\Tester\.opencode\bin\opencode.exe'
+  }
+
+  function Invoke-OpenCodeUpgradeMethod([string]$Path, [string]$ArgString, [string]$Method) {
+    $script:CallOrder += "upgrade:$Method"
+    return 'opencode upgrade failed with exit code 1'
+  }
+
+  function Test-OpenCodeAtLeast([string]$TargetVersion) {
+    $script:CallOrder += "verify:$TargetVersion"
+    return $TargetVersion -eq '1.15.7'
+  }
+
+  function Write-Info([string]$Message) { }
+  function Write-Warn([string]$Message) {
+    $script:CapturedWarnings += $Message
+  }
+
+  $result = Try-OpenCodeSelfUpgrade '1.15.7'
+
+  Assert-True $result 'Expected self upgrade to succeed when version verification proves the target was installed.'
+  Assert-Equal ($script:CallOrder -join ',') 'upgrade:,verify:1.15.7' 'Expected version verification immediately after the first upgrade attempt.'
+  Assert-Equal $script:CapturedWarnings.Count 0 'Expected no warning when the installed OpenCode version already satisfies the target.'
+}
 Write-Host '[PASS] All OpenCode resolution regression tests passed.' -ForegroundColor Green

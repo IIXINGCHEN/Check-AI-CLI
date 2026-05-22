@@ -1435,13 +1435,13 @@ function Try-OpenCodeSelfUpgrade([string]$TargetVersion) {
 
   # Attempt 1: auto-detect method (default)
   $err = Invoke-OpenCodeUpgradeMethod $path $arg ''
-  if (-not $err -and (Test-OpenCodeAtLeast $TargetVersion)) { return $true }
+  if (Test-OpenCodeAtLeast $TargetVersion) { return $true }
   if ($err) { $lastErr = $err }
 
   # Attempt 2: npm method (more reliable behind proxies)
   Write-Info "Trying: opencode upgrade --method npm"
   $err = Invoke-OpenCodeUpgradeMethod $path $arg 'npm'
-  if (-not $err -and (Test-OpenCodeAtLeast $TargetVersion)) { return $true }
+  if (Test-OpenCodeAtLeast $TargetVersion) { return $true }
   if ($err) { $lastErr = $err }
 
   if ($lastErr) { Write-Warn $lastErr }
