@@ -7,30 +7,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-function Get-RepoRoot() {
-  return (Split-Path -Parent $PSScriptRoot)
-}
-
-function Get-ReleaseAssetPaths() {
-  $assets = @(
-    'checksums.sha256',
-    'install.ps1',
-    'install.sh',
-    'uninstall.ps1',
-    'uninstall.sh',
-    'bin/check-ai-cli',
-    'bin/check-ai-cli.cmd',
-    'bin/check-ai-cli.ps1',
-    'scripts/Check-AI-CLI-Versions.ps1',
-    'scripts/check-ai-cli-versions.sh'
-  )
-  $root = Get-RepoRoot
-  foreach ($path in $assets) {
-    $full = Join-Path $root $path
-    if (-not (Test-Path -LiteralPath $full)) { throw "Missing release asset: $path" }
-  }
-  return $assets
-}
+. (Join-Path $PSScriptRoot 'DistributionFiles.ps1')
 
 function Get-ReleaseIntroText([string]$ReleaseTag) {
   return @(
@@ -40,6 +17,7 @@ function Get-ReleaseIntroText([string]$ReleaseTag) {
     '',
     'Included assets:',
     '- `checksums.sha256` for integrity verification',
+    '- `distribution-files.txt` as the canonical install/release file list',
     '- install and uninstall scripts',
     '- PATH entrypoint scripts under `bin/`',
     '- main scripts under `scripts/`',

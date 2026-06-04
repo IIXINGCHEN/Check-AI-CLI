@@ -25,10 +25,12 @@ Run-Test 'Update-Checksums fails when target files have unstaged changes' {
     New-Item -ItemType Directory -Path $temp | Out-Null
     New-Item -ItemType Directory -Path (Join-Path $temp 'tools') | Out-Null
     Copy-Item -LiteralPath (Join-Path $repoRoot 'tools/Update-Checksums.ps1') -Destination (Join-Path $temp 'tools/Update-Checksums.ps1')
+    Copy-Item -LiteralPath (Join-Path $repoRoot 'tools/DistributionFiles.ps1') -Destination (Join-Path $temp 'tools/DistributionFiles.ps1')
     Set-Location $temp
     git init | Out-Null
+    Set-Content -Path 'distribution-files.txt' -Value @('distribution-files.txt', 'install.ps1')
     Set-Content -Path 'install.ps1' -Value 'old'
-    git add install.ps1 tools/Update-Checksums.ps1
+    git add distribution-files.txt install.ps1 tools/DistributionFiles.ps1 tools/Update-Checksums.ps1
     Set-Content -Path 'install.ps1' -Value 'new'
 
     $output = & $pwsh -NoProfile -File './tools/Update-Checksums.ps1' 2>&1

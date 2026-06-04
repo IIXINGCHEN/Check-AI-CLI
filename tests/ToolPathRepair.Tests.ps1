@@ -15,6 +15,12 @@ function Assert-StartsWith([string]$Actual, [string]$ExpectedPrefix, [string]$Me
   }
 }
 
+function Assert-NotContains([string]$Actual, [string]$Unexpected, [string]$Message) {
+  if (($null -ne $Actual) -and $Actual.Contains($Unexpected)) {
+    throw "$Message`nUnexpected substring: $Unexpected`nActual: $Actual"
+  }
+}
+
 function Reset-TestState {
   $script:StoredUserPath = ''
   $script:CapturedInfos = @()
@@ -33,6 +39,52 @@ function Run-Test([string]$Name, [scriptblock]$Body) {
 
 function Write-Info([string]$Message) {
   $script:CapturedInfos += $Message
+}
+
+Run-Test 'Ensure-UserPathContains does not log absolute PATH entries' {
+  $originalPath = $env:PATH
+  try {
+    $script:StoredUserPath = 'C:\Tools'
+    $env:PATH = 'C:\Tools'
+
+    function Get-UserPathValue() {
+      return $script:StoredUserPath
+    }
+
+    function Set-UserPathValue([string]$PathValue) {
+      $script:StoredUserPath = $PathValue
+    }
+
+    Ensure-UserPathContains 'C:\Users\Tester\AppData\Roaming\npm'
+
+    Assert-Equal $script:CapturedInfos.Count 1 'Expected one info log when User PATH is changed.'
+    Assert-NotContains $script:CapturedInfos[0] 'C:\Users\Tester' 'Expected PATH add log to avoid absolute local paths.'
+  } finally {
+    $env:PATH = $originalPath
+  }
+}
+
+Run-Test 'Ensure-UserPathPrefers does not log absolute PATH entries' {
+  $originalPath = $env:PATH
+  try {
+    $script:StoredUserPath = 'C:\Tools;C:\Users\Tester\AppData\Roaming\npm'
+    $env:PATH = $script:StoredUserPath
+
+    function Get-UserPathValue() {
+      return $script:StoredUserPath
+    }
+
+    function Set-UserPathValue([string]$PathValue) {
+      $script:StoredUserPath = $PathValue
+    }
+
+    Ensure-UserPathPrefers 'C:\Users\Tester\AppData\Roaming\npm'
+
+    Assert-Equal $script:CapturedInfos.Count 1 'Expected one info log when User PATH is reordered.'
+    Assert-NotContains $script:CapturedInfos[0] 'C:\Users\Tester' 'Expected PATH reorder log to avoid absolute local paths.'
+  } finally {
+    $env:PATH = $originalPath
+  }
 }
 
 Run-Test 'Get-LocalClaudeVersion repairs npm global bin into User PATH' {
@@ -109,11 +161,6 @@ Run-Test 'Get-LocalClaudeVersion repairs native user bin before npm shim on Wind
 
     function Set-UserPathValue([string]$PathValue) {
       $script:StoredUserPath = $PathValue
-      if ($PathValue.StartsWith('C:\Users\Tester\.local\bin', [System.StringComparison]::OrdinalIgnoreCase)) {
-        $script:ResolvedClaude = @{ Name = 'claude'; Version = '2.1.84'; Source = 'C:\Users\Tester\.local\bin\claude' }
-        return
-      }
-      $script:ResolvedClaude = @{ Name = 'claude'; Version = '0.9.0'; Source = 'C:\Users\Tester\AppData\Roaming\npm\claude.cmd' }
     }
 
     function Get-NpmGlobalBinDir() {
@@ -126,7 +173,15 @@ Run-Test 'Get-LocalClaudeVersion repairs native user bin before npm shim on Wind
     }
 
     function Get-CommandVersionInfo([string]$CommandName) {
-      if ($CommandName -in @('claude', 'claude-code')) { return $script:ResolvedClaude }
+      if ($CommandName -in @('claude', 'claude-code')) {
+        $firstPath = ($env:PATH -split ';')[0]
+        if ($firstPath.EndsWith('.local\bin', [System.StringComparison]::OrdinalIgnoreCase)) {
+          return @{ Name = 'claude'; Version = '2.1.84'; Source = 'C:\Users\Tester\.local\bin\claude' }
+        }
+        if ($firstPath.EndsWith('npm', [System.StringComparison]::OrdinalIgnoreCase)) {
+          return @{ Name = 'claude'; Version = '0.9.0'; Source = 'C:\Users\Tester\AppData\Roaming\npm\claude.cmd' }
+        }
+      }
       return @{ Name = $CommandName; Version = $null; Source = $null }
     }
 
@@ -138,6 +193,55 @@ Run-Test 'Get-LocalClaudeVersion repairs native user bin before npm shim on Wind
   } finally {
     $env:PATH = $originalPath
     $env:USERPROFILE = $originalUserProfile
+  }
+}
+
+Run-Test 'Get-LocalClaudeVersion prefers newer npm fallback over older native install' {
+  $originalPath = $env:PATH
+  try {
+    $script:StoredUserPath = 'native-bin;npm-bin'
+    $env:PATH = 'native-bin;npm-bin;legacy-bin'
+
+    function Get-UserPathValue() {
+      return $script:StoredUserPath
+    }
+
+    function Set-UserPathValue([string]$PathValue) {
+      $script:StoredUserPath = $PathValue
+    }
+
+    function Get-PreferredToolPathDirs([string]$ToolId) {
+      if ($ToolId -eq 'claude') { return @('native-bin', 'npm-bin') }
+      return @()
+    }
+
+    function Get-CommandVersionInfo([string]$CommandName) {
+      if ($CommandName -notin @('claude', 'claude-code')) {
+        return @{ Name = $CommandName; Version = $null; Source = $null }
+      }
+      $firstPath = ($env:PATH -split ';')[0]
+      if ($firstPath.EndsWith('npm-bin', [System.StringComparison]::OrdinalIgnoreCase)) {
+        return @{ Name = $CommandName; Version = '2.1.152'; Source = 'npm-bin/claude.cmd' }
+      }
+      if ($firstPath.EndsWith('native-bin', [System.StringComparison]::OrdinalIgnoreCase)) {
+        return @{ Name = $CommandName; Version = '2.1.141'; Source = 'native-bin/claude' }
+      }
+      return @{ Name = $CommandName; Version = $null; Source = $null }
+    }
+
+    $version = Get-LocalClaudeVersion
+
+    Assert-Equal $version '2.1.152' 'Expected Claude version detection to prefer the newer npm fallback over an older native install.'
+    $firstUserPath = ($script:StoredUserPath -split ';')[0]
+    $firstProcessPath = ($env:PATH -split ';')[0]
+    if (-not $firstUserPath.EndsWith('npm-bin', [System.StringComparison]::OrdinalIgnoreCase)) {
+      throw "Expected User PATH to prioritize the newer npm Claude fallback."
+    }
+    if (-not $firstProcessPath.EndsWith('npm-bin', [System.StringComparison]::OrdinalIgnoreCase)) {
+      throw "Expected process PATH to prioritize the newer npm Claude fallback."
+    }
+  } finally {
+    $env:PATH = $originalPath
   }
 }
 

@@ -1,0 +1,12 @@
+# Canonical install/release payload files.
+# Do not include checksums.sha256; it is generated from this list.
+distribution-files.txt
+install.ps1
+install.sh
+uninstall.ps1
+uninstall.sh
+bin/check-ai-cli
+bin/check-ai-cli.cmd
+bin/check-ai-cli.ps1
+scripts/Check-AI-CLI-Versions.ps1
+scripts/check-ai-cli-versions.sh

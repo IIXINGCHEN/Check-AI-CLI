@@ -29,6 +29,17 @@ success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
 warn() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
 fail() { echo -e "${RED}[ERROR]${NC} $1"; }
 
+read_distribution_files() {
+  local list="$REPO_ROOT/distribution-files.txt" line
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%%#*}"
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+    [[ -n "$line" ]] || continue
+    printf '%s\n' "$line"
+  done < "$list"
+}
+
 # Critical files (default)
 CRITICAL_FILES=(
   "checksums.sha256"
@@ -37,16 +48,10 @@ CRITICAL_FILES=(
 # All files
 ALL_FILES=(
   "checksums.sha256"
-  "install.ps1"
-  "install.sh"
-  "uninstall.ps1"
-  "uninstall.sh"
-  "bin/check-ai-cli"
-  "bin/check-ai-cli.cmd"
-  "bin/check-ai-cli.ps1"
-  "scripts/Check-AI-CLI-Versions.ps1"
-  "scripts/check-ai-cli-versions.sh"
 )
+while IFS= read -r file; do
+  ALL_FILES+=("$file")
+done < <(read_distribution_files)
 
 get_local_hash() {
   local file="$1"

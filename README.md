@@ -22,6 +22,7 @@
 | `install.ps1` / `install.sh` | 一键安装器 (支持 PATH) |
 | `uninstall.ps1` / `uninstall.sh` | 卸载器 (需要确认 DELETE) |
 | `checksums.sha256` | 下载文件校验 (安装时自动验证) |
+| `distribution-files.txt` | 安装/发布文件清单的唯一来源 |
 | `tools/` | 发布和维护辅助脚本 |
 | `tests/` | 回归测试 |
 | `.github/` | CI 与自动校验工作流 |
@@ -311,7 +312,7 @@ curl -fsSL https://app.factory.ai/cli/install.sh | bash
 irm https://claude.ai/install.ps1 | iex
 ```
 
-提示: Windows 下如果已经安装了 Claude Code, 本项目脚本现在会优先尝试 `claude update` 做原生更新; 只有原生更新失败时, 才会回退到官方 `install.ps1` 重装路径。若更新后版本仍旧偏旧, 推荐按以下顺序排查:
+提示: Windows 下如果已经安装了 Claude Code, 本项目脚本现在会优先尝试 `claude update` 做原生更新; 原生更新失败或版本仍旧偏旧时, 会依次回退到官方 `install.ps1` 和 npm 包安装路径。若更新后版本仍旧偏旧, 推荐按以下顺序排查:
 
 ```powershell
 claude update
@@ -319,6 +320,10 @@ claude --version
 
 # 如仍异常, 再执行官方安装脚本重装
 irm https://claude.ai/install.ps1 | iex
+claude --version
+
+# 如 downloads.claude.ai 连通性异常, 使用 npm 官方包备用
+npm install -g @anthropic-ai/claude-code@latest
 claude --version
 ```
 
@@ -550,7 +555,7 @@ sudo pacman -S nodejs npm
 
 ### 问题：Windows 下 Claude Code 更新后仍显示旧版本
 
-**原因**: Claude Code 使用 staged rollout, GitHub releases 可能领先于 stable 分发渠道。脚本检测到的 "latest" 来自 stable channel, 与实际可安装版本一致, 不影响使用。
+**原因**: Claude Code 在 Windows 下可能同时存在原生安装和 npm 全局安装。脚本会比较 stable channel 和官方 npm 包两个可安装来源, 并优先把版本更高的 Claude 命令路径放到 PATH 前面。若仍显示旧版本, 通常是当前终端会话还缓存了旧命令路径。
 
 **解决方案**:
 ```powershell
@@ -560,6 +565,9 @@ claude --version
 
 # 如需确认命令位置
 where.exe claude
+
+# 如果 claude update/install.ps1 都无法访问下载主机
+npm install -g @anthropic-ai/claude-code@latest
 ```
 
 ### 问题：OpenAI Codex 安装后 `codex --version` 报错
@@ -592,12 +600,12 @@ codex --version
 | 工具 | 主要数据源 | 备用数据源 |
 |------|----------|-----------|
 | Factory CLI | app.factory.ai/cli/install.sh | app.factory.ai/cli/windows |
-| Claude Code | GCS claude-code-releases/stable | github.com/anthropics/claude-code/releases/latest, registry.npmjs.org |
+| Claude Code | GCS claude-code-releases/stable + registry.npmjs.org | github.com/anthropics/claude-code/releases/latest |
 | OpenAI Codex | github.com/openai/codex/releases/latest | registry.npmjs.org/@openai/codex |
 | Gemini CLI | github.com/google-gemini/gemini-cli/releases/latest | registry.npmjs.org/@google/gemini-cli |
 | OpenCode | github.com/anomalyco/opencode/releases/latest | registry.npmjs.org/opencode-ai |
 
-- `Claude Code`: 优先使用 GCS stable channel (与原生更新器和 install.ps1 实际可安装的版本一致), 避免 GitHub releases staged rollout 导致假阳性 “update available”; stable 不可用时回退到 GitHub releases, 最后回退到 npm。
+- `Claude Code`: 优先比较 GCS stable channel 和官方 npm 包两个可安装来源, 选择较高版本作为 `latest`; 两者都不可用时才回退到 GitHub releases, 避免 staged rollout 导致假阳性 “update available”。
 - `Codex`、`Gemini CLI`、`OpenCode`: 优先使用官方仓库 release 作为 `latest` 来源, 只有仓库源不可用时才回退到其他官方发布源。
 - `OpenCode`: 仓库源不可用时回退到官方 npm 包; 若官方来源都失败则显示 `unknown`。可通过 `CHECK_AI_CLI_OPENCODE_VERSION` 覆盖。
 - 五个工具在检查前和更新后都会自动尝试修复 PATH/环境变量冲突, 以减少”已安装但命令未识别”问题。
@@ -623,6 +631,7 @@ git push origin v1.3.0
 ### 自动上传的 Release 附件
 
 - `checksums.sha256`
+- `distribution-files.txt`
 - `install.ps1`
 - `install.sh`
 - `uninstall.ps1`

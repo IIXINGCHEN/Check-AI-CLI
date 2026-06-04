@@ -27,6 +27,7 @@ Run-Test 'Get-ReleaseAssetPaths returns expected core assets' {
   $assets = Get-ReleaseAssetPaths
 
   Assert-True ($assets -contains 'checksums.sha256') 'Expected release assets to include checksums.sha256.'
+  Assert-True ($assets -contains 'distribution-files.txt') 'Expected release assets to include the canonical distribution list.'
   Assert-True ($assets -contains 'install.ps1') 'Expected release assets to include install.ps1.'
   Assert-True ($assets -contains 'scripts/Check-AI-CLI-Versions.ps1') 'Expected release assets to include the PowerShell main script.'
   Assert-True ($assets -contains 'scripts/check-ai-cli-versions.sh') 'Expected release assets to include the shell main script.'

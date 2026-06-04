@@ -17,6 +17,8 @@ function Write-Success([string]$Message) { Write-Host "[SUCCESS] $Message" -Fore
 function Write-Warn([string]$Message) { Write-Host "[WARNING] $Message" -ForegroundColor Yellow }
 function Write-Fail([string]$Message) { Write-Host "[ERROR] $Message" -ForegroundColor Red }
 
+. (Join-Path $PSScriptRoot 'DistributionFiles.ps1')
+
 $RepoOwner = 'IIXINGCHEN'
 $RepoName = 'Check-AI-CLI'
 $Branch = 'main'
@@ -27,22 +29,8 @@ $JsDelivrUrl = "https://cdn.jsdelivr.net/gh/$RepoOwner/$RepoName@$Branch"
 $PurgeJsDelivrUrl = "https://purge.jsdelivr.net/gh/$RepoOwner/$RepoName@$Branch"
 
 # Files to purge
-$CriticalFiles = @(
-  'checksums.sha256'
-)
-
-$AllFiles = @(
-  'checksums.sha256',
-  'install.ps1',
-  'install.sh',
-  'uninstall.ps1',
-  'uninstall.sh',
-  'bin/check-ai-cli',
-  'bin/check-ai-cli.cmd',
-  'bin/check-ai-cli.ps1',
-  'scripts/Check-AI-CLI-Versions.ps1',
-  'scripts/check-ai-cli-versions.sh'
-)
+$CriticalFiles = @(Get-CriticalPurgeFilePaths)
+$AllFiles = @(Get-AllPurgeFilePaths)
 
 function Get-LocalFileHash([string]$RelativePath) {
   $localPath = Join-Path $PSScriptRoot "..\$RelativePath"

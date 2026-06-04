@@ -19,6 +19,12 @@ function Assert-StartsWith([string]$Actual, [string]$ExpectedPrefix, [string]$Me
   }
 }
 
+function Assert-NotContains([string]$Actual, [string]$UnexpectedSubstring, [string]$Message) {
+  if (($null -ne $Actual) -and $Actual.Contains($UnexpectedSubstring)) {
+    throw "$Message`nUnexpected substring: $UnexpectedSubstring`nActual: $Actual"
+  }
+}
+
 function Reset-TestState {
   $script:CapturedWarnings = @()
   $script:OriginalNpmRegistry = $null
@@ -37,6 +43,15 @@ function Run-Test([string]$Name, [scriptblock]$Body) {
 
 function Write-Warn([string]$Message) {
   $script:CapturedWarnings += $Message
+}
+
+Run-Test 'OpenCode resolution warnings do not log absolute paths' {
+  Write-OpenCodeStandaloneOnly 'C:\Users\Tester\.opencode\bin\opencode.exe' '1.2.21'
+  Write-OpenCodeResolvedMismatch @{ Source = 'C:\Users\Tester\AppData\Roaming\npm\opencode.ps1'; Version = '1.2.17' } 'C:\Users\Tester\.opencode\bin\opencode.exe' '1.2.21'
+
+  foreach ($warning in $script:CapturedWarnings) {
+    Assert-NotContains $warning 'C:\Users\Tester' 'Expected OpenCode resolution warning to avoid absolute local paths.'
+  }
 }
 
 Run-Test 'Get-LocalOpenCodeVersion repairs old shim resolution to prefer standalone install' {
@@ -323,5 +338,42 @@ Run-Test 'Try-OpenCodeSelfUpgrade accepts target version even when upgrade exit 
   Assert-True $result 'Expected self upgrade to succeed when version verification proves the target was installed.'
   Assert-Equal ($script:CallOrder -join ',') 'upgrade:,verify:1.15.7' 'Expected version verification immediately after the first upgrade attempt.'
   Assert-Equal $script:CapturedWarnings.Count 0 'Expected no warning when the installed OpenCode version already satisfies the target.'
+}
+
+Run-Test 'Try-OpenCodeSelfUpgrade syncs standalone after npm method updates npm executable' {
+  $script:CapturedWarnings = @()
+  $script:CallOrder = @()
+  $script:StandaloneSynced = $false
+
+  function Get-OpenCodeCommandPath() {
+    return 'C:\Users\Tester\.opencode\bin\opencode.exe'
+  }
+
+  function Invoke-OpenCodeUpgradeMethod([string]$Path, [string]$ArgString, [string]$Method) {
+    $script:CallOrder += "upgrade:$Method"
+    return 'opencode upgrade failed with exit code 1'
+  }
+
+  function Sync-OpenCodeStandaloneFromNpm() {
+    $script:CallOrder += 'sync'
+    $script:StandaloneSynced = $true
+    return $true
+  }
+
+  function Test-OpenCodeAtLeast([string]$TargetVersion) {
+    $script:CallOrder += "verify:$TargetVersion"
+    return $script:StandaloneSynced
+  }
+
+  function Write-Info([string]$Message) { }
+  function Write-Warn([string]$Message) {
+    $script:CapturedWarnings += $Message
+  }
+
+  $result = Try-OpenCodeSelfUpgrade '1.15.13'
+
+  Assert-True $result 'Expected npm-method self upgrade to succeed after syncing the npm-updated executable into standalone.'
+  Assert-Equal ($script:CallOrder -join ',') 'upgrade:,verify:1.15.13,upgrade:npm,sync,verify:1.15.13' 'Expected npm self-upgrade to sync standalone before the final version check.'
+  Assert-Equal $script:CapturedWarnings.Count 0 'Expected no unreliable-exit warning after synced version verification succeeds.'
 }
 Write-Host '[PASS] All OpenCode resolution regression tests passed.' -ForegroundColor Green

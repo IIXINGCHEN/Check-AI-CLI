@@ -21,6 +21,12 @@ function Assert-Contains([string]$Actual, [string]$ExpectedSubstring, [string]$M
   }
 }
 
+function Assert-NotContains([string]$Actual, [string]$UnexpectedSubstring, [string]$Message) {
+  if (($null -ne $Actual) -and $Actual.Contains($UnexpectedSubstring)) {
+    throw "$Message`nUnexpected substring: $UnexpectedSubstring`nActual: $Actual"
+  }
+}
+
 function Assert-ThrowsContains([scriptblock]$Action, [string]$ExpectedSubstring, [string]$Message) {
   try {
     & $Action
@@ -34,10 +40,12 @@ function Assert-ThrowsContains([scriptblock]$Action, [string]$ExpectedSubstring,
 
 function Reset-TestDoubles {
   $script:CapturedWarnings = @()
+  $script:CapturedInfos = @()
   $script:StoredUserPath = ''
   $script:SetUserPathCalls = 0
   $script:ConfirmCalls = @()
   $script:InstallFactoryCalls = 0
+  $script:NpmInstallCalls = @()
 }
 
 function Run-Test([string]$Name, [scriptblock]$Body) {
@@ -53,6 +61,10 @@ function Run-Test([string]$Name, [scriptblock]$Body) {
 
 function Write-Warn([string]$Message) {
   $script:CapturedWarnings += $Message
+}
+
+function Write-Info([string]$Message) {
+  $script:CapturedInfos += $Message
 }
 
 function Get-UserPathValue() {
@@ -76,6 +88,10 @@ function Confirm-RemoteScriptExecution([string]$Url, [string]$ToolName, [string]
 
 function Install-FactoryFromBootstrap() {
   $script:InstallFactoryCalls += 1
+}
+
+function Invoke-NpmInstallGlobal([string]$PackageSpec) {
+  $script:NpmInstallCalls += $PackageSpec
 }
 
 Run-Test 'Ensure-UserPathContains does not append duplicate normalized user PATH entries' {
@@ -108,6 +124,7 @@ Run-Test 'Get-LocalFactoryVersion prefers droid and warns when factory shim is o
   Assert-Equal $version '2.3.4' 'Expected Factory version detection to prefer droid when available.'
   Assert-True ($script:CapturedWarnings.Count -eq 1) 'Expected a warning when factory resolves to an older binary.'
   Assert-True ($script:CapturedWarnings[0] -like '*Using droid for version checks*') 'Expected warning to explain that droid is used for version checks.'
+  Assert-NotContains $script:CapturedWarnings[0] 'C:\Users\Tester' 'Expected Factory alias mismatch warning to avoid absolute local paths.'
 }
 
 Run-Test 'Update-Factory uses verified binary download warning text' {
@@ -119,6 +136,20 @@ Run-Test 'Update-Factory uses verified binary download warning text' {
   Assert-Equal $script:ConfirmCalls[0].ToolName 'Factory CLI' 'Expected Factory tool name in confirmation.'
   Assert-Equal $script:ConfirmCalls[0].ActionDescription 'fetch metadata from the official bootstrap, then download and install verified binaries locally' 'Expected Factory confirmation to describe verified binary download flow.'
   Assert-Equal $script:ConfirmCalls[0].WarningTitle 'Verified Binary Download' 'Expected Factory confirmation to use the new warning title.'
+}
+
+Run-Test 'Update-Factory falls back to npm when bootstrap download fails' {
+  function Install-FactoryFromBootstrap() {
+    $script:InstallFactoryCalls += 1
+    throw 'bootstrap unavailable'
+  }
+
+  Update-Factory
+
+  Assert-Equal $script:InstallFactoryCalls 1 'Expected Update-Factory to try the official bootstrap before npm.'
+  Assert-Equal $script:NpmInstallCalls.Count 1 'Expected Update-Factory to use npm fallback after bootstrap failure.'
+  Assert-Equal $script:NpmInstallCalls[0] 'droid@latest' 'Expected Factory npm fallback to install the official droid package.'
+  Assert-True ($script:CapturedWarnings -contains 'Official bootstrap failed: bootstrap unavailable') 'Expected bootstrap failure to be logged before npm fallback.'
 }
 
 Run-Test 'Get-FactoryArchitectures detects WOW64 AMD64 hosts and falls back to baseline without AVX2' {
@@ -174,6 +205,57 @@ Run-Test 'Get-LatestFactoryVersion falls back to npm when bootstrap endpoint is 
   $version = Get-LatestFactoryVersion
 
   Assert-Equal $version '0.100.0' 'Expected Factory latest version to fall back to npm when bootstrap metadata is unavailable.'
+}
+
+Run-Test 'Install-FactoryFromBootstrap works when New-TemporaryFile is unavailable' {
+  $script:InstallSequence = @()
+  $originalUserProfile = $env:USERPROFILE
+
+  function New-TemporaryFile() {
+    throw 'New-TemporaryFile is unavailable in this host'
+  }
+
+  function Get-FactoryBootstrapInfo() {
+    return @{ Version = '9.9.9'; BaseUrl = 'https://downloads.factory.ai' }
+  }
+
+  function Get-FactoryArchitectures() {
+    return @{ Factory = 'x64'; Ripgrep = 'x64' }
+  }
+
+  function Download-FileWithRetry([string]$Url, [string]$OutFile, [string]$Label) {
+    $script:InstallSequence += "download:$Label"
+    New-Item -ItemType File -Path $OutFile -Force | Out-Null
+  }
+
+  function Get-ExpectedSha256([string]$Url) {
+    return 'expected-hash'
+  }
+
+  function Assert-FileSha256([string]$Path, [string]$ExpectedHash, [string]$Label) {
+    $script:InstallSequence += "verify:$Label"
+  }
+
+  function Stop-FactoryProcesses() {
+    $script:InstallSequence += 'stop'
+  }
+
+  function Install-FactoryFile([string]$SourcePath, [string]$DestinationPath) {
+    $script:InstallSequence += "install:$([IO.Path]::GetFileName($SourcePath))"
+  }
+
+  try {
+    $env:USERPROFILE = 'C:\Users\Tester'
+    & $script:RealInstallFactoryFromBootstrap
+  } finally {
+    $env:USERPROFILE = $originalUserProfile
+    Remove-Item Function:\New-TemporaryFile -ErrorAction SilentlyContinue
+  }
+
+  Assert-Equal ($script:InstallSequence -join ',') 'download:Factory CLI binary,verify:Factory CLI,download:ripgrep binary,verify:ripgrep,stop,install:droid.exe,install:rg.exe' 'Expected Factory bootstrap to install verified files without New-TemporaryFile.'
+  foreach ($message in $script:CapturedInfos) {
+    Assert-NotContains $message 'C:\Users\Tester' 'Expected Factory bootstrap info logs to avoid absolute local paths.'
+  }
 }
 
 Run-Test 'Install-FactoryFromBootstrap stops before install when checksum verification fails' {

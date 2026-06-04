@@ -245,14 +245,14 @@ get_remote_file_size() {
 }
 
 write_size_plan() {
-  local manifest="$1" plan="$2" path size total=0
+  local file_list="$1" plan="$2" path size total=0
   : > "$plan"
   while read -r path; do
     [ -n "$path" ] || continue
     size="$(get_remote_file_size "$BASE/$path")" || return 1
     printf '%s\t%s\n' "$size" "$path" >> "$plan"
     total=$((total + size))
-  done < <(list_manifest_paths "$manifest")
+  done < <(list_distribution_paths "$file_list")
   printf '%s' "$total"
 }
 
@@ -262,15 +262,18 @@ get_planned_size() {
 }
 
 prepare_byte_progress() {
-  local manifest="$1" plan="$2" manifest_bytes payload_bytes total
+  local manifest="$1" file_list="$2" plan="$3" manifest_bytes list_bytes payload_bytes total
   [ "$PROGRESS_ACTIVE" -eq 1 ] || return 1
   manifest_bytes="$(file_size "$manifest")"
   is_number "$manifest_bytes" || return 1
-  payload_bytes="$(write_size_plan "$manifest" "$plan")" || return 1
-  total=$((manifest_bytes + payload_bytes))
+  list_bytes="$(file_size "$file_list")"
+  is_number "$list_bytes" || return 1
+  payload_bytes="$(write_size_plan "$file_list" "$plan")" || return 1
+  total=$((manifest_bytes + list_bytes + payload_bytes))
   set_byte_progress_total "$total" || return 1
   write_byte_progress
   add_byte_progress "$manifest_bytes"
+  add_byte_progress "$list_bytes"
 }
 
 fetch_to_temp() {
@@ -336,6 +339,15 @@ list_manifest_paths() {
   awk 'NF>=2 && $1 !~ /^#/ {print $2}' "$manifest"
 }
 
+distribution_list_path() {
+  printf '%s' 'distribution-files.txt'
+}
+
+list_distribution_paths() {
+  local file_list="$1"
+  awk 'NF && $1 !~ /^#/ {sub(/[[:space:]]*#.*/,""); if ($0 != "") print $1}' "$file_list"
+}
+
 get_expected_hash() {
   local manifest="$1" path="$2"
   awk -v p="$path" '$2==p {print tolower($1); exit 0}' "$manifest"
@@ -363,7 +375,7 @@ download_all() {
       if ! is_number "$size"; then size="$(file_size "$stage/$f")"; fi
       add_byte_progress "$size"
     fi
-  done < <(list_manifest_paths "$stage/checksums.sha256")
+  done < <(list_distribution_paths "$stage/$(distribution_list_path)")
 }
 
 download_manifest() {
@@ -371,12 +383,19 @@ download_manifest() {
   download_with_retry "$BASE/checksums.sha256" "$stage/checksums.sha256"
 }
 
+download_distribution_list() {
+  local stage="$1" rel
+  rel="$(distribution_list_path)"
+  download_with_retry "$BASE/$rel" "$stage/$rel"
+  verify_hash "$stage/checksums.sha256" "$rel" "$stage/$rel"
+}
+
 verify_all() {
   local stage="$1" f
   while read -r f; do
     [ -n "$f" ] || continue
     verify_hash "$stage/checksums.sha256" "$f" "$stage/$f" || return 1
-  done < <(list_manifest_paths "$stage/checksums.sha256")
+  done < <(list_distribution_paths "$stage/$(distribution_list_path)")
 }
 
 deploy_one() {
@@ -395,7 +414,7 @@ deploy_all() {
   while read -r f; do
     [ -n "$f" ] || continue
     deploy_one "$stage" "$dir" "$f"
-  done < <(list_manifest_paths "$stage/checksums.sha256")
+  done < <(list_distribution_paths "$stage/$(distribution_list_path)")
 }
 
 get_profile_file() {
@@ -458,9 +477,10 @@ main() {
   require_fetch_tool || exit 1
   download_manifest "$stage" || { log_err "Failed to download checksums.sha256"; exit 1; }
   require_sha256_tool || exit 1
+  download_distribution_list "$stage" || { log_err "Failed to download distribution-files.txt"; exit 1; }
   if start_byte_progress; then
     PROGRESS_SIZE_PLAN="$stage/download-sizes.tsv"
-    if ! prepare_byte_progress "$stage/checksums.sha256" "$PROGRESS_SIZE_PLAN"; then
+    if ! prepare_byte_progress "$stage/checksums.sha256" "$stage/$(distribution_list_path)" "$PROGRESS_SIZE_PLAN"; then
       PROGRESS_ACTIVE=0
       rm -f "$PROGRESS_SIZE_PLAN" >/dev/null 2>&1 || true
       log_warn "Progress disabled: could not resolve remote content lengths."

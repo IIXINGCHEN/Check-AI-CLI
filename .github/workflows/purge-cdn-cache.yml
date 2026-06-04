@@ -8,12 +8,15 @@ on:
       - "**.sh"
       - "**.cmd"
       - "checksums.sha256"
+      - "distribution-files.txt"
   workflow_dispatch:  # Allow manual trigger
 
 jobs:
   purge-cache:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+
       - name: Purge GitHub raw CDN cache
         run: |
           echo "Purging GitHub raw.githubusercontent.com CDN cache..."
@@ -24,18 +27,14 @@ jobs:
           BASE_URL="https://raw.githubusercontent.com/$REPO_OWNER/$REPO_NAME/$BRANCH"
           PURGE_JSDELIVR_URL="https://purge.jsdelivr.net/gh/$REPO_OWNER/$REPO_NAME@$BRANCH"
           
-          FILES=(
-            "checksums.sha256"
-            "install.ps1"
-            "install.sh"
-            "uninstall.ps1"
-            "uninstall.sh"
-            "bin/check-ai-cli"
-            "bin/check-ai-cli.cmd"
-            "bin/check-ai-cli.ps1"
-            "scripts/Check-AI-CLI-Versions.ps1"
-            "scripts/check-ai-cli-versions.sh"
-          )
+          FILES=("checksums.sha256")
+          while IFS= read -r file || [[ -n "$file" ]]; do
+            file="${file%%#*}"
+            file="${file#"${file%%[![:space:]]*}"}"
+            file="${file%"${file##*[![:space:]]}"}"
+            [[ -n "$file" ]] || continue
+            FILES+=("$file")
+          done < distribution-files.txt
           
           # Purge raw.githubusercontent.com cache
           for file in "${FILES[@]}"; do

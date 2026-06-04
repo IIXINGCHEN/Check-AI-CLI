@@ -171,6 +171,7 @@ test_main_exit_trap_under_nounset() {
         mkdir -p \"\$1\"
         printf 'aaaaaaaa  bin/check-ai-cli\n' > \"\$1/checksums.sha256\"
       }
+      download_distribution_list() { return 0; }
       download_all() { return 0; }
       verify_all() { return 0; }
       deploy_all() { return 0; }

@@ -245,19 +245,9 @@ function Download-FileWithRetry([string]$Url, [string]$OutFile) {
   }
 }
 
-function Get-FilesToInstall() {
-  return @(
-    @{ Remote = 'scripts/Check-AI-CLI-Versions.ps1'; Local = 'scripts\Check-AI-CLI-Versions.ps1' },
-    @{ Remote = 'scripts/check-ai-cli-versions.sh'; Local = 'scripts\check-ai-cli-versions.sh' },
-    @{ Remote = 'bin/check-ai-cli.ps1'; Local = 'bin\check-ai-cli.ps1' },
-    @{ Remote = 'bin/check-ai-cli.cmd'; Local = 'bin\check-ai-cli.cmd' },
-    @{ Remote = 'bin/check-ai-cli'; Local = 'bin\check-ai-cli' },
-    @{ Remote = 'uninstall.ps1'; Local = 'uninstall.ps1' },
-    @{ Remote = 'uninstall.sh'; Local = 'uninstall.sh' }
-  )
-}
-
 function Get-ManifestRemotePath() { return 'checksums.sha256' }
+
+function Get-DistributionListRemotePath() { return 'distribution-files.txt' }
 
 function Ensure-ParentDirectory([string]$Path) {
   $parent = Split-Path -Parent $Path
@@ -372,9 +362,23 @@ function Read-Manifest([string]$Text) {
   return $map
 }
 
-function Get-InstallEntries([hashtable]$Manifest) {
+function Read-DistributionFileList([string]$Text) {
+  $paths = @()
+  $seen = @{}
+  foreach ($line in @($Text -split "`n")) {
+    $t = ($line -replace '#.*$', '').Trim()
+    if ([string]::IsNullOrWhiteSpace($t)) { continue }
+    if (-not $seen.ContainsKey($t)) {
+      $seen[$t] = $true
+      $paths += $t
+    }
+  }
+  return $paths
+}
+
+function Get-InstallEntries([string[]]$Paths) {
   $files = @()
-  foreach ($remote in ($Manifest.Keys | Sort-Object)) {
+  foreach ($remote in $Paths) {
     $files += @{
       Remote = $remote
       Local = ($remote -replace '/', '\')
@@ -594,7 +598,12 @@ function Install-All([string]$Dir, [string]$Scope, [bool]$Run) {
     $manifestText = Get-Content -Raw -LiteralPath $manifestFile
     if ([string]::IsNullOrWhiteSpace($manifestText)) { throw "Failed to download checksums.sha256" }
     $manifest = Read-Manifest $manifestText
-    $files = Get-InstallEntries $manifest
+    $listRemote = Get-DistributionListRemotePath
+    $listFile = Join-Path $stage ($listRemote -replace '/', '\')
+    Download-FileWithRetry "$base/$listRemote" $listFile
+    Verify-FileHash $manifest $listRemote $listFile
+    $distributionText = Get-Content -Raw -LiteralPath $listFile
+    $files = Get-InstallEntries (Read-DistributionFileList $distributionText)
     $progress = Start-ByteProgress $base $manifestFile $files
 
     foreach ($f in $files) {

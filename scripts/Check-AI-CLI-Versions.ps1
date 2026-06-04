@@ -375,7 +375,7 @@ function Ensure-UserPathContains([string]$Dir) {
   if (-not (Path-ContainsDir $env:PATH $normalized)) {
     $env:PATH = if ([string]::IsNullOrWhiteSpace($env:PATH)) { $normalized } else { "$normalized;$env:PATH" }
   }
-  Write-Info "Added $normalized to your PATH permanently"
+  Write-Info "Added a tool directory to your PATH permanently"
 }
 
 function Ensure-UserPathPrefers([string]$Dir) {
@@ -384,7 +384,7 @@ function Ensure-UserPathPrefers([string]$Dir) {
   $newUserPath = Prepend-PathEntry $userPath $normalized
   if ($newUserPath -ne $userPath) {
     Set-UserPathValue $newUserPath
-    Write-Info "Moved $normalized to the front of your PATH permanently"
+    Write-Info "Moved a tool directory to the front of your PATH permanently"
   }
   $env:PATH = Prepend-PathEntry $env:PATH $normalized
 }
@@ -445,6 +445,12 @@ function Repair-ToolUserPath([string]$ToolId) {
   return $true
 }
 
+function New-TemporaryDirectory() {
+  $path = Join-Path ([IO.Path]::GetTempPath()) "check-ai-cli-$([Guid]::NewGuid().ToString('N'))"
+  New-Item -ItemType Directory -Path $path -ErrorAction Stop | Out-Null
+  return $path
+}
+
 function Install-FactoryFromBootstrap() {
   $bootstrap = Get-FactoryBootstrapInfo
   $arch = Get-FactoryArchitectures
@@ -458,7 +464,7 @@ function Install-FactoryFromBootstrap() {
   $rgShaUrl = "$rgUrl.sha256"
   Write-Info "Downloading Factory CLI v$version for Windows-$($arch.Factory)"
 
-  $tempDir = New-TemporaryFile | ForEach-Object { Remove-Item $_; New-Item -ItemType Directory -Path $_ }
+  $tempDir = New-TemporaryDirectory
   $binaryPath = Join-Path $tempDir $binaryName
   $rgBinaryPath = Join-Path $tempDir $rgBinaryName
 
@@ -483,12 +489,12 @@ function Install-FactoryFromBootstrap() {
     Install-FactoryFile $binaryPath $installPath
     Install-FactoryFile $rgBinaryPath $rgInstallPath
 
-    Write-Info "Factory CLI v$version installed successfully to $installPath"
-    Write-Info "Ripgrep installed successfully to $rgInstallPath"
+    Write-Info "Factory CLI v$version installed successfully."
+    Write-Info "Ripgrep installed successfully."
     Ensure-UserPathContains $installDir
     Write-Info 'Run ''droid'' to get started!'
   } finally {
-    if (Test-Path -LiteralPath $tempDir) { Remove-Item $tempDir -Recurse -Force -ErrorAction SilentlyContinue }
+    if (Test-Path -LiteralPath $tempDir) { Remove-Item -LiteralPath $tempDir -Recurse -Force -ErrorAction SilentlyContinue }
   }
 }
 
@@ -917,7 +923,48 @@ function Get-LocalCommandVersion([string[]]$CommandNames) {
   return $null
 }
 
+function Test-CommandSourceInDir([string]$Source, [string]$Dir) {
+  if ([string]::IsNullOrWhiteSpace($Source) -or [string]::IsNullOrWhiteSpace($Dir)) { return $false }
+  try {
+    $sourceDir = Split-Path -Parent $Source
+    return (Normalize-Dir $sourceDir) -eq (Normalize-Dir $Dir)
+  } catch { return $false }
+}
+
+function Get-ClaudeVersionCandidate([string]$Dir) {
+  $oldPath = $env:PATH
+  try {
+    $env:PATH = Prepend-PathEntry $env:PATH $Dir
+    foreach ($name in @('claude','claude-code')) {
+      $info = Get-CommandVersionInfo $name
+      if ($info.Version -and (Test-CommandSourceInDir $info.Source $Dir)) {
+        return @{ Dir = $Dir; Version = $info.Version; Source = $info.Source }
+      }
+    }
+  } finally {
+    $env:PATH = $oldPath
+  }
+  return $null
+}
+
+function Get-BestClaudeVersionCandidate() {
+  $best = $null
+  foreach ($dir in @(Get-PreferredToolPathDirs 'claude')) {
+    $candidate = Get-ClaudeVersionCandidate $dir
+    if (-not $candidate) { continue }
+    if (-not $best -or (Compare-Version $best.Version $candidate.Version) -eq -1) {
+      $best = $candidate
+    }
+  }
+  return $best
+}
+
 function Get-LocalClaudeVersion() {
+  $candidate = Get-BestClaudeVersionCandidate
+  if ($candidate) {
+    Ensure-UserPathPrefers $candidate.Dir
+    return $candidate.Version
+  }
   [void](Repair-ToolUserPath 'claude')
   return Get-LocalCommandVersion @('claude','claude-code')
 }
@@ -941,9 +988,7 @@ function Get-LocalFactoryVersion() {
     if ($factory.Version) {
       $cmp = Compare-Version $factory.Version $droid.Version
       if ($cmp -eq -1) {
-        $factorySource = if ($factory.Source) { $factory.Source } else { 'factory' }
-        $droidSource = if ($droid.Source) { $droid.Source } else { 'droid' }
-        Write-Warn "Factory alias mismatch detected: factory resolves to v$($factory.Version) at $factorySource, but droid resolves to v$($droid.Version) at $droidSource. Using droid for version checks."
+        Write-Warn "Factory alias mismatch detected: factory resolves to v$($factory.Version), but droid resolves to v$($droid.Version). Using droid for version checks."
       }
     }
     return $droid.Version
@@ -993,19 +1038,18 @@ function Select-HigherVersion([string]$First, [string]$Second) {
 
 function Resolve-VersionConflict([string]$ToolName, [string]$PrimaryLabel, [string]$Primary, [string]$SecondaryLabel, [string]$Secondary) {
   $selected = Select-HigherVersion $Primary $Secondary
-  if ($Primary -and $Secondary -and $Primary -ne $Secondary) { Write-Warn "$ToolName latest version conflict: $PrimaryLabel=v$Primary, $SecondaryLabel=v$Secondary. Using v$selected." }
+  if ($Primary -and $Secondary -and $Primary -ne $Secondary) { Write-Info "$ToolName latest version sources differ: $PrimaryLabel=v$Primary, $SecondaryLabel=v$Secondary. Using v$selected." }
   return $selected
 }
 
 function Get-LatestClaudeVersion() {
   $repo = Get-ClaudeRepoLatestVersion
   $stable = Get-ClaudeBootstrapStableVersion
-  if (-not $repo -and -not $stable) { return Get-NpmLatestVersion '@anthropic-ai/claude-code' }
-  # The native updater and install.ps1 both install from the stable channel,
-  # which may lag behind GitHub releases due to staged rollout.
-  # Use bootstrap stable as the "installable latest" to avoid false-positive
-  # "update available" warnings when the updater cannot reach the GitHub version.
-  if ($stable) { return $stable }
+  $npm = Get-NpmLatestVersion '@anthropic-ai/claude-code'
+  # Native stable and npm are installable sources. GitHub releases may be ahead
+  # due to staged rollout, so only use repo metadata if installable sources fail.
+  $installable = Resolve-VersionConflict 'Claude Code' 'stable' $stable 'npm' $npm
+  if ($installable) { return $installable }
   return $repo
 }
 
@@ -1173,12 +1217,20 @@ function Update-ClaudeViaInstallScript() {
   & $installer
 }
 
-# Install/update Claude Code (native updater preferred, official install fallback)
+function Update-ClaudeViaNpm() {
+  Write-Info "Trying: npm install (fallback)"
+  Invoke-NpmInstallGlobal '@anthropic-ai/claude-code@latest'
+  [void](Repair-ToolUserPath 'claude')
+}
+
+# Install/update Claude Code (native updater preferred, official install and npm fallbacks)
 function Update-Claude() {
   Write-Info "Updating Claude Code..."
 
   [void](Repair-ToolUserPath 'claude')
   $target = Get-LatestClaudeVersion
+  $nativeDetail = $null
+  $installScriptDetail = $null
 
   try {
     Invoke-ClaudeNativeUpdate
@@ -1189,13 +1241,37 @@ function Update-Claude() {
       Write-Warn "native Claude update completed but local Claude version could not be verified."
     }
   } catch {
-    Write-Warn "native Claude update failed: $($_.Exception.Message)"
+    $nativeDetail = $_.Exception.Message
+    if ([string]::IsNullOrWhiteSpace($nativeDetail)) { $nativeDetail = 'native updater failed' }
+    Write-Warn "native Claude update failed: $nativeDetail"
   }
 
   try {
     Update-ClaudeViaInstallScript
+    if (Test-ClaudeVersionAtLeast $target) { return }
+    if ($target) {
+      $installScriptDetail = "official install.ps1 completed but local version is still older than target v$target"
+      Write-Warn "official Claude install script completed but local version is still older than target v$target."
+    } else {
+      $installScriptDetail = 'official install.ps1 completed but local Claude version could not be verified'
+      Write-Warn "official Claude install script completed but local Claude version could not be verified."
+    }
   } catch {
-    throw "Claude Code update failed. Try 'claude update' or reinstall via irm https://claude.ai/install.ps1 | iex"
+    $installScriptDetail = $_.Exception.Message
+    if ([string]::IsNullOrWhiteSpace($installScriptDetail)) { $installScriptDetail = 'official install.ps1 failed' }
+    Write-Warn "official Claude install script failed: $installScriptDetail"
+  }
+
+  try {
+    Update-ClaudeViaNpm
+  } catch {
+    $npmDetail = $_.Exception.Message
+    if ([string]::IsNullOrWhiteSpace($npmDetail)) { $npmDetail = 'npm fallback failed' }
+    $details = @()
+    if ($nativeDetail) { $details += "native updater: $nativeDetail" }
+    if ($installScriptDetail) { $details += "official install.ps1: $installScriptDetail" }
+    $details += "npm fallback: $npmDetail"
+    throw "Claude Code update failed: $($details -join '; '). Try 'claude update', reinstall via irm https://claude.ai/install.ps1 | iex, or run npm install -g @anthropic-ai/claude-code@latest"
   }
 }
 
@@ -1277,22 +1353,21 @@ function Report-OpenCodeResolutionMismatch() {
 }
 
 function Write-OpenCodeResolutionTips([string]$UserPath) {
-  $binDir = Split-Path -Parent $UserPath
-  Write-Warn "Tip: ensure User PATH starts with $binDir"
+  Write-Warn 'Tip: ensure User PATH starts with the OpenCode user install directory'
   Write-Warn 'Tip: restart PowerShell after PATH changes if this session still resolves an older shim'
 }
 
 function Write-OpenCodeStandaloneOnly([string]$UserPath, [string]$UserVersion) {
   Write-Warn 'PowerShell cannot resolve opencode from the current PATH.'
-  Write-Warn "OpenCode user install path: $UserPath"
+  Write-Warn 'OpenCode user install path is available but is not first in PATH.'
   if ($UserVersion) { Write-Warn "OpenCode user install version: v$UserVersion" }
   Write-OpenCodeResolutionTips $UserPath
 }
 
 function Write-OpenCodeResolvedMismatch([hashtable]$Resolved, [string]$UserPath, [string]$UserVersion) {
-  Write-Warn "PowerShell resolves opencode to: $($Resolved.Source)"
+  Write-Warn 'PowerShell resolves opencode to a different PATH entry.'
   if ($Resolved.Version) { Write-Warn "Resolved opencode version: v$($Resolved.Version)" }
-  Write-Warn "OpenCode user install path: $UserPath"
+  Write-Warn 'OpenCode user install path is available.'
   if ($UserVersion) { Write-Warn "OpenCode user install version: v$UserVersion" }
   Write-OpenCodeResolutionTips $UserPath
 }
@@ -1349,7 +1424,7 @@ function Try-FixOpenCodeNpmShim([string]$ExePath) {
   $backupPath = "$($cmd.Source).backup"
   try {
     Copy-Item -LiteralPath $cmd.Source -Destination $backupPath -Force
-    Write-Info "Created backup: $backupPath"
+    Write-Info 'Created backup for npm shim.'
   } catch {
     Write-Warn "Failed to create backup, aborting shim fix: $($_.Exception.Message)"
     return $false
@@ -1360,7 +1435,7 @@ function Try-FixOpenCodeNpmShim([string]$ExePath) {
   $enc = New-Object System.Text.UTF8Encoding($false)
   try {
     [IO.File]::WriteAllText($cmd.Source, $newText, $enc)
-    Write-Info "Fixed npm shim: $($cmd.Source)"
+    Write-Info 'Fixed npm shim.'
     return $true
   } catch {
     # Restore from backup on failure
@@ -1441,6 +1516,7 @@ function Try-OpenCodeSelfUpgrade([string]$TargetVersion) {
   # Attempt 2: npm method (more reliable behind proxies)
   Write-Info "Trying: opencode upgrade --method npm"
   $err = Invoke-OpenCodeUpgradeMethod $path $arg 'npm'
+  [void](Sync-OpenCodeStandaloneFromNpm)
   if (Test-OpenCodeAtLeast $TargetVersion) { return $true }
   if ($err) { $lastErr = $err }
 
@@ -1660,6 +1736,7 @@ function Report-PostUpdate([string]$Title, [string]$Latest, [scriptblock]$GetLoc
     if ($Title -eq 'Claude Code') {
       Write-Warn "Tip: try claude update"
       Write-Warn "Tip: if needed, reinstall via irm https://claude.ai/install.ps1 | iex"
+      Write-Warn "Tip: fallback via npm install -g @anthropic-ai/claude-code@latest"
       return
     }
     if ($Title -eq 'OpenAI Codex') {

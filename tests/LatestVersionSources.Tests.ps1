@@ -26,6 +26,7 @@ function Assert-ThrowsContains([scriptblock]$Action, [string]$ExpectedSubstring,
 
 function Reset-TestState {
   $script:CapturedWarnings = @()
+  $script:CapturedInfos = @()
   $env:CHECK_AI_CLI_OPENCODE_VERSION = ''
   $env:CHECK_AI_CLI_CLAUDE_UPDATE_TIMEOUT_SECONDS = ''
 }
@@ -43,6 +44,10 @@ function Run-Test([string]$Name, [scriptblock]$Body) {
 
 function Write-Warn([string]$Message) {
   $script:CapturedWarnings += $Message
+}
+
+function Write-Info([string]$Message) {
+  $script:CapturedInfos += $Message
 }
 
 Run-Test 'Get-LatestClaudeVersion prefers bootstrap stable over repo (installable channel)' {
@@ -65,7 +70,27 @@ Run-Test 'Get-LatestClaudeVersion prefers bootstrap stable over repo (installabl
   Assert-Equal $version '2.1.91' 'Expected Claude latest version to reflect the installable stable channel, not the GitHub release that may be staged.'
 }
 
-Run-Test 'Get-LatestClaudeVersion falls back to repo when bootstrap stable is unavailable' {
+Run-Test 'Get-LatestClaudeVersion prefers newer npm package over bootstrap stable' {
+  function Get-ClaudeRepoLatestVersion() {
+    return '2.1.200'
+  }
+
+  function Get-ClaudeBootstrapStableVersion() {
+    return '2.1.152'
+  }
+
+  function Get-NpmLatestVersion([string]$PackageName) {
+    return '2.1.162'
+  }
+
+  $version = Get-LatestClaudeVersion
+
+  Assert-Equal $version '2.1.162' 'Expected Claude latest version to use the newer official npm installable version when it is ahead of bootstrap stable.'
+  Assert-Equal $script:CapturedWarnings.Count 0 'Expected Claude stable/npm source differences to avoid warning-level output.'
+  Assert-True ($script:CapturedInfos -contains 'Claude Code latest version sources differ: stable=v2.1.152, npm=v2.1.162. Using v2.1.162.') 'Expected Claude stable/npm source difference to be logged as informational output.'
+}
+
+Run-Test 'Get-LatestClaudeVersion falls back to repo when installable sources are unavailable' {
   function Get-ClaudeRepoLatestVersion() {
     return '2.1.72'
   }
@@ -75,12 +100,12 @@ Run-Test 'Get-LatestClaudeVersion falls back to repo when bootstrap stable is un
   }
 
   function Get-NpmLatestVersion([string]$PackageName) {
-    return '2.1.69'
+    return $null
   }
 
   $version = Get-LatestClaudeVersion
 
-  Assert-Equal $version '2.1.72' 'Expected Claude latest version to fall back to GitHub repo when bootstrap stable is unavailable.'
+  Assert-Equal $version '2.1.72' 'Expected Claude latest version to fall back to GitHub repo when stable and npm installable sources are unavailable.'
 }
 
 Run-Test 'Get-LatestCodexVersion prefers official repo release over npm metadata' {
@@ -149,6 +174,8 @@ Run-Test 'Update-Claude prefers native updater before official install script' {
 
 Run-Test 'Update-Claude falls back to official install script when native Claude update fails' {
   function Repair-ToolUserPath([string]$ToolId) { return $true }
+  function Get-LatestClaudeVersion() { return '2.1.119' }
+  function Get-LocalClaudeVersion() { return '2.1.119' }
 
   $script:NativeUpdateCalls = 0
   $script:InstallScriptCalls = 0
@@ -169,13 +196,59 @@ Run-Test 'Update-Claude falls back to official install script when native Claude
   Assert-True ($script:CapturedWarnings -contains 'native Claude update failed: native update failed') 'Expected a warning when the native Claude updater fails.'
 }
 
+Run-Test 'Update-ClaudeViaNpm installs the official Claude package and repairs PATH' {
+  $script:NpmInstallCalls = @()
+  $script:RepairCalls = @()
+
+  function Invoke-NpmInstallGlobal([string]$PackageSpec) {
+    $script:NpmInstallCalls += $PackageSpec
+  }
+
+  function Repair-ToolUserPath([string]$ToolId) {
+    $script:RepairCalls += $ToolId
+    return $true
+  }
+
+  Update-ClaudeViaNpm
+
+  Assert-Equal $script:NpmInstallCalls.Count 1 'Expected Claude npm fallback to run one npm install.'
+  Assert-Equal $script:NpmInstallCalls[0] '@anthropic-ai/claude-code@latest' 'Expected Claude npm fallback to install the official Claude Code package.'
+  Assert-Equal $script:RepairCalls[0] 'claude' 'Expected Claude npm fallback to refresh Claude PATH candidates after installation.'
+}
+
+Run-Test 'Update-Claude falls back to npm when native and official install paths fail' {
+  function Repair-ToolUserPath([string]$ToolId) { return $true }
+  function Get-LatestClaudeVersion() { return '2.1.119' }
+
+  $script:NpmInstallCalls = 0
+
+  function Invoke-ClaudeNativeUpdate() {
+    throw 'native update failed'
+  }
+
+  function Update-ClaudeViaInstallScript() {
+    throw 'install script failed: ECONNREFUSED'
+  }
+
+  function Update-ClaudeViaNpm() {
+    $script:NpmInstallCalls += 1
+  }
+
+  Update-Claude
+
+  Assert-Equal $script:NpmInstallCalls 1 'Expected Claude update to try npm after native and official install paths fail.'
+  Assert-True ($script:CapturedWarnings -contains 'official Claude install script failed: install script failed: ECONNREFUSED') 'Expected official install script failure detail to be logged before npm fallback.'
+}
+
 Run-Test 'Update-Claude falls back to official install script when native update leaves Claude below target' {
   function Repair-ToolUserPath([string]$ToolId) { return $true }
   function Get-LatestClaudeVersion() { return '2.1.119' }
-  function Get-LocalClaudeVersion() { return '2.1.112' }
+  $script:LocalClaudeVersion = '2.1.112'
+  function Get-LocalClaudeVersion() { return $script:LocalClaudeVersion }
 
   $script:NativeUpdateCalls = 0
   $script:InstallScriptCalls = 0
+  $script:NpmInstallCalls = 0
 
   function Invoke-ClaudeNativeUpdate() {
     $script:NativeUpdateCalls += 1
@@ -183,13 +256,72 @@ Run-Test 'Update-Claude falls back to official install script when native update
 
   function Update-ClaudeViaInstallScript() {
     $script:InstallScriptCalls += 1
+    $script:LocalClaudeVersion = '2.1.119'
+  }
+
+  function Update-ClaudeViaNpm() {
+    $script:NpmInstallCalls += 1
   }
 
   Update-Claude
 
   Assert-Equal $script:NativeUpdateCalls 1 'Expected Claude update to try native updater first.'
   Assert-Equal $script:InstallScriptCalls 1 'Expected Claude update to fall back when native updater exits successfully but leaves Claude below target.'
+  Assert-Equal $script:NpmInstallCalls 0 'Expected Claude update to stop after official install script reaches the target.'
   Assert-True ($script:CapturedWarnings -contains 'native Claude update completed but local version is still older than target v2.1.119.') 'Expected no-op native updater warning.'
+}
+
+Run-Test 'Update-Claude falls back to npm when official install script leaves Claude below target' {
+  function Repair-ToolUserPath([string]$ToolId) { return $true }
+  function Get-LatestClaudeVersion() { return '2.1.119' }
+  function Get-LocalClaudeVersion() { return '2.1.112' }
+
+  $script:NpmInstallCalls = 0
+
+  function Invoke-ClaudeNativeUpdate() {
+    throw 'native update failed'
+  }
+
+  function Update-ClaudeViaInstallScript() {
+  }
+
+  function Update-ClaudeViaNpm() {
+    $script:NpmInstallCalls += 1
+  }
+
+  Update-Claude
+
+  Assert-Equal $script:NpmInstallCalls 1 'Expected Claude update to try npm when official install script completes but Claude remains below target.'
+  Assert-True ($script:CapturedWarnings -contains 'official Claude install script completed but local version is still older than target v2.1.119.') 'Expected stale official install script result to be logged before npm fallback.'
+}
+
+Run-Test 'Update-Claude reports npm failure after all Claude update paths fail' {
+  function Repair-ToolUserPath([string]$ToolId) { return $true }
+  function Get-LatestClaudeVersion() { return '2.1.119' }
+
+  function Invoke-ClaudeNativeUpdate() {
+    throw 'native update failed'
+  }
+
+  function Update-ClaudeViaInstallScript() {
+    throw 'install script failed: ECONNREFUSED'
+  }
+
+  function Update-ClaudeViaNpm() {
+    throw 'npm install failed with exit code 1'
+  }
+
+  try {
+    Update-Claude
+  } catch {
+    $message = $_.Exception.Message
+    Assert-True $message.Contains('install script failed: ECONNREFUSED') 'Expected Claude update failure to include the official install script error.'
+    Assert-True $message.Contains('npm install failed with exit code 1') 'Expected Claude update failure to include the npm fallback error.'
+    Assert-True $message.Contains("Try 'claude update'") 'Expected Claude update failure to keep the native recovery hint.'
+    return
+  }
+
+  throw 'Expected Update-Claude to throw when all Claude update paths fail.'
 }
 
 Run-Test 'Invoke-ClaudeNativeUpdate uses bounded timeout for claude update' {
@@ -214,7 +346,7 @@ Run-Test 'Invoke-ClaudeNativeUpdate uses bounded timeout for claude update' {
   Assert-Equal $script:CapturedTimeout 17 'Expected native Claude update to use the configured timeout.'
 }
 
-Run-Test 'Report-PostUpdate recommends native Claude recovery steps without npm' {
+Run-Test 'Report-PostUpdate recommends all supported Claude recovery steps' {
   function Get-AndPrintLocal([scriptblock]$GetLocal) {
     return '2.1.84'
   }
@@ -224,7 +356,7 @@ Run-Test 'Report-PostUpdate recommends native Claude recovery steps without npm'
   Assert-True ($script:CapturedWarnings -contains 'Update may have failed (still older than latest).') 'Expected stale-version warning after Claude post-update recheck.'
   Assert-True ($script:CapturedWarnings -contains 'Tip: try claude update') 'Expected native Claude update remediation hint.'
   Assert-True ($script:CapturedWarnings -contains 'Tip: if needed, reinstall via irm https://claude.ai/install.ps1 | iex') 'Expected official Claude install script remediation hint.'
-  Assert-True (-not ($script:CapturedWarnings -contains 'Tip: try npm install -g @anthropic-ai/claude-code@latest')) 'Expected Claude post-update guidance to avoid obsolete npm remediation.'
+  Assert-True ($script:CapturedWarnings -contains 'Tip: fallback via npm install -g @anthropic-ai/claude-code@latest') 'Expected Claude post-update guidance to include npm fallback remediation.'
 }
 
 Write-Host '[PASS] All latest version source regression tests passed.' -ForegroundColor Green
