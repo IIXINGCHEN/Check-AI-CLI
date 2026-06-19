@@ -10,3 +10,4 @@ bin/check-ai-cli.cmd
 bin/check-ai-cli.ps1
 scripts/Check-AI-CLI-Versions.ps1
 scripts/check-ai-cli-versions.sh
+tools/PSModulePath.ps1
