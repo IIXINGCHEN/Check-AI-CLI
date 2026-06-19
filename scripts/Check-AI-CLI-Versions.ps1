@@ -312,7 +312,7 @@ function Get-FileSha256([string]$Path) {
   }
 
   $certutil = Get-Command certutil.exe -ErrorAction SilentlyContinue
-  $certutilPath = $certutil ? $certutil.Source : $null
+  $certutilPath = if ($certutil) { $certutil.Source } else { $null }
   if ([string]::IsNullOrWhiteSpace($certutilPath)) { throw 'No SHA256 hash tool found.' }
   $out = & $certutilPath -hashfile $Path SHA256
   if ($LASTEXITCODE -ne 0) { throw "certutil failed with exit code $LASTEXITCODE" }
