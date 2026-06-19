@@ -127,6 +127,41 @@ Run-Test 'Get-LocalFactoryVersion prefers droid and warns when factory shim is o
   Assert-NotContains $script:CapturedWarnings[0] 'C:\Users\Tester' 'Expected Factory alias mismatch warning to avoid absolute local paths.'
 }
 
+Run-Test 'Get-CommandVersionInfo skips a broken shim and uses the next runnable command' {
+  $originalPath = $env:PATH
+  $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ([Guid]::NewGuid().ToString('N'))
+  $brokenDir = Join-Path $tempRoot 'broken'
+  $workingDir = Join-Path $tempRoot 'working'
+  try {
+    New-Item -ItemType Directory -Path $brokenDir,$workingDir -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $brokenDir 'droid.cmd') -Value "@echo off`r`necho broken shim 1>&2`r`nexit /b 1`r`n" -Encoding ASCII
+    Set-Content -LiteralPath (Join-Path $workingDir 'droid.cmd') -Value "@echo off`r`necho droid 2.3.4`r`nexit /b 0`r`n" -Encoding ASCII
+    $env:PATH = "$brokenDir;$workingDir;$originalPath"
+
+    $info = Get-CommandVersionInfo 'droid'
+
+    Assert-Equal $info.Version '2.3.4' 'Expected version probing to continue past a broken shim.'
+    Assert-True ($info.Source.StartsWith($workingDir, [StringComparison]::OrdinalIgnoreCase)) 'Expected version probing to report the runnable command source.'
+  } finally {
+    $env:PATH = $originalPath
+    if (Test-Path -LiteralPath $tempRoot) {
+      Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+  }
+}
+
+Run-Test 'Get-CommandSourcePath ignores non-executable Function definitions' {
+  function fake-func-cmd { Write-Output 'not a real binary' }
+  $cmd = Get-Command fake-func-cmd -ErrorAction SilentlyContinue
+
+  Assert-True ($null -ne $cmd) 'Expected the fake function command to exist for the test.'
+  Assert-True ($cmd.CommandType -eq 'Function') 'Expected CommandType to be Function for the test fixture.'
+
+  $source = Get-CommandSourcePath $cmd
+
+  Assert-True ($null -eq $source) 'Expected Get-CommandSourcePath to return null for a Function whose only meaningful property is the Definition body.'
+}
+
 Run-Test 'Update-Factory uses verified binary download warning text' {
   Update-Factory
 
@@ -190,6 +225,29 @@ Write-Host "bootstrap without base url"
   }
 
   Assert-ThrowsContains { Get-FactoryBootstrapInfo } 'Failed to parse Factory base URL from installer script.' 'Expected bootstrap parsing to fail when baseUrl metadata disappears.'
+}
+
+Run-Test 'Assert-FileSha256 falls back when Get-FileHash is unavailable' {
+  $tempFile = Join-Path ([IO.Path]::GetTempPath()) ([Guid]::NewGuid().ToString('N'))
+  try {
+    [IO.File]::WriteAllText($tempFile, 'factory-checksum', [Text.Encoding]::ASCII)
+    $expected = 'ef5866a71f1326d3f96b42bd74ec4a6ddb1c783ca5f9c27755fe3ee6af8a4345'
+
+    function Get-Command {
+      param(
+        [string]$Name,
+        [System.Management.Automation.ActionPreference]$ErrorAction = 'Continue'
+      )
+      if ($Name -eq 'Get-FileHash') { return $null }
+      Microsoft.PowerShell.Core\Get-Command -Name $Name -ErrorAction $ErrorAction
+    }
+
+    function Get-FileHash { throw 'Get-FileHash unavailable' }
+
+    Assert-FileSha256 $tempFile $expected 'Factory CLI'
+  } finally {
+    Remove-Item -LiteralPath $tempFile -Force -ErrorAction SilentlyContinue
+  }
 }
 
 Run-Test 'Get-LatestFactoryVersion falls back to npm when bootstrap endpoint is unavailable' {

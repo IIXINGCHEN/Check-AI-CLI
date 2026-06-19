@@ -305,8 +305,26 @@ function Get-ExpectedSha256([string]$Url) {
   return $text.Trim().Split()[0].ToLowerInvariant()
 }
 
+function Get-FileSha256([string]$Path) {
+  $getFileHash = Get-Command Get-FileHash -ErrorAction SilentlyContinue
+  if ($getFileHash) {
+    try { return (Microsoft.PowerShell.Utility\Get-FileHash -Path $Path -Algorithm SHA256).Hash.ToLowerInvariant() } catch { }
+  }
+
+  $certutil = Get-Command certutil.exe -ErrorAction SilentlyContinue
+  $certutilPath = $certutil ? $certutil.Source : $null
+  if ([string]::IsNullOrWhiteSpace($certutilPath)) { throw 'No SHA256 hash tool found.' }
+  $out = & $certutilPath -hashfile $Path SHA256
+  if ($LASTEXITCODE -ne 0) { throw "certutil failed with exit code $LASTEXITCODE" }
+  foreach ($line in $out) {
+    $hash = ($line -replace '\s','').ToLowerInvariant()
+    if ($hash -match '^[a-f0-9]{64}$') { return $hash }
+  }
+  throw 'Failed to parse SHA256 hash.'
+}
+
 function Assert-FileSha256([string]$Path, [string]$ExpectedHash, [string]$Label) {
-  $actualHash = (Get-FileHash -Path $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+  $actualHash = Get-FileSha256 $Path
   if ($actualHash -ne $ExpectedHash.ToLowerInvariant()) { throw "$Label checksum verification failed" }
 }
 
@@ -899,19 +917,33 @@ function Compare-Version([string]$Current, [string]$Latest) {
 }
 
 function Get-CommandVersionInfo([string]$CommandName) {
-  $cmd = Get-Command $CommandName -ErrorAction SilentlyContinue
-  if (-not $cmd) { return @{ Name = $CommandName; Version = $null; Source = $null } }
-  try {
-    $out = & $CommandName '--version' 2>$null | Out-String
-    $v = Get-SemVer $out
-    if ($v) {
-      return @{ Name = $CommandName; Version = $v; Source = $cmd.Source }
-    }
-    Write-Warn "Failed to parse local version from: $CommandName"
-  } catch {
-    Write-Warn "Failed to run: $CommandName --version ($($_.Exception.Message))"
+  $commands = @(Get-Command $CommandName -All -ErrorAction SilentlyContinue)
+  if ($commands.Count -eq 0) { return @{ Name = $CommandName; Version = $null; Source = $null } }
+
+  $firstSource = $null
+  foreach ($cmd in $commands) {
+    $source = Get-CommandSourcePath $cmd
+    if (-not $firstSource) { $firstSource = $source }
+    if ([string]::IsNullOrWhiteSpace($source)) { continue }
+    try {
+      $out = & $source '--version' 2>$null | Out-String
+      $v = Get-SemVer $out
+      if ($v) { return @{ Name = $CommandName; Version = $v; Source = $source } }
+    } catch { }
   }
-  return @{ Name = $CommandName; Version = $null; Source = $cmd.Source }
+
+  Write-Warn "Failed to parse local version from: $CommandName"
+  return @{ Name = $CommandName; Version = $null; Source = $firstSource }
+}
+
+function Get-CommandSourcePath($CommandInfo) {
+  if ($null -eq $CommandInfo) { return $null }
+  # Only Application and ExternalScript have an on-disk Source safe to invoke.
+  # Functions/Cmdlets/Aliases expose a Definition body that must NOT be treated as a path.
+  if ($CommandInfo.CommandType -notin @('Application', 'ExternalScript')) { return $null }
+  $source = [string]$CommandInfo.Source
+  if ([string]::IsNullOrWhiteSpace($source)) { return $null }
+  return $source
 }
 
 # Get local command version, return $null if missing or failed

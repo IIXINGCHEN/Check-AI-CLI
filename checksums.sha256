@@ -8,5 +8,5 @@ c16f62fdd2a6a7fca57db96ef1f03884df972d62a50032985cc5a15c0ce58626  install.sh
 fbc72e4f107b24c0cd5573d273e7f13886e67b32e977d3c1adfddaa9092ee737  bin/check-ai-cli
 ae5ac3567a016a14da2d1a89fe0836bbfd6ff5c1af6e8edbd710b3f1a1343f82  bin/check-ai-cli.cmd
 6d86d71a8d02bb8f806227996e2ee0881716d7649991dfc7b253946a0fd5d221  bin/check-ai-cli.ps1
-be923eb6d4ce784380a7e7088446590ade87e84976971d85df5a032aa752820e  scripts/Check-AI-CLI-Versions.ps1
+e62a8a5a59f2841a58434ca37ba2d715425c4b2ca98359cfbd9fa5f18d372c90  scripts/Check-AI-CLI-Versions.ps1
 064b5a60df95dc77ae797fb98f94a9b842c67667561244c82396e5342a1667e7  scripts/check-ai-cli-versions.sh
