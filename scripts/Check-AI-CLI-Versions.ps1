@@ -134,11 +134,12 @@ function Close-ByteProgress([hashtable]$State) {
 
 function Get-RemoteFileSize([string]$Uri) {
   $headers = @{ 'User-Agent' = 'ai-cli-version-checker' }
+  $px = Get-WebRequestProxyParameters
   try {
     $prev = $ProgressPreference
     $ProgressPreference = 'SilentlyContinue'
     try {
-      $resp = Invoke-WebRequest -Uri $Uri -Headers $headers -UseBasicParsing -Method Head -TimeoutSec 15 -ErrorAction Stop
+      $resp = Invoke-WebRequest @px -Uri $Uri -Headers $headers -UseBasicParsing -Method Head -TimeoutSec 15 -ErrorAction Stop
     } finally {
       $ProgressPreference = $prev
     }
@@ -152,14 +153,16 @@ function Get-RemoteFileSize([string]$Uri) {
 # Internal: raw download without progress tracking (avoids recursion)
 function Invoke-RawDownload([string]$Uri, [string]$OutFile) {
   $headers = @{ 'User-Agent' = 'ai-cli-version-checker' }
+  $px = Get-WebRequestProxyParameters
   $mode = 'SilentlyContinue'
   Invoke-WithTempProgressPreference $mode {
-    Invoke-WebRequest -Uri $Uri -Headers $headers -UseBasicParsing -OutFile $OutFile -TimeoutSec 300 -ErrorAction Stop | Out-Null
+    Invoke-WebRequest @px -Uri $Uri -Headers $headers -UseBasicParsing -OutFile $OutFile -TimeoutSec 300 -ErrorAction Stop | Out-Null
   }
 }
 
 function Download-FileWithProgress([string]$Uri, [string]$OutFile, [string]$Label) {
   $headers = @{ 'User-Agent' = 'ai-cli-version-checker' }
+  $px = Get-WebRequestProxyParameters
   $totalBytes = Get-RemoteFileSize $Uri
   $state = $null
   if ($totalBytes -gt 0) {
@@ -171,7 +174,7 @@ function Download-FileWithProgress([string]$Uri, [string]$OutFile, [string]$Labe
     $prevProgress = $ProgressPreference
     $ProgressPreference = 'SilentlyContinue'
     try {
-      $response = Invoke-WebRequest -Uri $Uri -Headers $headers -UseBasicParsing -TimeoutSec 300 -ErrorAction Stop
+      $response = Invoke-WebRequest @px -Uri $Uri -Headers $headers -UseBasicParsing -TimeoutSec 300 -ErrorAction Stop
       if ($response.RawContentStream) {
         $response.RawContentStream.Position = 0
         $fs = [System.IO.FileStream]::new($OutFile, 'Create', 'Write', 'None')
@@ -219,8 +222,9 @@ function Invoke-WebRequestWithHeaders([string]$Uri, [string]$OutFile) {
   }
   $prev = $ProgressPreference
   $ProgressPreference = 'SilentlyContinue'
+  $px = Get-WebRequestProxyParameters
   try {
-    return Invoke-WebRequest -Uri $Uri -Headers $headers -UseBasicParsing -TimeoutSec 30 -ErrorAction Stop
+    return Invoke-WebRequest @px -Uri $Uri -Headers $headers -UseBasicParsing -TimeoutSec 30 -ErrorAction Stop
   } finally {
     $ProgressPreference = $prev
   }
@@ -532,6 +536,11 @@ $script:NpmMirrors = @{
 $script:NetworkInfo = $null
 $script:OriginalNpmRegistry = $null
 
+# Effective proxy applied to all network operations (own IW/IRM + child processes).
+# Null = direct connection. Set by Set-EffectiveProxyEnvironment during detection.
+$script:EffectiveProxyUrl = $null
+$script:EffectiveNoProxy = $null
+
 # Network status enum-like values
 # ProxyMode: 'direct' | 'global' | 'rule' | 'unknown'
 # Region: 'china' | 'global' | 'unknown'
@@ -581,6 +590,132 @@ function Get-EnvProxySettings() {
   return $result
 }
 
+# --- Proxy normalization and propagation -------------------------------------
+# A proxy is detected and stored in NetworkInfo, but that alone does not make any
+# network operation use it. curl / Node (undici) / the native Claude updater /
+# opencode / npm only honor proxy when it is exported to the process environment
+# (HTTP_PROXY / HTTPS_PROXY / ALL_PROXY), and our own Invoke-WebRequest needs the
+# explicit -Proxy parameter to behave identically across PS 5.1 and PS 7+.
+
+# Ensure a proxy string carries an http(s):// scheme. curl accepts a bare
+# host:port, but Node/undici ProxyAgent reject it, so we normalize universally.
+function ConvertTo-ProxyUrl([string]$Raw) {
+  if ([string]::IsNullOrWhiteSpace($Raw)) { return $null }
+  $v = $Raw.Trim()
+  if ($v -match '^[a-zA-Z][a-zA-Z0-9+.\-]*://') { return $v }
+  return ('http://' + $v)
+}
+
+function Test-HttpProxyScheme([string]$Url) {
+  if ([string]::IsNullOrWhiteSpace($Url)) { return $false }
+  $u = $Url.ToLowerInvariant()
+  return ($u -like 'http://*' -or $u -like 'https://*')
+}
+
+# Translate a WinINET ProxyOverride bypass list ("localhost;127.*;10.*;<local>")
+# into a comma-joined NO_PROXY ("localhost,127.,10.") understood by curl/Node.
+function ConvertTo-NoProxy([string]$Bypass) {
+  if ([string]::IsNullOrWhiteSpace($Bypass)) { return $null }
+  $out = New-Object System.Collections.Generic.List[string]
+  foreach ($entry in ($Bypass -split ';')) {
+    $t = $entry.Trim()
+    if (-not $t) { continue }
+    if ($t -eq '<local>') { continue }
+    $t = $t -replace '\*$', ''
+    if ($t) { $null = $out.Add($t) }
+  }
+  if ($out.Count -eq 0) { return $null }
+  return ($out -join ',')
+}
+
+# Resolve detected proxy settings into a single normalized descriptor.
+# Returns @{ Url; NoProxy; Source; IsHttpProxy } or $null when no proxy applies.
+function Get-NormalizedProxy([hashtable]$SystemProxy, [hashtable]$EnvProxy) {
+  $noProxy = $null
+  if ($EnvProxy -and -not [string]::IsNullOrWhiteSpace($EnvProxy.NoProxy)) {
+    $noProxy = $EnvProxy.NoProxy.Trim()
+  }
+
+  # 1) Environment proxy wins (already URL-shaped, explicitly opted in).
+  $rawEnv = $null
+  $envKey = $null
+  if ($EnvProxy -and -not [string]::IsNullOrWhiteSpace($EnvProxy.AllProxy)) { $rawEnv = $EnvProxy.AllProxy; $envKey = 'all_proxy' }
+  elseif ($EnvProxy -and -not [string]::IsNullOrWhiteSpace($EnvProxy.HttpsProxy)) { $rawEnv = $EnvProxy.HttpsProxy; $envKey = 'https_proxy' }
+  elseif ($EnvProxy -and -not [string]::IsNullOrWhiteSpace($EnvProxy.HttpProxy)) { $rawEnv = $EnvProxy.HttpProxy; $envKey = 'http_proxy' }
+
+  if ($rawEnv) {
+    $url = ConvertTo-ProxyUrl $rawEnv
+    if (-not $url) { return $null }
+    return @{ Url = $url; NoProxy = $noProxy; Source = "env:$envKey"; IsHttpProxy = (Test-HttpProxyScheme $url) }
+  }
+
+  # 2) WinINET static proxy from the registry.
+  if ($SystemProxy -and $SystemProxy.Enabled -and -not [string]::IsNullOrWhiteSpace($SystemProxy.Server)) {
+    $server = [string]$SystemProxy.Server
+    $candidate = $server
+    # Per-protocol form: "http=host:port;https=host:port;socks=host:port"
+    if ($server.Contains('=')) {
+      $chosen = $null
+      foreach ($part in ($server -split ';')) {
+        $kv = $part -split '=', 2
+        if ($kv.Length -ne 2) { continue }
+        $proto = $kv[0].Trim().ToLowerInvariant()
+        $val = $kv[1].Trim()
+        if (-not $val) { continue }
+        if ($proto -eq 'https') { $chosen = $val; break }
+        if ($proto -eq 'http' -and -not $chosen) { $chosen = $val }
+        if ($proto -match 'socks' -and -not $chosen) { $chosen = $val }
+      }
+      $candidate = $chosen
+    }
+    if ([string]::IsNullOrWhiteSpace($candidate)) { return $null }
+    $url = ConvertTo-ProxyUrl $candidate
+    if (-not $url) { return $null }
+    if (-not $noProxy) { $noProxy = ConvertTo-NoProxy $SystemProxy.Bypass }
+    return @{ Url = $url; NoProxy = $noProxy; Source = 'system'; IsHttpProxy = (Test-HttpProxyScheme $url) }
+  }
+
+  return $null
+}
+
+# Export the normalized proxy to the process environment so every child process
+# (curl, node, claude updater, opencode, npm) inherits it, and record the value
+# to splat onto our own Invoke-WebRequest/-RestMethod calls. Idempotent.
+function Set-EffectiveProxyEnvironment($Proxy) {
+  $script:EffectiveProxyUrl = $null
+  $script:EffectiveNoProxy = $null
+
+  if (-not $Proxy -or [string]::IsNullOrWhiteSpace($Proxy.Url)) { return $Proxy }
+
+  $url = [string]$Proxy.Url
+  $noProxy = $Proxy.NoProxy
+
+  if ($Proxy.IsHttpProxy) {
+    $env:HTTP_PROXY  = $url; $env:http_proxy  = $url
+    $env:HTTPS_PROXY = $url; $env:https_proxy = $url
+    $env:ALL_PROXY   = $url; $env:all_proxy   = $url
+    $script:EffectiveProxyUrl = $url
+  } else {
+    # SOCKS-only: curl and socks-capable Node can use ALL_PROXY, but PowerShell
+    # Invoke-WebRequest -Proxy does not support SOCKS, so we leave it un-proxied.
+    $env:ALL_PROXY = $url; $env:all_proxy = $url
+  }
+
+  if (-not [string]::IsNullOrWhiteSpace($noProxy)) {
+    $env:NO_PROXY = $noProxy; $env:no_proxy = $noProxy
+    $script:EffectiveNoProxy = $noProxy
+  }
+
+  return $Proxy
+}
+
+# Splat hashtable for Invoke-WebRequest / Invoke-RestMethod -Proxy.
+# Empty when direct so splatting is a no-op.
+function Get-WebRequestProxyParameters() {
+  if ($script:EffectiveProxyUrl) { return @{ Proxy = $script:EffectiveProxyUrl } }
+  return @{}
+}
+
 # Test actual connectivity to determine real network path
 function Test-ActualConnectivity() {
   $result = @{
@@ -602,10 +737,11 @@ function Test-ActualConnectivity() {
     @{ Name = 'npmmirror'; Url = 'https://registry.npmmirror.com'; Key = 'NpmmirrorOK'; TimeKey = 'NpmmirrorTime' }
   )
   
+  $px = Get-WebRequestProxyParameters
   foreach ($test in $tests) {
     try {
       $sw = [System.Diagnostics.Stopwatch]::StartNew()
-      $null = Invoke-WebRequest -Uri $test.Url -TimeoutSec 5 -UseBasicParsing -ErrorAction Stop
+      $null = Invoke-WebRequest @px -Uri $test.Url -TimeoutSec 5 -UseBasicParsing -ErrorAction Stop
       $sw.Stop()
       $result[$test.Key] = $true
       $result[$test.TimeKey] = $sw.ElapsedMilliseconds
@@ -719,7 +855,23 @@ function Initialize-NetworkDetection() {
   } else {
     Write-Info "No proxy configured (direct connection)"
   }
-  
+
+  # Apply the detected proxy to ALL network operations: export it to the process
+  # environment so child processes (curl/node/claude updater/opencode/npm) inherit
+  # it, and record it for our own Invoke-WebRequest -Proxy. Must happen before the
+  # connectivity test so that test (and every later download) is proxy-accurate.
+  $effectiveProxy = Get-NormalizedProxy $sysProxy $envProxy
+  if ($effectiveProxy) {
+    [void](Set-EffectiveProxyEnvironment $effectiveProxy)
+    if ($effectiveProxy.IsHttpProxy) {
+      Write-Info "Applying detected proxy to all network operations: $($effectiveProxy.Url)"
+    } else {
+      Write-Info "Applying proxy to subprocess downloads (SOCKS; own fetches stay direct): $($effectiveProxy.Url)"
+    }
+  } else {
+    $script:EffectiveProxyUrl = $null
+  }
+
   # Test actual connectivity
   Write-Info "Testing connectivity to determine best npm source..."
   $connectivity = Test-ActualConnectivity
@@ -800,7 +952,8 @@ function Get-BestNpmMirror() {
     foreach ($name in @('tencent', 'huawei')) {
       $url = $script:NpmMirrors[$name]
       try {
-        $null = Invoke-WebRequest -Uri $url -TimeoutSec 3 -UseBasicParsing -ErrorAction Stop
+        $px = Get-WebRequestProxyParameters
+        $null = Invoke-WebRequest @px -Uri $url -TimeoutSec 3 -UseBasicParsing -ErrorAction Stop
         Write-Info "Using China npm mirror: $name"
         return $url
       } catch { continue }
@@ -875,9 +1028,10 @@ function Get-Text([string]$Uri) {
 function Get-Json([string]$Uri) {
   $tries = Get-RetryCount
   $headers = @{ 'User-Agent' = 'ai-cli-version-checker' }
+  $px = Get-WebRequestProxyParameters
   for ($i = 1; $i -le $tries; $i++) {
     try {
-      return Invoke-RestMethod -Uri $Uri -Headers $headers -ErrorAction Stop
+      return Invoke-RestMethod @px -Uri $Uri -Headers $headers -ErrorAction Stop
     } catch {
       if ($i -eq $tries) {
         Write-Warn "Request failed: $Uri ($($_.Exception.Message))"
