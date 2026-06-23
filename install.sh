@@ -127,12 +127,6 @@ log_ok() { printf "[SUCCESS] %s\n" "$*"; }
 log_warn() { printf "[WARNING] %s\n" "$*"; }
 log_err() { printf "[ERROR] %s\n" "$*"; }
 
-PROGRESS_ACTIVE=0
-PROGRESS_WIDTH=20
-PROGRESS_TOTAL_BYTES=1
-PROGRESS_CURRENT_BYTES=0
-PROGRESS_SIZE_PLAN=""
-
 command_exists() { command -v "$1" >/dev/null 2>&1; }
 
 require_fetch_tool() {
@@ -146,144 +140,14 @@ ensure_parent_dir() {
   mkdir -p "$(dirname "$path")"
 }
 
-show_progress_enabled() {
-  [ "${CHECK_AI_CLI_SHOW_PROGRESS:-0}" = "1" ] && [ -t 1 ]
-}
-
-repeat_char() {
-  local char="$1" count="$2" text=""
-  while [ "$count" -gt 0 ]; do
-    text="${text}${char}"
-    count=$((count - 1))
-  done
-  printf '%s' "$text"
-}
-
-byte_progress_percent() {
-  local tenths
-  tenths="$(byte_progress_tenths "$1" "$2")"
-  printf '%s' "$((tenths / 10))"
-}
-
-byte_progress_tenths() {
-  local current="$1" total="$2" tenths=0
-  if ! is_number "$total" || [ "$total" -lt 1 ]; then printf '0'; return 0; fi
-  if ! is_number "$current" || [ "$current" -lt 0 ]; then current=0; fi
-  tenths=$((current * 1000 / total))
-  if [ "$tenths" -gt 1000 ]; then tenths=1000; fi
-  printf '%s' "$tenths"
-}
-
-byte_progress_percent_text() {
-  local tenths="$1"
-  printf '%d.%d' "$((tenths / 10))" "$((tenths % 10))"
-}
-
-render_byte_progress() {
-  local current="$1" total="$2" width="${3:-20}" tenths fill
-  tenths="$(byte_progress_tenths "$current" "$total")"
-  fill=$((tenths * width / 1000))
-  printf '%s %s%%' \
-    "$(repeat_char '#' "$fill")" \
-    "$(byte_progress_percent_text "$tenths")"
-}
-
-write_byte_progress() {
-  [ "$PROGRESS_ACTIVE" -eq 1 ] || return 0
-  printf '\r%s' "$(render_byte_progress "$PROGRESS_CURRENT_BYTES" "$PROGRESS_TOTAL_BYTES" "$PROGRESS_WIDTH")"
-}
-
-close_byte_progress() {
-  [ "$PROGRESS_ACTIVE" -eq 1 ] || return 0
-  printf '\r%s\n' "$(render_byte_progress "$PROGRESS_CURRENT_BYTES" "$PROGRESS_TOTAL_BYTES" "$PROGRESS_WIDTH")"
-  PROGRESS_ACTIVE=0
-}
-
-start_byte_progress() {
-  show_progress_enabled || return 1
-  PROGRESS_ACTIVE=1
-  PROGRESS_CURRENT_BYTES=0
-  PROGRESS_TOTAL_BYTES=1
-  return 0
-}
-
-set_byte_progress_total() {
-  local total="$1"
-  is_number "$total" || return 1
-  [ "$total" -gt 0 ] || return 1
-  PROGRESS_TOTAL_BYTES="$total"
-}
-
-add_byte_progress() {
-  local bytes="$1"
-  is_number "$bytes" || bytes=0
-  PROGRESS_CURRENT_BYTES=$((PROGRESS_CURRENT_BYTES + bytes))
-  if [ "$PROGRESS_CURRENT_BYTES" -gt "$PROGRESS_TOTAL_BYTES" ]; then
-    PROGRESS_CURRENT_BYTES="$PROGRESS_TOTAL_BYTES"
-  fi
-  write_byte_progress
-}
-
-file_size() {
-  local path="$1"
-  wc -c < "$path" | tr -d '[:space:]'
-}
-
-extract_content_length() {
-  awk 'tolower($1)=="content-length:" {gsub("\r","",$2); value=$2} END {if (value ~ /^[0-9]+$/) print value}'
-}
-
-get_remote_file_size() {
-  local url="$1" size=""
-  if command_exists curl; then size="$(curl -fsSLI "$url" 2>/dev/null | extract_content_length || true)"; fi
-  if [ -z "$size" ] && command_exists wget; then
-    size="$(wget --server-response --spider "$url" 2>&1 | extract_content_length || true)"
-  fi
-  is_number "$size" || return 1
-  [ "$size" -gt 0 ] || return 1
-  printf '%s' "$size"
-}
-
-write_size_plan() {
-  local file_list="$1" plan="$2" path size total=0
-  : > "$plan"
-  while read -r path; do
-    [ -n "$path" ] || continue
-    size="$(get_remote_file_size "$BASE/$path")" || return 1
-    printf '%s\t%s\n' "$size" "$path" >> "$plan"
-    total=$((total + size))
-  done < <(list_distribution_paths "$file_list")
-  printf '%s' "$total"
-}
-
-get_planned_size() {
-  local plan="$1" path="$2"
-  awk -F '\t' -v target="$path" '$2==target {print $1; exit 0}' "$plan"
-}
-
-prepare_byte_progress() {
-  local manifest="$1" file_list="$2" plan="$3" manifest_bytes list_bytes payload_bytes total
-  [ "$PROGRESS_ACTIVE" -eq 1 ] || return 1
-  manifest_bytes="$(file_size "$manifest")"
-  is_number "$manifest_bytes" || return 1
-  list_bytes="$(file_size "$file_list")"
-  is_number "$list_bytes" || return 1
-  payload_bytes="$(write_size_plan "$file_list" "$plan")" || return 1
-  total=$((manifest_bytes + list_bytes + payload_bytes))
-  set_byte_progress_total "$total" || return 1
-  write_byte_progress
-  add_byte_progress "$manifest_bytes"
-  add_byte_progress "$list_bytes"
-}
-
 fetch_to_temp() {
   local url="$1" tmp="$2"
   if command_exists curl; then
-    curl -fsSL "$url" -o "$tmp"
+    curl -fL --progress-bar "$url" -o "$tmp"
     return 0
   fi
   if command_exists wget; then
-    wget -qO "$tmp" "$url"
+    wget --progress=bar:force:noscroll -O "$tmp" "$url" 2>&1 || wget -O "$tmp" "$url"
     return 0
   fi
   return 1
@@ -364,17 +228,12 @@ verify_hash() {
 }
 
 download_all() {
-  local stage="$1" f size
+  local stage="$1" f
   mkdir -p "$stage/scripts" "$stage/bin"
   while read -r f; do
     [ -n "$f" ] || continue
-    if [ "$PROGRESS_ACTIVE" -ne 1 ]; then log_info "Downloading: $f"; fi
+    log_info "Downloading: $f"
     download_with_retry "$BASE/$f" "$stage/$f" || return 1
-    if [ "$PROGRESS_ACTIVE" -eq 1 ]; then
-      size="$(get_planned_size "$PROGRESS_SIZE_PLAN" "$f")"
-      if ! is_number "$size"; then size="$(file_size "$stage/$f")"; fi
-      add_byte_progress "$size"
-    fi
   done < <(list_distribution_paths "$stage/$(distribution_list_path)")
 }
 
@@ -461,7 +320,6 @@ print_next_steps() {
   printf "\nNext:\n  check-ai-cli\n\n"
   log_warn "Tip: set CHECK_AI_CLI_REF to pin a tag/commit for stability."
   log_warn "Tip: prefer HTTP_PROXY/HTTPS_PROXY instead of third-party mirrors."
-  log_warn "Tip: set CHECK_AI_CLI_SHOW_PROGRESS=1 to view byte progress."
 }
 
 skip_main() {
@@ -478,16 +336,7 @@ main() {
   download_manifest "$stage" || { log_err "Failed to download checksums.sha256"; exit 1; }
   require_sha256_tool || exit 1
   download_distribution_list "$stage" || { log_err "Failed to download distribution-files.txt"; exit 1; }
-  if start_byte_progress; then
-    PROGRESS_SIZE_PLAN="$stage/download-sizes.tsv"
-    if ! prepare_byte_progress "$stage/checksums.sha256" "$stage/$(distribution_list_path)" "$PROGRESS_SIZE_PLAN"; then
-      PROGRESS_ACTIVE=0
-      rm -f "$PROGRESS_SIZE_PLAN" >/dev/null 2>&1 || true
-      log_warn "Progress disabled: could not resolve remote content lengths."
-    fi
-  fi
-  download_all "$stage" || { close_byte_progress || true; log_err "Download failed."; exit 1; }
-  close_byte_progress || true
+  download_all "$stage" || { log_err "Download failed."; exit 1; }
   verify_all "$stage" || { log_err "Checksum verification failed."; exit 1; }
   deploy_all "$stage" "$INSTALL_DIR" || { log_err "Deploy failed."; exit 1; }
   print_next_steps "$INSTALL_DIR"

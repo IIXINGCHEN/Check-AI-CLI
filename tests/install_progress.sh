@@ -27,33 +27,11 @@ test_source_without_main() {
   output="$(
     CHECK_AI_CLI_SKIP_MAIN=1 bash --noprofile --norc -c "
       source \"$ROOT_DIR/install.sh\"
-      declare -F render_byte_progress >/dev/null
+      declare -F download_with_retry >/dev/null
       printf ready
     "
   )"
   assert_equal "$output" 'ready' 'Expected install.sh to expose helpers in test mode.'
-}
-
-test_render_fifty_percent() {
-  local output
-  output="$(
-    CHECK_AI_CLI_SKIP_MAIN=1 bash --noprofile --norc -c "
-      source \"$ROOT_DIR/install.sh\"
-      render_byte_progress 100 200 20
-    "
-  )"
-  assert_equal "$output" '########## 50.0%' 'Expected shell progress to render only filled hash segments and one-decimal percent.'
-}
-
-test_clamp_to_hundred() {
-  local output
-  output="$(
-    CHECK_AI_CLI_SKIP_MAIN=1 bash --noprofile --norc -c "
-      source \"$ROOT_DIR/install.sh\"
-      render_byte_progress 120 80 20
-    "
-  )"
-  assert_equal "$output" '#################### 100.0%' 'Expected shell progress to clamp at 100.0% with hash-only output.'
 }
 
 test_main_checker_fetch_text_suppresses_native_progress() {
@@ -184,8 +162,6 @@ test_main_exit_trap_under_nounset() {
 }
 
 run_test 'install.sh can load helpers without executing main flow' test_source_without_main
-run_test 'Shell byte progress renders hash-only bar at fifty percent' test_render_fifty_percent
-run_test 'Shell byte progress clamps at one hundred percent' test_clamp_to_hundred
 run_test 'Main shell checker suppresses native fetch progress' test_main_checker_fetch_text_suppresses_native_progress
 run_test 'download_with_retry works under nounset' test_download_with_retry_under_nounset
 run_test 'resolve_base prefers latest stable release' test_resolve_base_prefers_latest_stable_release
