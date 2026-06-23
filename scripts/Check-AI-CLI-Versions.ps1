@@ -1368,6 +1368,8 @@ function Invoke-ClaudeNativeUpdateProcess([string]$ClaudePath, [int]$TimeoutSeco
       try { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue } catch {}
       throw "claude update timed out after ${TimeoutSeconds}s"
     }
+    $proc.Refresh()
+    if ($null -eq $proc.ExitCode) { return }
     if ($proc.ExitCode -ne 0) {
       throw "claude update failed with exit code $($proc.ExitCode)"
     }
