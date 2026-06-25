@@ -143,11 +143,11 @@ ensure_parent_dir() {
 fetch_to_temp() {
   local url="$1" tmp="$2"
   if command_exists curl; then
-    curl -fL --progress-bar "$url" -o "$tmp"
+    curl -fSL --progress-bar "$url" -o "$tmp"
     return 0
   fi
   if command_exists wget; then
-    wget --progress=bar:force:noscroll -O "$tmp" "$url" 2>&1 || wget -O "$tmp" "$url"
+    wget --progress=bar:force:noscroll -O "$tmp" "$url" || wget -O "$tmp" "$url"
     return 0
   fi
   return 1

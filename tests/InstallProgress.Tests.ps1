@@ -96,6 +96,24 @@ function Invoke-WebRequest {
   Assert-Equal $result 'SilentlyContinue' 'Expected installer text downloads to suppress PowerShell native web progress.'
 }
 
+Run-Test 'install.ps1 Get-InstallProgressPercent advances per file and stays below 100 mid-set' {
+  $script = @"
+`$env:CHECK_AI_CLI_SKIP_MAIN = '1'
+. '$repoRoot\install.ps1'
+`$percents = @(
+  (Get-InstallProgressPercent 1 3),
+  (Get-InstallProgressPercent 2 3),
+  (Get-InstallProgressPercent 3 3),
+  (Get-InstallProgressPercent 1 1)
+)
+`$percents -join ','
+"@
+
+  $result = Invoke-PwshSnippet $script
+
+  Assert-Equal $result '0,33,67,0' 'Expected outer progress percent to start at 0, advance per file, and stay below 100 until the set completes.'
+}
+
 Run-Test 'PowerShell checker Get-Text suppresses native web progress' {
   $script = @"
 . '$repoRoot\scripts\Check-AI-CLI-Versions.ps1'

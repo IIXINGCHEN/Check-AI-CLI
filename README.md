@@ -167,15 +167,15 @@ git commit -m "Update checksums"
 | 变量 | 用途 | 示例 |
 |------|------|------|
 | `HTTP_PROXY` / `HTTPS_PROXY` | 代理加速 | `http://127.0.0.1:7890` |
-| `CHECK_AI_CLI_SHOW_PROGRESS` | 显示下载进度条 | `1` |
+| `CHECK_AI_CLI_SHOW_PROGRESS` | checker 下载/更新时显示字节进度条（安装器默认显示原生进度） | `1` |
 | `CHECK_AI_CLI_REF` | 固定安装版本 (tag/commit/main) | `v1.2.3` |
 | `CHECK_AI_CLI_INSTALL_DIR` | 自定义安装目录 | 绝对路径 |
 | `CHECK_AI_CLI_OPENCODE_VERSION` | 覆盖 OpenCode 目标版本 | `1.4.3` |
 
-启用 `CHECK_AI_CLI_SHOW_PROGRESS=1` 后, 安装和更新阶段会输出字节进度条:
+安装器（install.ps1 / install.sh）默认显示原生下载进度，无需设置。`CHECK_AI_CLI_SHOW_PROGRESS=1` 仅作用于 checker，为其下载/更新阶段输出字节进度条:
 
 ```text
-[###############...............] 50%
+############### 50.0%
 ```
 
 ### 核心依赖检查

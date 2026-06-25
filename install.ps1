@@ -453,6 +453,11 @@ function Print-ChinaTip() {
   Write-Host ""
 }
 
+function Get-InstallProgressPercent([int]$Index, [int]$Total) {
+  # Outer-bar percent before file $Index downloads; the -1 keeps it below 100 until the set completes.
+  return [int](($Index - 1) * 100 / [Math]::Max(1, $Total))
+}
+
 function Install-All([string]$Dir, [string]$Scope, [bool]$Run) {
   $base = Get-BaseUrl
   $stage = New-StagingDir
@@ -474,10 +479,9 @@ function Install-All([string]$Dir, [string]$Scope, [bool]$Run) {
     $index = 0
     foreach ($f in $files) {
       $index++
-      $percent = [int](($index - 1) * 100 / [Math]::Max(1, $total))
       Write-Progress -Activity 'Installing Check-AI-CLI' `
         -Status "Downloading $($f.Remote) ($index/$total)" `
-        -PercentComplete $percent
+        -PercentComplete (Get-InstallProgressPercent $index $total)
       $staged = Stage-OneFile $base $stage $f
       Verify-FileHash $manifest $f.Remote $staged
     }
