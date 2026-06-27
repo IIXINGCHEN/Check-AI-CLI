@@ -332,6 +332,9 @@ function Assert-FileSha256([string]$Path, [string]$ExpectedHash, [string]$Label)
   if ($actualHash -ne $ExpectedHash.ToLowerInvariant()) { throw "$Label checksum verification failed" }
 }
 
+# Retained for backward compatibility with tests that mock it. The actual
+# process-stop logic now lives inside Install-FactoryFile (on-demand, only when
+# the destination is locked) instead of running unconditionally before install.
 function Stop-FactoryProcesses() {
   $droidProcesses = Get-Process -Name 'droid' -ErrorAction SilentlyContinue
   if (-not $droidProcesses) { return }
@@ -340,10 +343,28 @@ function Stop-FactoryProcesses() {
   Start-Sleep -Seconds 1
 }
 
+# Copy a binary to its destination, retrying once after stopping any process
+# that holds the destination locked. The process name is derived from the
+# destination file name (e.g. droid.exe -> droid) so only the tool being
+# updated is affected, and only when the initial copy fails.
 function Install-FactoryFile([string]$SourcePath, [string]$DestinationPath) {
   $parent = Split-Path -Parent $DestinationPath
   if (-not (Test-Path -LiteralPath $parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
-  Copy-Item -Path $SourcePath -Destination $DestinationPath -Force
+  try {
+    Copy-Item -Path $SourcePath -Destination $DestinationPath -Force -ErrorAction Stop
+    return
+  } catch {
+    # Copy failed - typically the destination is locked by a running instance
+    # of the same tool. Stop that process by name and retry once.
+    $destName = Split-Path -Leaf $DestinationPath
+    $procName = [IO.Path]::GetFileNameWithoutExtension($destName)
+    $running = Get-Process -Name $procName -ErrorAction SilentlyContinue
+    if (-not $running) { throw }
+    Write-Info "Stopping running $procName process to complete update"
+    Stop-Process -Name $procName -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 1
+    Copy-Item -Path $SourcePath -Destination $DestinationPath -Force
+  }
 }
 
 function Normalize-Dir([string]$Dir) {
@@ -507,7 +528,6 @@ function Install-FactoryFromBootstrap() {
     $installPath = Join-Path $installDir $binaryName
     $rgInstallPath = Join-Path $factoryBinDir $rgBinaryName
 
-    Stop-FactoryProcesses
     Install-FactoryFile $binaryPath $installPath
     Install-FactoryFile $rgBinaryPath $rgInstallPath
 
@@ -534,7 +554,7 @@ $script:NpmMirrors = @{
 
 # Network detection cache
 $script:NetworkInfo = $null
-$script:OriginalNpmRegistry = $null
+$script:BestNpmMirror = $null
 
 # Effective proxy applied to all network operations (own IW/IRM + child processes).
 # Null = direct connection. Set by Set-EffectiveProxyEnvironment during detection.
@@ -906,37 +926,6 @@ function Initialize-NetworkDetection() {
 }
 
 # Get current npm registry
-function Get-NpmRegistry() {
-  try {
-    $npmCmd = Get-Command npm.cmd -CommandType Application -ErrorAction SilentlyContinue
-    if (-not $npmCmd) { $npmCmd = Get-Command npm -CommandType Application -ErrorAction SilentlyContinue }
-    if ($npmCmd) {
-      $registry = & $npmCmd.Path config get registry 2>$null
-      if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($registry)) {
-        return $registry.Trim().TrimEnd('/')
-      }
-    }
-  } catch { }
-  return $script:NpmMirrors['default']
-}
-
-# Set npm registry
-function Set-NpmRegistry([string]$Registry) {
-  try {
-    $npmCmd = Get-Command npm.cmd -CommandType Application -ErrorAction SilentlyContinue
-    if (-not $npmCmd) { $npmCmd = Get-Command npm -CommandType Application -ErrorAction SilentlyContinue }
-    if ($npmCmd) {
-      & $npmCmd.Path config set registry $Registry 2>$null | Out-Null
-      if ($LASTEXITCODE -eq 0) {
-        Write-Info "npm registry set to: $Registry"
-        return $true
-      }
-    }
-  } catch { }
-  Write-Warn "Failed to set npm registry"
-  return $false
-}
-
 # Select best npm mirror based on network detection
 function Get-BestNpmMirror() {
   $netInfo = Initialize-NetworkDetection
@@ -965,33 +954,6 @@ function Get-BestNpmMirror() {
   
   Write-Info "Using official npm registry"
   return $script:NpmMirrors['default']
-}
-
-# Configure npm for optimal speed based on network detection
-function Initialize-NpmForRegion() {
-  # Save original registry
-  $script:OriginalNpmRegistry = Get-NpmRegistry
-  
-  $bestMirror = Get-BestNpmMirror
-  $currentRegistry = Get-NpmRegistry
-  
-  if ($currentRegistry.TrimEnd('/') -ne $bestMirror.TrimEnd('/')) {
-    Write-Info "Switching npm registry for better speed..."
-    [void](Set-NpmRegistry $bestMirror)
-  } else {
-    Write-Info "npm registry already optimal: $currentRegistry"
-  }
-}
-
-# Restore original npm registry
-function Restore-NpmRegistry() {
-  if ($null -ne $script:OriginalNpmRegistry) {
-    $current = Get-NpmRegistry
-    if ($current.TrimEnd('/') -ne $script:OriginalNpmRegistry.TrimEnd('/')) {
-      Write-Info "Restoring original npm registry: $($script:OriginalNpmRegistry)"
-      [void](Set-NpmRegistry $script:OriginalNpmRegistry)
-    }
-  }
 }
 
 # Fetch text content, return $null on failure
@@ -1045,7 +1007,9 @@ function Get-Json([string]$Uri) {
 # Extract x.y.z from arbitrary text
 function Get-SemVer([string]$Text) {
   if ([string]::IsNullOrWhiteSpace($Text)) { return $null }
-  $m = [regex]::Match($Text, '(\d+)\.(\d+)\.(\d+)')
+  # Anchor version boundary: reject when preceded/followed by digit or dot to avoid
+  # mis-extracting from multi-segment numbers like dates '2026.01.0.142' or paths 'C:\1.2.3\bin'.
+  $m = [regex]::Match($Text, '(?:^|[^\d.])(\d+)\.(\d+)\.(\d+)(?=[^\d.]|$)')
   if (-not $m.Success) { return $null }
   return "$($m.Groups[1].Value).$($m.Groups[2].Value).$($m.Groups[3].Value)"
 }
@@ -1280,19 +1244,23 @@ function Get-LatestOpenCodeVersion() {
   return $null
 }
 
-# Run npm install -g in a way that avoids PowerShell npm.ps1 "-Command" parsing edge cases.
+# Run npm install -g using the best regional mirror via --registry, applied per command.
+# This avoids persistently rewriting the user's ~/.npmrc (no Set/Restore needed, safe
+# under Ctrl+C or exceptions). Avoids PowerShell npm.ps1 "-Command" parsing edge cases.
 function Invoke-NpmInstallGlobal([string]$PackageSpec) {
+  if ($null -eq $script:BestNpmMirror) { $script:BestNpmMirror = Get-BestNpmMirror }
+  $registry = $script:BestNpmMirror
   $npmCmd = Get-Command npm.cmd -CommandType Application -ErrorAction SilentlyContinue
   if (-not $npmCmd) { $npmCmd = Get-Command npm -CommandType Application -ErrorAction SilentlyContinue }
   if ($npmCmd) {
-    & $npmCmd.Path install -g $PackageSpec
+    & $npmCmd.Path install -g $PackageSpec --registry $registry
     if ($LASTEXITCODE -ne 0) { throw "npm install failed with exit code $LASTEXITCODE" }
     return
   }
 
   $npmPs1 = Get-Command npm -CommandType ExternalScript -ErrorAction SilentlyContinue
   if (-not $npmPs1) { throw "npm not found. Install Node.js first." }
-  & powershell -NoProfile -ExecutionPolicy Bypass -File $npmPs1.Path install -g $PackageSpec
+  & powershell -NoProfile -ExecutionPolicy Bypass -File $npmPs1.Path install -g $PackageSpec --registry $registry
   if ($LASTEXITCODE -ne 0) { throw "npm install failed with exit code $LASTEXITCODE" }
 }
 
@@ -1825,9 +1793,20 @@ function Sync-OpenCodeStandaloneFromNpm() {
 
   Write-Info "Syncing standalone opencode from npm (v$npmVersion)"
   try {
-    Stop-Process -Name 'opencode' -Force -ErrorAction SilentlyContinue
     if (-not (Test-Path -LiteralPath $standaloneDir)) { New-Item -ItemType Directory -Path $standaloneDir -Force | Out-Null }
-    Copy-Item -Path $npmExe -Destination $standaloneExe -Force
+    try {
+      Copy-Item -Path $npmExe -Destination $standaloneExe -Force -ErrorAction Stop
+    } catch {
+      # Destination is likely locked by a running opencode instance. Stop only
+      # opencode (not other tools) and retry once, instead of killing it
+      # unconditionally before every sync.
+      $running = Get-Process -Name 'opencode' -ErrorAction SilentlyContinue
+      if (-not $running) { throw }
+      Write-Info 'Stopping running opencode process to complete sync'
+      Stop-Process -Name 'opencode' -Force -ErrorAction SilentlyContinue
+      Start-Sleep -Seconds 1
+      Copy-Item -Path $npmExe -Destination $standaloneExe -Force
+    }
     Write-Info "Standalone opencode synced to v$npmVersion"
     return $true
   } catch {
@@ -1997,20 +1976,18 @@ if ($MyInvocation.InvocationName -ne '.') {
   Require-WebRequest
   Show-Banner
 
-  # Initialize network detection and optimize npm registry
-  Initialize-NpmForRegion
+  # Detect network/proxy once: exports proxy to child processes and primes the
+  # regional npm mirror used by Invoke-NpmInstallGlobal. Does not touch ~/.npmrc.
+  [void](Initialize-NetworkDetection)
 
   if ($FactoryOnly) {
     Invoke-Selection '1'
-    Restore-NpmRegistry
     exit 0
   }
 
   $sel = Ask-Selection
   if ($sel -eq 'Q') {
-    Restore-NpmRegistry
     exit 0
   }
   Invoke-Selection $sel
-  Restore-NpmRegistry
 }

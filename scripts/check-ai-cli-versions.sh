@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-set -u
+# -u: treat unset variables as errors
+# -o pipefail: a pipeline fails if any command fails (guards "fetch_text url | bash")
+set -uo pipefail
 
 # Auto mode: install if missing, update if outdated, no Y/N prompts
 AUTO_MODE="${CHECK_AI_CLI_AUTO:-0}"
@@ -43,7 +45,7 @@ NPM_MIRROR_DEFAULT="https://registry.npmjs.org"
 # Network detection cache
 NETWORK_PROXY_MODE=""
 NETWORK_REGION=""
-ORIGINAL_NPM_REGISTRY=""
+NPM_BEST_MIRROR=""
 
 # Test URL with timing (returns time in ms or -1 on failure)
 test_url_timing() {
@@ -181,28 +183,6 @@ detect_network_environment() {
   log_info "Effective region for npm: $NETWORK_REGION"
 }
 
-# Get current npm registry
-get_npm_registry() {
-  if command_exists npm; then
-    npm config get registry 2>/dev/null | tr -d '\n' | sed 's:/*$::'
-  else
-    echo "$NPM_MIRROR_DEFAULT"
-  fi
-}
-
-# Set npm registry
-set_npm_registry() {
-  local registry="$1"
-  if command_exists npm; then
-    if npm config set registry "$registry" 2>/dev/null; then
-      log_info "npm registry set to: $registry"
-      return 0
-    fi
-  fi
-  log_warn "Failed to set npm registry"
-  return 1
-}
-
 # Get best npm mirror based on network detection
 get_best_npm_mirror() {
   detect_network_environment
@@ -233,45 +213,26 @@ get_best_npm_mirror() {
   echo "$NPM_MIRROR_DEFAULT"
 }
 
-# Initialize npm for region
-initialize_npm_for_region() {
-  ORIGINAL_NPM_REGISTRY="$(get_npm_registry)"
-  local best_mirror current_registry
-  best_mirror="$(get_best_npm_mirror)"
-  current_registry="$(get_npm_registry)"
-  
-  # Compare without trailing slashes
-  local best_clean current_clean
-  best_clean="$(echo "$best_mirror" | sed 's:/*$::')"
-  current_clean="$(echo "$current_registry" | sed 's:/*$::')"
-  
-  if [ "$current_clean" != "$best_clean" ]; then
-    log_info "Switching npm registry for better speed..."
-    set_npm_registry "$best_mirror"
-  else
-    log_info "npm registry already optimal: $current_registry"
-  fi
+# Resolve the best regional npm mirror once and cache it in NPM_BEST_MIRROR.
+# Caching keeps repeated npm installs (several tools) from re-running network
+# probes, and --registry is applied per command so ~/.npmrc is never persisted.
+select_best_npm_mirror() {
+  if [ -n "$NPM_BEST_MIRROR" ]; then return 0; fi
+  NPM_BEST_MIRROR="$(get_best_npm_mirror)"
 }
 
-# Restore original npm registry
-restore_npm_registry() {
-  if [ -n "$ORIGINAL_NPM_REGISTRY" ]; then
-    local current_registry
-    current_registry="$(get_npm_registry)"
-    local orig_clean current_clean
-    orig_clean="$(echo "$ORIGINAL_NPM_REGISTRY" | sed 's:/*$::')"
-    current_clean="$(echo "$current_registry" | sed 's:/*$::')"
-    
-    if [ "$current_clean" != "$orig_clean" ]; then
-      log_info "Restoring original npm registry: $ORIGINAL_NPM_REGISTRY"
-      set_npm_registry "$ORIGINAL_NPM_REGISTRY"
-    fi
-  fi
+# Install a global npm package using the cached best mirror via --registry.
+npm_install_global() {
+  local spec="$1"
+  select_best_npm_mirror
+  npm install -g "$spec" --registry "$NPM_BEST_MIRROR"
 }
 
 # Extract x.y.z from arbitrary text
 extract_semver() {
-  echo "$*" | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1
+  # Anchor version boundary: reject when preceded/followed by digit or dot to avoid
+  # mis-extracting from multi-segment numbers like dates '2026.01.0.142' or paths '/1.2.3/bin'.
+  echo "$*" | grep -Eo '(^|[^0-9.])([0-9]+\.[0-9]+\.[0-9]+)([^0-9.]|$)' | head -n 1 | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1
 }
 
 # Compare two x.y.z versions: prints -1/0/1, prints empty if not comparable
@@ -551,8 +512,148 @@ confirm_remote_script_execution() {
   [ "${ans:-}" = "YES" ]
 }
 
+# Detect whether the shell is running under Windows (Git Bash / MSYS / Cygwin).
+# Used to decide whether Factory can be installed via verified binary download
+# (Windows-only path, mirrors the PowerShell checker) instead of piping the
+# official install script into sh.
+is_windows_shell() {
+  case "${OSTYPE:-}" in
+    msys|cygwin) return 0 ;;
+  esac
+  case "$(uname -s 2>/dev/null)" in
+    *MINGW*|*MSYS*|*CYGWIN*) return 0 ;;
+  esac
+  return 1
+}
+
+# Return 0 if a sha256 tool (sha256sum or shasum) is available.
+sha256_tool_exists() {
+  command_exists sha256sum && return 0
+  command_exists shasum && return 0
+  return 1
+}
+
+# Print the sha256 of a file (lowercase hex), or empty on failure.
+sha256_file() {
+  local file="$1"
+  if command_exists sha256sum; then sha256sum "$file" | awk '{print $1}'; return 0; fi
+  if command_exists shasum; then shasum -a 256 "$file" | awk '{print $1}'; return 0; fi
+  return 1
+}
+
+# Download a URL into $OutFile. Reuses curl/wget preference from fetch_text.
+download_file() {
+  local url="$1" out="$2"
+  if command_exists curl; then curl -fsSL "$url" -o "$out" || return 1; return 0; fi
+  if command_exists wget; then wget -q --timeout=60 -O "$out" "$url" || return 1; return 0; fi
+  return 1
+}
+
+# Install Factory on Windows via verified binary download (mirrors the
+# PowerShell Install-FactoryFromBootstrap). Returns 0 on success, non-zero on
+# failure (caller falls back to the official install script).
+install_factory_binary_windows() {
+  if ! sha256_tool_exists; then
+    log_warn "sha256 tool not found; skipping verified binary install."
+    return 1
+  fi
+  local text version base_url arch binary_name rg_binary_name
+  text="$(fetch_text 'https://app.factory.ai/cli/windows' || true)"
+  [ -n "$text" ] || { log_warn "Failed to fetch Factory bootstrap metadata."; return 1; }
+  version="$(echo "$text" | grep -Eo '\$version[[:space:]]*=[[:space:]]*"[^"]+"' | head -n 1 | sed -E 's/.*"([^"]+)".*/\1/')"
+  base_url="$(echo "$text" | grep -Eo '\$baseUrl[[:space:]]*=[[:space:]]*"[^"]+"' | head -n 1 | sed -E 's/.*"([^"]+)".*/\1/')"
+  [ -n "$version" ] && [ -n "$base_url" ] || { log_warn "Failed to parse Factory bootstrap metadata."; return 1; }
+  base_url="${base_url%/}"
+
+  # Architecture detection mirrors the PowerShell Get-FactoryArchitectures baseline
+  # fallback: prefer x64-baseline when AVX2 is uncertain, else x64.
+  local proc_arch
+  proc_arch="${PROCESSOR_ARCHITECTURE:-$(uname -m 2>/dev/null)}"
+  case "$proc_arch" in
+    *ARM64*|*aarch64*) arch="x64-baseline" ;;
+    *) arch="x64" ;;
+  esac
+
+  binary_name="droid.exe"
+  rg_binary_name="rg.exe"
+
+  local factory_url factory_sha_url rg_url rg_sha_url tmpdir
+  factory_url="$base_url/factory-cli/releases/$version/windows/$arch/$binary_name"
+  factory_sha_url="$factory_url.sha256"
+  rg_url="$base_url/ripgrep/windows/$arch/$rg_binary_name"
+  rg_sha_url="$rg_url.sha256"
+
+  tmpdir="$(mktemp -d 2>/dev/null)" || { log_warn "Failed to create temp dir for Factory download."; return 1; }
+
+  local binary_path rg_binary_path expected actual
+  binary_path="$tmpdir/$binary_name"
+  rg_binary_path="$tmpdir/$rg_binary_name"
+
+  log_info "Downloading Factory CLI v$version (Windows-$arch) with checksum verification"
+
+  if ! download_file "$factory_url" "$binary_path"; then
+    log_warn "Failed to download Factory binary; falling back to official installer."
+    rm -rf "$tmpdir" 2>/dev/null
+    return 1
+  fi
+
+  expected="$(fetch_text "$factory_sha_url" | awk '{print tolower($1)}')"
+  actual="$(sha256_file "$binary_path" | tr '[:upper:]' '[:lower:]')"
+  if [ -z "$expected" ] || [ -z "$actual" ] || [ "$expected" != "$actual" ]; then
+    log_warn "Factory CLI checksum verification failed; falling back to official installer."
+    rm -rf "$tmpdir" 2>/dev/null
+    return 1
+  fi
+  log_info "Factory CLI checksum verification passed"
+
+  # ripgrep is optional - only verify if it downloads successfully.
+  if download_file "$rg_url" "$rg_binary_path"; then
+    expected="$(fetch_text "$rg_sha_url" | awk '{print tolower($1)}')"
+    actual="$(sha256_file "$rg_binary_path" | tr '[:upper:]' '[:lower:]')"
+    if [ -n "$expected" ] && [ -n "$actual" ] && [ "$expected" = "$actual" ]; then
+      log_info "ripgrep checksum verification passed"
+    else
+      log_warn "ripgrep checksum verification skipped or failed (non-fatal)"
+    fi
+  fi
+
+  local install_dir factory_bin_dir install_path rg_install_path
+  install_dir="$USERPROFILE/bin"
+  [ -n "$USERPROFILE" ] || install_dir="$HOME/bin"
+  factory_bin_dir="$USERPROFILE/.factory/bin"
+  [ -n "$USERPROFILE" ] || factory_bin_dir="$HOME/.factory/bin"
+  install_path="$install_dir/$binary_name"
+  rg_install_path="$factory_bin_dir/$rg_binary_name"
+
+  mkdir -p "$install_dir" "$factory_bin_dir" 2>/dev/null
+
+  cp -f "$binary_path" "$install_path" 2>/dev/null || {
+    # Destination may be locked by a running droid. Stop it and retry once.
+    log_info "Stopping running droid to complete update"
+    taskkill //F //IM droid.exe >/dev/null 2>&1 || true
+    sleep 1
+    cp -f "$binary_path" "$install_path" || { log_warn "Failed to install Factory binary."; rm -rf "$tmpdir"; return 1; }
+  }
+  cp -f "$rg_binary_path" "$rg_install_path" 2>/dev/null || true
+
+  rm -rf "$tmpdir" 2>/dev/null
+  log_info "Factory CLI v$version installed successfully."
+  ensure_profile_path_prefers "$install_dir" 2>/dev/null || true
+  repair_tool_path factory >/dev/null 2>&1 || true
+  return 0
+}
+
 update_factory() {
   log_info "Updating Factory CLI (Droid)..."
+
+  # On Windows shells (Git Bash / MSYS / Cygwin), prefer the verified binary
+  # download path (mirrors PowerShell Install-FactoryFromBootstrap) which
+  # validates the SHA256 of droid.exe before install.
+  if is_windows_shell; then
+    if install_factory_binary_windows; then return 0; fi
+    log_warn "Verified binary install unavailable; falling back to official installer."
+  fi
+
   log_info "Trying: official bootstrap"
   local url='https://app.factory.ai/cli'
   if ! confirm_remote_script_execution "$url" "Factory CLI"; then
@@ -565,21 +666,86 @@ update_factory() {
 }
 
 
+# Get the bounded timeout (seconds) for `claude update`. Mirrors the PowerShell
+# Get-ClaudeNativeUpdateTimeoutSeconds so both platforms honor the same knob.
+get_claude_native_update_timeout_seconds() {
+  local v="${CHECK_AI_CLI_CLAUDE_UPDATE_TIMEOUT_SECONDS:-}"
+  if [ -n "$v" ] && [ "$v" -gt 0 ] 2>/dev/null; then printf '%s' "$v"; return; fi
+  printf '%s' '300'
+}
+
+# Run `claude update` with a bounded timeout. Returns 0 on success, non-zero on
+# failure or when claude is not installed. Mirrors Invoke-ClaudeNativeUpdate so
+# the POSIX checker tries the fast native updater before falling back to the
+# heavier official install script and npm.
+try_claude_native_update() {
+  if ! command_exists claude; then return 1; fi
+  log_info "Trying: claude update"
+  local timeout_sec
+  timeout_sec="$(get_claude_native_update_timeout_seconds)"
+  if command_exists timeout; then
+    timeout "$timeout_sec" claude update || { log_warn "native claude update failed or timed out"; return 1; }
+  elif command_exists gtimeout; then
+    gtimeout "$timeout_sec" claude update || { log_warn "native claude update failed or timed out"; return 1; }
+  else
+    # No timeout(1) available (e.g. macOS without coreutils). Run without a
+    # bound rather than skipping the native updater entirely.
+    claude update || { log_warn "native claude update failed"; return 1; }
+  fi
+  return 0
+}
+
+# Return 0 if the locally installed Claude is at least $1, else 1. Empty target
+# is treated as "satisfied" (mirrors Test-ClaudeVersionAtLeast).
+test_claude_version_at_least() {
+  local target="$1" localv cmp
+  [ -n "$target" ] || return 0
+  localv="$(get_local_claude || true)"
+  [ -n "$localv" ] || return 1
+  cmp="$(compare_semver "$localv" "$target" || true)"
+  [ "$cmp" = "0" ] || [ "$cmp" = "1" ]
+}
+
 update_claude() {
   log_info "Updating Claude Code..."
+  local target
+  target="$(get_latest_claude || true)"
+
+  # 1. Native updater (fast, self-contained). Mirrors PowerShell priority.
+  if try_claude_native_update; then
+    repair_tool_path claude >/dev/null 2>&1 || true
+    if test_claude_version_at_least "$target"; then return 0; fi
+    if [ -n "$target" ]; then
+      log_warn "native Claude update completed but local version is still older than target v$target."
+    else
+      log_warn "native Claude update completed but local Claude version could not be verified."
+    fi
+  fi
+
+  # 2. Official install.sh (heavier, downloads the full installer).
   log_info "Trying: official bootstrap"
   local url='https://claude.ai/install.sh'
-  if ! confirm_remote_script_execution "$url" "Claude Code"; then
-    log_warn "Installation cancelled by user."
-    return 1
+  if confirm_remote_script_execution "$url" "Claude Code"; then
+    if fetch_text "$url" | bash; then
+      repair_tool_path claude >/dev/null 2>&1 || true
+      if test_claude_version_at_least "$target"; then return 0; fi
+      if [ -n "$target" ]; then
+        log_warn "official Claude install script completed but local version is still older than target v$target."
+      fi
+    fi
+  else
+    log_warn "Remote script execution declined, trying other methods..."
   fi
-  if fetch_text "$url" | bash; then repair_tool_path claude >/dev/null 2>&1 || true; return 0; fi
+
+  # 3. npm fallback.
   if command_exists npm; then
     log_info "Trying: npm install"
-    npm install -g '@anthropic-ai/claude-code' || return 1
-    repair_tool_path claude >/dev/null 2>&1 || true
-    return 0
+    if npm_install_global '@anthropic-ai/claude-code'; then
+      repair_tool_path claude >/dev/null 2>&1 || true
+      return 0
+    fi
   fi
+
   log_err "No installer found. Install curl/wget, brew, or Node.js (npm) first."
   return 1
 }
@@ -588,7 +754,7 @@ update_codex() {
   log_info "Updating OpenAI Codex..."
   if command_exists npm; then
     log_info "Trying: npm install"
-    npm install -g '@openai/codex@latest' || return 1
+    npm_install_global '@openai/codex@latest' || return 1
     repair_tool_path codex >/dev/null 2>&1 || true
     return 0
   fi
@@ -606,7 +772,7 @@ update_gemini() {
   log_info "Updating Gemini CLI..."
   if command_exists npm; then
     log_info "Trying: npm install"
-    npm install -g '@google/gemini-cli@latest' || return 1
+    npm_install_global '@google/gemini-cli@latest' || return 1
     repair_tool_path gemini >/dev/null 2>&1 || true
     return 0
   fi
@@ -668,7 +834,7 @@ update_opencode() {
 
   if command_exists npm; then
     log_info "Trying: npm install"
-    npm install -g "opencode-ai@latest" || return 1
+    npm_install_global "opencode-ai@latest" || return 1
     repair_tool_path opencode >/dev/null 2>&1 || true
     localv="$(get_local_opencode || true)"
     cmp="$(compare_semver "$localv" "$target" || true)"
@@ -744,15 +910,14 @@ main() {
   local sel
   require_fetch_tool || exit 1
   show_banner
-  initialize_npm_for_region
+  select_best_npm_mirror
   sel="$(ask_selection)"
-  if [ "$sel" = "Q" ]; then restore_npm_registry; exit 0; fi
+  if [ "$sel" = "Q" ]; then exit 0; fi
   if [ "$sel" = "1" ] || [ "$sel" = "A" ]; then check_tool "Factory CLI (Droid)" get_latest_factory get_local_factory update_factory; fi
   if [ "$sel" = "2" ] || [ "$sel" = "A" ]; then check_tool "Claude Code" get_latest_claude get_local_claude update_claude; fi
   if [ "$sel" = "3" ] || [ "$sel" = "A" ]; then check_tool "OpenAI Codex" get_latest_codex get_local_codex update_codex; fi
   if [ "$sel" = "4" ] || [ "$sel" = "A" ]; then check_tool "Gemini CLI" get_latest_gemini get_local_gemini update_gemini; fi
   if [ "$sel" = "5" ] || [ "$sel" = "A" ]; then check_tool "OpenCode" get_latest_opencode get_local_opencode update_opencode; fi
-  restore_npm_registry
 }
 
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then

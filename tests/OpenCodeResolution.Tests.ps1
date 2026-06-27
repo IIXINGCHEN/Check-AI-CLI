@@ -27,7 +27,6 @@ function Assert-NotContains([string]$Actual, [string]$UnexpectedSubstring, [stri
 
 function Reset-TestState {
   $script:CapturedWarnings = @()
-  $script:OriginalNpmRegistry = $null
 }
 
 function Run-Test([string]$Name, [scriptblock]$Body) {
@@ -248,21 +247,6 @@ Run-Test 'Get-LocalOpenCodeVersion suppresses mismatch warning when standalone i
 
   Assert-Equal $version '1.2.27' 'Expected standalone OpenCode install to supply the local version when it matches the npm shim version.'
   Assert-Equal $script:CapturedWarnings.Count 0 'Expected no mismatch warning when the standalone OpenCode install is preferred.'
-}
-
-Run-Test 'Restore-NpmRegistry does not leak Set-NpmRegistry return values' {
-  function Get-NpmRegistry() {
-    return 'https://registry.npmjs.org'
-  }
-
-  function Set-NpmRegistry([string]$Registry) {
-    return $true
-  }
-
-  $script:OriginalNpmRegistry = 'https://registry.npmmirror.com'
-  $output = @(Restore-NpmRegistry)
-
-  Assert-Equal $output.Count 0 'Expected Restore-NpmRegistry to avoid emitting helper return values.'
 }
 
 Run-Test 'Update-OpenCode prefers native self upgrade before curl install' {

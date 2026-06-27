@@ -310,7 +310,7 @@ Run-Test 'Install-FactoryFromBootstrap works when New-TemporaryFile is unavailab
     Remove-Item Function:\New-TemporaryFile -ErrorAction SilentlyContinue
   }
 
-  Assert-Equal ($script:InstallSequence -join ',') 'download:Factory CLI binary,verify:Factory CLI,download:ripgrep binary,verify:ripgrep,stop,install:droid.exe,install:rg.exe' 'Expected Factory bootstrap to install verified files without New-TemporaryFile.'
+  Assert-Equal ($script:InstallSequence -join ',') 'download:Factory CLI binary,verify:Factory CLI,download:ripgrep binary,verify:ripgrep,install:droid.exe,install:rg.exe' 'Expected Factory bootstrap to install verified files without New-TemporaryFile.'
   foreach ($message in $script:CapturedInfos) {
     Assert-NotContains $message 'C:\Users\Tester' 'Expected Factory bootstrap info logs to avoid absolute local paths.'
   }
@@ -391,4 +391,86 @@ Run-Test 'Download-FileWithRetry removes temp file after retry exhaustion' {
   }
 }
 
+Run-Test 'Install-FactoryFile retries after stopping a process holding the destination' {
+  $script:InstallFileCalls = @()
+  $script:StopProcessCalls = @()
+  $script:GetProcessQueries = @()
+  $script:CopyAttempt = 0
+
+  # Real Install-FactoryFile under test (do NOT mock it). Mock only the
+  # collaborators it touches when a copy fails.
+  $src = Join-Path ([IO.Path]::GetTempPath()) ([Guid]::NewGuid().ToString('N') + '.exe')
+  $dst = Join-Path ([IO.Path]::GetTempPath()) ([Guid]::NewGuid().ToString('N') + '\droid.exe')
+  [IO.File]::WriteAllBytes($src, [byte[]](1,2,3,4))
+  try {
+    function Copy-Item {
+      param([Parameter(Position=0)][string]$Path, [Parameter(Position=1)][string]$Destination, [switch]$Force)
+      $script:InstallFileCalls += $Destination
+      $script:CopyAttempt += 1
+      if ($script:CopyAttempt -eq 1) { throw 'Access denied: file in use' }
+      # Second attempt succeeds
+    }
+
+    function Get-Process {
+      param([string]$Name)
+      $script:GetProcessQueries += $Name
+      return @([pscustomobject]@{ Id = 1234; Name = $Name })
+    }
+
+    function Stop-Process {
+      param([string]$Name, [switch]$Force)
+      $script:StopProcessCalls += $Name
+    }
+
+    function Start-Sleep {
+      param([int]$Seconds)
+    }
+
+    Install-FactoryFile $src $dst
+
+    Assert-Equal $script:InstallFileCalls.Count 2 'Expected Install-FactoryFile to retry copy once after the first attempt failed.'
+    Assert-Equal $script:GetProcessQueries[0] 'droid' 'Expected process lookup to target the destination tool name (droid), not a blanket kill.'
+    Assert-Equal $script:StopProcessCalls[0] 'droid' 'Expected only the locking process (droid) to be stopped, not all tools.'
+  } finally {
+    Remove-Item -LiteralPath $src -Force -ErrorAction SilentlyContinue
+    $dstParent = Split-Path -Parent $dst
+    if (Test-Path -LiteralPath $dstParent) { Remove-Item -LiteralPath $dstParent -Recurse -Force -ErrorAction SilentlyContinue }
+    Remove-Item Function:\Copy-Item -ErrorAction SilentlyContinue
+    Remove-Item Function:\Get-Process -ErrorAction SilentlyContinue
+    Remove-Item Function:\Stop-Process -ErrorAction SilentlyContinue
+    Remove-Item Function:\Start-Sleep -ErrorAction SilentlyContinue
+  }
+}
+
+Run-Test 'Install-FactoryFile does not kill any process when copy succeeds' {
+  $script:StopProcessCalls = @()
+  $script:GetProcessQueries = @()
+
+  $src = Join-Path ([IO.Path]::GetTempPath()) ([Guid]::NewGuid().ToString('N') + '.exe')
+  $dst = Join-Path ([IO.Path]::GetTempPath()) ([Guid]::NewGuid().ToString('N') + '\droid.exe')
+  [IO.File]::WriteAllBytes($src, [byte[]](1,2,3,4))
+  try {
+    function Get-Process {
+      param([string]$Name)
+      return $null
+    }
+
+    function Stop-Process {
+      param([string]$Name)
+      $script:StopProcessCalls += $Name
+    }
+
+    # Copy-Item is NOT mocked: real copy succeeds on first try.
+    Install-FactoryFile $src $dst
+
+    Assert-Equal $script:StopProcessCalls.Count 0 'Expected no process to be stopped when the initial copy succeeds.'
+    Assert-True (Test-Path -LiteralPath $dst) 'Expected the destination file to exist after a successful copy.'
+  } finally {
+    Remove-Item -LiteralPath $src -Force -ErrorAction SilentlyContinue
+    $dstParent = Split-Path -Parent $dst
+    if (Test-Path -LiteralPath $dstParent) { Remove-Item -LiteralPath $dstParent -Recurse -Force -ErrorAction SilentlyContinue }
+    Remove-Item Function:\Get-Process -ErrorAction SilentlyContinue
+    Remove-Item Function:\Stop-Process -ErrorAction SilentlyContinue
+  }
+}
 Write-Host '[PASS] All Factory review regression tests passed.' -ForegroundColor Green
