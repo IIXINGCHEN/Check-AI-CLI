@@ -87,7 +87,33 @@ Run-Test 'Ensure-UserPathPrefers does not log absolute PATH entries' {
   }
 }
 
-Run-Test 'Get-LocalClaudeVersion repairs npm global bin into User PATH' {
+
+Run-Test 'Get-LocalClaudeVersion is read-only when path repair is not allowed' {
+  $originalPath = $env:PATH
+  try {
+    $script:StoredUserPath = 'C:\Tools'
+    $env:PATH = 'C:\Windows\System32;C:\Legacy'
+
+    function Get-UserPathValue() { return $script:StoredUserPath }
+    function Set-UserPathValue([string]$PathValue) { throw "Set-UserPathValue should not be called in check mode: $PathValue" }
+    function Get-PreferredToolPathDirs([string]$ToolId) {
+      if ($ToolId -eq 'claude') { return @('C:\Users\Tester\AppData\Roaming\npm') }
+      return @()
+    }
+    function Get-CommandVersionInfo([string]$CommandName) {
+      return @{ Name = $CommandName; Version = $null; Source = $null }
+    }
+
+    $version = Get-LocalClaudeVersion
+
+    Assert-Equal $version $null 'Expected check-mode Claude detection to remain unresolved without repairing PATH.'
+    Assert-Equal $script:StoredUserPath 'C:\Tools' 'Expected check-mode Claude detection to avoid persistent PATH changes.'
+  } finally {
+    $env:PATH = $originalPath
+  }
+}
+
+Run-Test 'Get-LocalClaudeVersion repairs npm global bin into User PATH when path repair is allowed' {
   $originalPath = $env:PATH
   try {
     $script:ResolvedClaude = @{ Name = 'claude'; Version = $null; Source = $null }
@@ -112,7 +138,7 @@ Run-Test 'Get-LocalClaudeVersion repairs npm global bin into User PATH' {
       return @{ Name = $CommandName; Version = $null; Source = $null }
     }
 
-    $version = Get-LocalClaudeVersion
+    $version = Invoke-WithPathRepairAllowed { Get-LocalClaudeVersion }
 
     Assert-Equal $version '0.9.0' 'Expected Claude version detection to recover after npm PATH repair.'
     Assert-StartsWith $script:StoredUserPath 'C:\Users\Tester\AppData\Roaming\npm' 'Expected User PATH to prioritize npm global bin for Claude.'
@@ -146,7 +172,7 @@ Run-Test 'Get-PreferredToolPathDirs prioritizes Claude native user bin over npm 
   }
 }
 
-Run-Test 'Get-LocalClaudeVersion repairs native user bin before npm shim on Windows' {
+Run-Test 'Get-LocalClaudeVersion repairs native user bin before npm shim on Windows when path repair is allowed' {
   $originalPath = $env:PATH
   $originalUserProfile = $env:USERPROFILE
   try {
@@ -185,7 +211,7 @@ Run-Test 'Get-LocalClaudeVersion repairs native user bin before npm shim on Wind
       return @{ Name = $CommandName; Version = $null; Source = $null }
     }
 
-    $version = Get-LocalClaudeVersion
+    $version = Invoke-WithPathRepairAllowed { Get-LocalClaudeVersion }
 
     Assert-Equal $version '2.1.84' 'Expected Claude version detection to prefer the native Windows install over an older npm shim.'
     Assert-StartsWith $script:StoredUserPath 'C:\Users\Tester\.local\bin' 'Expected User PATH to prioritize Claude native user bin.'
@@ -229,7 +255,7 @@ Run-Test 'Get-LocalClaudeVersion prefers newer npm fallback over older native in
       return @{ Name = $CommandName; Version = $null; Source = $null }
     }
 
-    $version = Get-LocalClaudeVersion
+    $version = Invoke-WithPathRepairAllowed { Get-LocalClaudeVersion }
 
     Assert-Equal $version '2.1.152' 'Expected Claude version detection to prefer the newer npm fallback over an older native install.'
     $firstUserPath = ($script:StoredUserPath -split ';')[0]
@@ -245,7 +271,7 @@ Run-Test 'Get-LocalClaudeVersion prefers newer npm fallback over older native in
   }
 }
 
-Run-Test 'Get-LocalFactoryVersion repairs user bin before probing droid' {
+Run-Test 'Get-LocalFactoryVersion repairs user bin before probing droid when path repair is allowed' {
   $originalPath = $env:PATH
   try {
     $script:ResolvedDroid = @{ Name = 'droid'; Version = $null; Source = $null }
@@ -274,7 +300,7 @@ Run-Test 'Get-LocalFactoryVersion repairs user bin before probing droid' {
       }
     }
 
-    $version = Get-LocalFactoryVersion
+    $version = Invoke-WithPathRepairAllowed { Get-LocalFactoryVersion }
 
     Assert-Equal $version '2.3.4' 'Expected Factory version detection to recover after repairing ~/bin.'
     Assert-StartsWith $script:StoredUserPath 'C:\Users\Tester\bin' 'Expected User PATH to prioritize ~/bin for Factory CLI.'

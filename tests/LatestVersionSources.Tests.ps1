@@ -153,6 +153,7 @@ Run-Test 'Get-LatestOpenCodeVersion falls back to npm only when repo source is u
 Run-Test 'Update-Claude prefers native updater before official install script' {
   function Repair-ToolUserPath([string]$ToolId) { return $true }
   function Get-LatestClaudeVersion() { return '2.1.119' }
+  function Get-ClaudeLatestInfo() { return @{ Target = '2.1.119'; Source = 'stable'; Stable = '2.1.119'; Npm = $null; Repo = $null } }
   function Get-LocalClaudeVersion() { return '2.1.119' }
 
   $script:NativeUpdateCalls = 0
@@ -175,6 +176,7 @@ Run-Test 'Update-Claude prefers native updater before official install script' {
 Run-Test 'Update-Claude falls back to official install script when native Claude update fails' {
   function Repair-ToolUserPath([string]$ToolId) { return $true }
   function Get-LatestClaudeVersion() { return '2.1.119' }
+  function Get-ClaudeLatestInfo() { return @{ Target = '2.1.119'; Source = 'stable'; Stable = '2.1.119'; Npm = $null; Repo = $null } }
   function Get-LocalClaudeVersion() { return '2.1.119' }
 
   $script:NativeUpdateCalls = 0
@@ -243,6 +245,7 @@ Run-Test 'Update-Claude falls back to npm when native and official install paths
 Run-Test 'Update-Claude falls back to official install script when native update leaves Claude below target' {
   function Repair-ToolUserPath([string]$ToolId) { return $true }
   function Get-LatestClaudeVersion() { return '2.1.119' }
+  function Get-ClaudeLatestInfo() { return @{ Target = '2.1.119'; Source = 'stable'; Stable = '2.1.119'; Npm = $null; Repo = $null } }
   $script:LocalClaudeVersion = '2.1.112'
   function Get-LocalClaudeVersion() { return $script:LocalClaudeVersion }
 
@@ -274,6 +277,7 @@ Run-Test 'Update-Claude falls back to official install script when native update
 Run-Test 'Update-Claude falls back to npm when official install script leaves Claude below target' {
   function Repair-ToolUserPath([string]$ToolId) { return $true }
   function Get-LatestClaudeVersion() { return '2.1.119' }
+  function Get-ClaudeLatestInfo() { return @{ Target = '2.1.119'; Source = 'stable'; Stable = '2.1.119'; Npm = $null; Repo = $null } }
   function Get-LocalClaudeVersion() { return '2.1.112' }
 
   $script:NpmInstallCalls = 0
@@ -298,6 +302,7 @@ Run-Test 'Update-Claude falls back to npm when official install script leaves Cl
 Run-Test 'Update-Claude reports npm failure after all Claude update paths fail' {
   function Repair-ToolUserPath([string]$ToolId) { return $true }
   function Get-LatestClaudeVersion() { return '2.1.119' }
+  function Get-ClaudeLatestInfo() { return @{ Target = '2.1.119'; Source = 'stable'; Stable = '2.1.119'; Npm = $null; Repo = $null } }
 
   function Invoke-ClaudeNativeUpdate() {
     throw 'native update failed'
@@ -358,5 +363,83 @@ Run-Test 'Report-PostUpdate recommends all supported Claude recovery steps' {
   Assert-True ($script:CapturedWarnings -contains 'Tip: if needed, reinstall via irm https://claude.ai/install.ps1 | iex') 'Expected official Claude install script remediation hint.'
   Assert-True ($script:CapturedWarnings -contains 'Tip: fallback via npm install -g @anthropic-ai/claude-code@latest') 'Expected Claude post-update guidance to include npm fallback remediation.'
 }
+
+
+
+Run-Test 'Update-Claude skips native updater when stable channel is behind target' {
+
+  function Repair-ToolUserPath([string]$ToolId) { return $true }
+
+  function Get-ClaudeLatestInfo() { return @{ Target = '2.1.196'; Source = 'npm'; Stable = '2.1.185'; Npm = '2.1.196'; Repo = '2.1.196' } }
+
+  function Get-LocalClaudeVersion() { return '2.1.196' }
+
+
+
+  $script:NativeUpdateCalls = 0
+
+  $script:InstallScriptCalls = 0
+
+
+
+  function Invoke-ClaudeNativeUpdate() { $script:NativeUpdateCalls += 1 }
+
+  function Update-ClaudeViaInstallScript() { $script:InstallScriptCalls += 1 }
+
+  function Update-ClaudeViaNpm() { throw 'npm should not run' }
+
+
+
+  Update-Claude
+
+
+
+  Assert-Equal $script:NativeUpdateCalls 0 'Expected Claude native updater to be skipped when stable is behind npm target.'
+
+  Assert-Equal $script:InstallScriptCalls 1 'Expected official install script to be tried directly when stable is behind npm target.'
+
+  Assert-True ($script:CapturedInfos -contains 'Skipping native Claude update: stable channel v2.1.185 is older than target v2.1.196.') 'Expected an informational skip message for stale stable channel.'
+
+}
+
+
+
+
+
+Run-Test 'Update-Claude gates official remote install script in auto mode' {
+  $previousAuto = $script:AutoMode
+  $previousAllow = $env:CHECK_AI_CLI_ALLOW_REMOTE_SCRIPT
+  try {
+    $script:AutoMode = $true
+    Remove-Item Env:CHECK_AI_CLI_ALLOW_REMOTE_SCRIPT -ErrorAction SilentlyContinue
+
+    function Repair-ToolUserPath([string]$ToolId) { return $true }
+    function Get-ClaudeLatestInfo() { return @{ Target = '2.1.196'; Source = 'npm'; Stable = '2.1.185'; Npm = '2.1.196'; Repo = '2.1.196' } }
+    function Get-LocalClaudeVersion() { return '2.1.195' }
+    function Invoke-ClaudeNativeUpdate() { throw 'native should be skipped' }
+    function Get-Text([string]$Uri) { throw 'remote script should not be downloaded in auto mode without opt-in' }
+
+    $script:NpmInstallCalls = 0
+    function Update-ClaudeViaNpm() { $script:NpmInstallCalls += 1 }
+
+    Update-Claude
+
+    Assert-Equal $script:NpmInstallCalls 1 'Expected Claude update to fall back to npm when auto mode declines official remote script execution.'
+    Assert-True ($script:CapturedWarnings -contains '[SECURITY] Auto mode: skipping remote script execution from https://claude.ai/install.ps1. Set CHECK_AI_CLI_ALLOW_REMOTE_SCRIPT=1 to allow.') 'Expected auto mode to warn when official Claude remote script is skipped.'
+  } finally {
+    $script:AutoMode = $previousAuto
+    if ($null -eq $previousAllow) { Remove-Item Env:CHECK_AI_CLI_ALLOW_REMOTE_SCRIPT -ErrorAction SilentlyContinue } else { $env:CHECK_AI_CLI_ALLOW_REMOTE_SCRIPT = $previousAllow }
+  }
+}
+
+Run-Test 'Test-ClaudeNativeUpdateAllowed rejects stale stable channel' {
+
+  Assert-True (-not (Test-ClaudeNativeUpdateAllowed '2.1.196' '2.1.185')) 'Expected native update to be rejected when stable is behind target.'
+
+  Assert-True (Test-ClaudeNativeUpdateAllowed '2.1.185' '2.1.185') 'Expected native update to be allowed when stable reaches target.'
+
+}
+
+
 
 Write-Host '[PASS] All latest version source regression tests passed.' -ForegroundColor Green

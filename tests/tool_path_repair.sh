@@ -85,6 +85,33 @@ test_resolve_version_conflict_prefers_higher_official_source() {
   assert_eq "$version" '2.1.71' 'Expected conflict resolver to keep the higher official version.'
 }
 
+
+
+test_get_local_claude_does_not_repair_path() {
+  local temp_dir rc_file
+  temp_dir="$(mktemp -d)"
+  rc_file="$temp_dir/.bashrc"
+  PATH="/usr/bin:/bin"
+  export PATH
+  SHELL="/bin/bash"
+  export SHELL
+
+  get_profile_file() { printf '%s
+' "$rc_file"; }
+  get_tool_candidate_dirs() { printf '%s
+' "$temp_dir/npm-bin"; }
+  get_local_version() { return 1; }
+
+  get_local_claude >/dev/null 2>&1 || true
+  if [ -f "$rc_file" ]; then
+    printf '[FAIL] Expected get_local_claude to avoid persistent PATH repair in check mode.
+' >&2
+    exit 1
+  fi
+  rm -rf "$temp_dir"
+}
+
+run_test 'get_local_claude does not repair PATH in check mode' test_get_local_claude_does_not_repair_path
 run_test 'ensure_profile_path_prefers persists and prepends PATH' test_ensure_profile_path_prefers
 run_test 'repair_tool_path keeps candidate priority order' test_repair_tool_path_keeps_priority_order
 run_test 'resolve_version_conflict prefers higher official source' test_resolve_version_conflict_prefers_higher_official_source

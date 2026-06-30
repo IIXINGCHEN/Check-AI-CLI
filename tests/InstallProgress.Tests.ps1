@@ -174,22 +174,41 @@ Get-BaseUrl
   Assert-Equal $result 'https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/0123456789abcdef0123456789abcdef01234567' 'Expected installer to fall back to the latest main commit when latest release lookup fails.'
 }
 
-Run-Test 'Get-BaseUrl falls back to main when stable release and main commit lookups fail' {
+Run-Test 'Get-BaseUrl requires opt-in for main when stable release and main commit lookups fail' {
   $script = @"
 `$env:CHECK_AI_CLI_SKIP_MAIN = '1'
 Remove-Item Env:CHECK_AI_CLI_REF -ErrorAction SilentlyContinue
 Remove-Item Env:CHECK_AI_CLI_RAW_BASE -ErrorAction SilentlyContinue
+Remove-Item Env:CHECK_AI_CLI_ALLOW_MAIN_FALLBACK -ErrorAction SilentlyContinue
 . '$repoRoot\install.ps1'
-`$script:Warnings = @()
-function Write-Warn([string]`$Message) { `$script:Warnings += `$Message }
 function Invoke-RestMethod { throw 'boom' }
-`$url = Get-BaseUrl
-'{0}|{1}' -f `$url, (`$script:Warnings -join ',')
+try {
+  Get-BaseUrl
+  'unexpected'
+} catch {
+  'failed'
+}
 "@
 
   $result = Invoke-PwshSnippet $script
 
-  Assert-Equal $result 'https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main|Latest stable release ref unavailable. Falling back to main.' 'Expected installer to fall back to main only when both latest release and latest main commit lookups fail.'
+  Assert-Equal $result 'failed' 'Expected installer to require explicit opt-in before mutable main fallback.'
+}
+
+Run-Test 'Get-BaseUrl allows explicit main fallback opt-in' {
+  $script:Warnings = @()
+  $snippet = @'
+$env:CHECK_AI_CLI_SKIP_MAIN = '1'
+Remove-Item Env:CHECK_AI_CLI_REF -ErrorAction SilentlyContinue
+Remove-Item Env:CHECK_AI_CLI_RAW_BASE -ErrorAction SilentlyContinue
+$env:CHECK_AI_CLI_ALLOW_MAIN_FALLBACK = '1'
+. ./install.ps1
+function Invoke-RestMethod { throw 'boom' }
+function Write-Warn([string]$Message) { $script:Warnings += $Message }
+(Get-BaseUrl) + '|' + ($script:Warnings -join ';')
+'@
+  $result = Invoke-PwshSnippet $snippet
+  Assert-Equal $result 'https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main|Latest stable release ref unavailable. Falling back to main because CHECK_AI_CLI_ALLOW_MAIN_FALLBACK=1.' 'Expected explicit opt-in to allow mutable main fallback.'
 }
 
 Run-Test 'Get-BaseUrl respects explicit CHECK_AI_CLI_REF' {
@@ -220,6 +239,36 @@ Get-BaseUrl
   $result = Invoke-PwshSnippet $script
 
   Assert-Equal $result 'https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main' 'Expected explicit CHECK_AI_CLI_RAW_BASE to bypass stable release resolution.'
+}
+
+
+
+Run-Test 'Install-AllFromLocal installs bundled payload without resolving remote ref' {
+  $script = @"
+`$env:CHECK_AI_CLI_SKIP_MAIN = '1'
+. '$repoRoot\install.ps1'
+function Get-BaseUrl { throw 'remote resolution should not run for local package install' }
+function Write-Info([string]`$Message) { }
+function Write-Success([string]`$Message) { }
+function Write-Warn([string]`$Message) { }
+function Add-ToPath([string]`$Dir, [string]`$Scope) { `$script:AddedPath = `$Dir }
+function Print-NextSteps([string]`$Dir) { }
+function Warn-ShadowedCurrentUserInstall([string]`$Dir, [string]`$Scope) { }
+function Print-ChinaTip { }
+`$dest = Join-Path ([IO.Path]::GetTempPath()) ('check-ai-cli-local-install-test-' + [Guid]::NewGuid().ToString('N'))
+try {
+  Install-AllFromLocal `$dest 'CurrentUser' `$false
+  if (-not (Test-Path -LiteralPath (Join-Path `$dest 'install.ps1'))) { throw 'install.ps1 was not deployed from local payload' }
+  if (-not (Test-Path -LiteralPath (Join-Path `$dest 'scripts\Check-AI-CLI-Versions.ps1'))) { throw 'checker script was not deployed from local payload' }
+  'local-ok'
+} finally {
+  Remove-Item -LiteralPath `$dest -Recurse -Force -ErrorAction SilentlyContinue
+}
+"@
+
+  $result = Invoke-PwshSnippet $script
+
+  Assert-Equal $result 'local-ok' 'Expected local ZIP install to deploy bundled files without resolving GitHub refs.'
 }
 
 Run-Test 'Warn-ShadowedCurrentUserInstall reports an older machine-wide install' {

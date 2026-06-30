@@ -13,6 +13,7 @@ DEFAULT_REF="main"
 REF="${CHECK_AI_CLI_REF:-}"
 RAW_BASE="${CHECK_AI_CLI_RAW_BASE:-}"
 ALLOW_UNTRUSTED="${CHECK_AI_CLI_ALLOW_UNTRUSTED_MIRROR:-0}"
+ALLOW_MAIN_FALLBACK="${CHECK_AI_CLI_ALLOW_MAIN_FALLBACK:-0}"
 RETRY="${CHECK_AI_CLI_RETRY:-3}"
 
 is_number() { [[ "${1:-}" =~ ^[0-9]+$ ]]; }
@@ -86,8 +87,13 @@ get_resolved_ref() {
   main_commit="$(get_latest_main_commit_ref || true)"
   if [ -n "$main_commit" ]; then printf '%s' "$main_commit"; return 0; fi
   fallback="$(get_requested_ref)"
-  log_warn "Latest stable release ref unavailable. Falling back to $fallback." >&2
-  printf '%s' "$fallback"
+  if [ "$ALLOW_MAIN_FALLBACK" = "1" ]; then
+    log_warn "Latest stable release ref unavailable. Falling back to $fallback because CHECK_AI_CLI_ALLOW_MAIN_FALLBACK=1." >&2
+    printf '%s' "$fallback"
+    return 0
+  fi
+  log_err "Unable to resolve a stable release or immutable main commit. Set CHECK_AI_CLI_ALLOW_MAIN_FALLBACK=1 to allow mutable main fallback." >&2
+  return 1
 }
 
 resolve_base() {
@@ -115,17 +121,20 @@ resolve_base() {
     echo "$base"
     return 0
   fi
-  echo "https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/$(get_resolved_ref)"
+  local ref
+  ref="$(get_resolved_ref)" || return 1
+  [ -n "$ref" ] || return 1
+  echo "https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/$ref"
 }
 
 clamp_retry
 BASE=""
 INSTALL_DIR="${CHECK_AI_CLI_INSTALL_DIR:-.}"
 
-log_info() { printf "[INFO] %s\n" "$*"; }
-log_ok() { printf "[SUCCESS] %s\n" "$*"; }
-log_warn() { printf "[WARNING] %s\n" "$*"; }
-log_err() { printf "[ERROR] %s\n" "$*"; }
+log_info() { printf "[INFO] %s\n" "$*" >&2; }
+log_ok() { printf "[SUCCESS] %s\n" "$*" >&2; }
+log_warn() { printf "[WARNING] %s\n" "$*" >&2; }
+log_err() { printf "[ERROR] %s\n" "$*" >&2; }
 
 command_exists() { command -v "$1" >/dev/null 2>&1; }
 
@@ -228,13 +237,17 @@ verify_hash() {
 }
 
 download_all() {
-  local stage="$1" f
+  local stage="$1" f list_file tmp
+  list_file="$stage/$(distribution_list_path)"
+  tmp="$(mktemp 2>/dev/null || mktemp -t check-ai-cli-list)" || return 1
+  list_distribution_paths "$list_file" > "$tmp" || { rm -f "$tmp"; return 1; }
   mkdir -p "$stage/scripts" "$stage/bin"
-  while read -r f; do
+  while IFS= read -r f || [ -n "$f" ]; do
     [ -n "$f" ] || continue
     log_info "Downloading: $f"
-    download_with_retry "$BASE/$f" "$stage/$f" || return 1
-  done < <(list_distribution_paths "$stage/$(distribution_list_path)")
+    download_with_retry "$BASE/$f" "$stage/$f" || { rm -f "$tmp"; return 1; }
+  done < "$tmp"
+  rm -f "$tmp"
 }
 
 download_manifest() {
@@ -250,11 +263,15 @@ download_distribution_list() {
 }
 
 verify_all() {
-  local stage="$1" f
-  while read -r f; do
+  local stage="$1" f list_file tmp
+  list_file="$stage/$(distribution_list_path)"
+  tmp="$(mktemp 2>/dev/null || mktemp -t check-ai-cli-list)" || return 1
+  list_distribution_paths "$list_file" > "$tmp" || { rm -f "$tmp"; return 1; }
+  while IFS= read -r f || [ -n "$f" ]; do
     [ -n "$f" ] || continue
-    verify_hash "$stage/checksums.sha256" "$f" "$stage/$f" || return 1
-  done < <(list_distribution_paths "$stage/$(distribution_list_path)")
+    verify_hash "$stage/checksums.sha256" "$f" "$stage/$f" || { rm -f "$tmp"; return 1; }
+  done < "$tmp"
+  rm -f "$tmp"
 }
 
 deploy_one() {
@@ -268,12 +285,16 @@ deploy_one() {
 }
 
 deploy_all() {
-  local stage="$1" dir="$2" f
+  local stage="$1" dir="$2" f list_file tmp
+  list_file="$stage/$(distribution_list_path)"
+  tmp="$(mktemp 2>/dev/null || mktemp -t check-ai-cli-list)" || return 1
+  list_distribution_paths "$list_file" > "$tmp" || { rm -f "$tmp"; return 1; }
   mkdir -p "$dir/scripts" "$dir/bin"
-  while read -r f; do
+  while IFS= read -r f || [ -n "$f" ]; do
     [ -n "$f" ] || continue
-    deploy_one "$stage" "$dir" "$f"
-  done < <(list_distribution_paths "$stage/$(distribution_list_path)")
+    deploy_one "$stage" "$dir" "$f" || { rm -f "$tmp"; return 1; }
+  done < "$tmp"
+  rm -f "$tmp"
 }
 
 get_profile_file() {
@@ -287,8 +308,18 @@ get_profile_file() {
   esac
 }
 
+validate_path_entry() {
+  local dir="${1:-}"
+  [ -n "$dir" ] || return 1
+  case "$dir" in
+    *$'\n'*|*$'\r'*|*\"*|*"'"*|*'`'*|*'$'*) return 1 ;;
+  esac
+  return 0
+}
+
 add_to_path() {
   local dir="$1" file marker tmp shell_name
+  validate_path_entry "$dir" || { log_err "Refusing to add unsafe path entry to PATH."; return 1; }
   file="$(get_profile_file)"
   marker="check-ai-cli:path:$(printf '%s' "$dir" | tr '/\\: .' '_')"
   mkdir -p "$(dirname "$file")"
@@ -307,7 +338,45 @@ add_to_path() {
   fi
   mv "$tmp" "$file"
   export PATH="$dir:$PATH"
-  log_info "Added $dir to PATH permanently"
+  log_info "Added install bin directory to PATH permanently"
+}
+
+local_payload_available() {
+  [ -f "./checksums.sha256" ] && [ -f "./distribution-files.txt" ]
+}
+
+verify_local_payload() {
+  local f list_file tmp
+  list_file="$(distribution_list_path)"
+  verify_hash "checksums.sha256" "$list_file" "$list_file" || return 1
+  tmp="$(mktemp 2>/dev/null || mktemp -t check-ai-cli-local-list)" || return 1
+  list_distribution_paths "$list_file" > "$tmp" || { rm -f "$tmp"; return 1; }
+  while IFS= read -r f || [ -n "$f" ]; do
+    [ -n "$f" ] || continue
+    [ -f "$f" ] || { log_err "Missing local payload file: $f"; rm -f "$tmp"; return 1; }
+    verify_hash "checksums.sha256" "$f" "$f" || { rm -f "$tmp"; return 1; }
+  done < "$tmp"
+  rm -f "$tmp"
+}
+
+deploy_local_payload() {
+  local f list_file tmp
+  list_file="$(distribution_list_path)"
+  tmp="$(mktemp 2>/dev/null || mktemp -t check-ai-cli-local-list)" || return 1
+  list_distribution_paths "$list_file" > "$tmp" || { rm -f "$tmp"; return 1; }
+  while IFS= read -r f || [ -n "$f" ]; do
+    [ -n "$f" ] || continue
+    deploy_one "." "$INSTALL_DIR" "$f" || { rm -f "$tmp"; return 1; }
+  done < "$tmp"
+  rm -f "$tmp"
+}
+
+install_from_local_payload() {
+  log_info "Installing from local package: $(pwd)"
+  require_sha256_tool || exit 1
+  verify_local_payload || { log_err "Local checksum verification failed."; exit 1; }
+  deploy_local_payload || { log_err "Deploy failed."; exit 1; }
+  print_next_steps "$INSTALL_DIR"
 }
 
 print_next_steps() {
@@ -328,6 +397,11 @@ skip_main() {
 
 main() {
   local stage
+  if local_payload_available; then
+    install_from_local_payload
+    return 0
+  fi
+
   BASE="$(resolve_base)"
   stage="$(mktemp -d 2>/dev/null || mktemp -d -t check-ai-cli)"
   trap "rm -rf \"$stage\" >/dev/null 2>&1 || true" EXIT
@@ -341,7 +415,6 @@ main() {
   deploy_all "$stage" "$INSTALL_DIR" || { log_err "Deploy failed."; exit 1; }
   print_next_steps "$INSTALL_DIR"
 }
-
 if ! skip_main; then
   main
 fi

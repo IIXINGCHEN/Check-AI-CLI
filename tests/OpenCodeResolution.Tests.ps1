@@ -53,7 +53,34 @@ Run-Test 'OpenCode resolution warnings do not log absolute paths' {
   }
 }
 
-Run-Test 'Get-LocalOpenCodeVersion repairs old shim resolution to prefer standalone install' {
+
+Run-Test 'Get-LocalOpenCodeVersion does not repair PATH in check mode' {
+  $originalPath = $env:PATH
+  try {
+    $script:StoredUserPath = 'C:\Tools'
+    $env:PATH = 'C:\Windows\System32;C:\Legacy'
+    $script:ResolvedOpenCode = @{ Name = 'opencode'; Version = $null; Source = $null }
+
+    function Get-UserPathValue() { return $script:StoredUserPath }
+    function Set-UserPathValue([string]$PathValue) { throw "Set-UserPathValue should not be called in check mode: $PathValue" }
+    function Get-OpenCodeUserInstallPath() { return 'C:\Users\Tester\.opencode\bin\opencode.exe' }
+    function Get-PreferredToolPathDirs([string]$ToolId) {
+      if ($ToolId -eq 'opencode') { return @('C:\Users\Tester\.opencode\bin') }
+      return @()
+    }
+    function Get-OpenCodeResolvedInfo() { return $script:ResolvedOpenCode }
+    function Get-OpenCodeVersionAtPath([string]$Path) { return '1.2.21' }
+
+    $version = Get-LocalOpenCodeVersion
+
+    Assert-Equal $version $null 'Expected check-mode OpenCode detection to avoid hidden PATH repair.'
+    Assert-Equal $script:StoredUserPath 'C:\Tools' 'Expected check-mode OpenCode detection to keep User PATH unchanged.'
+  } finally {
+    $env:PATH = $originalPath
+  }
+}
+
+Run-Test 'Get-LocalOpenCodeVersion repairs old shim resolution to prefer standalone install when path repair is allowed' {
   $originalPath = $env:PATH
   try {
     $script:StoredUserPath = 'C:\Tools;C:\Legacy'
@@ -86,7 +113,7 @@ Run-Test 'Get-LocalOpenCodeVersion repairs old shim resolution to prefer standal
       return '1.2.21'
     }
 
-    $version = Get-LocalOpenCodeVersion
+    $version = Invoke-WithPathRepairAllowed { Get-LocalOpenCodeVersion }
 
     Assert-Equal $version '1.2.21' 'Expected old shim resolution to be replaced by the standalone OpenCode install.'
     Assert-StartsWith $script:StoredUserPath 'C:\Users\Tester\.opencode\bin' 'Expected User PATH to prioritize the standalone OpenCode bin directory.'
@@ -124,7 +151,7 @@ Run-Test 'Ensure-UserPathPrefers moves target directory to the front of user and
   }
 }
 
-Run-Test 'Get-LocalOpenCodeVersion repairs PATH when standalone install exists but command is unresolved' {
+Run-Test 'Get-LocalOpenCodeVersion repairs PATH when standalone install exists but command is unresolved and path repair is allowed' {
   $originalPath = $env:PATH
   try {
     $script:StoredUserPath = 'C:\Tools'
@@ -157,7 +184,7 @@ Run-Test 'Get-LocalOpenCodeVersion repairs PATH when standalone install exists b
       return '1.2.21'
     }
 
-    $version = Get-LocalOpenCodeVersion
+    $version = Invoke-WithPathRepairAllowed { Get-LocalOpenCodeVersion }
 
     Assert-Equal $version '1.2.21' 'Expected Get-LocalOpenCodeVersion to recover by promoting the standalone OpenCode install into PATH.'
     Assert-StartsWith $script:StoredUserPath 'C:\Users\Tester\.opencode\bin' 'Expected User PATH repair to persist the OpenCode bin directory first.'
@@ -360,4 +387,27 @@ Run-Test 'Try-OpenCodeSelfUpgrade syncs standalone after npm method updates npm 
   Assert-Equal ($script:CallOrder -join ',') 'upgrade:,verify:1.15.13,upgrade:npm,sync,verify:1.15.13' 'Expected npm self-upgrade to sync standalone before the final version check.'
   Assert-Equal $script:CapturedWarnings.Count 0 'Expected no unreliable-exit warning after synced version verification succeeds.'
 }
+
+
+Run-Test 'Try-InstallOpenCodeWithCurl gates remote script execution in auto mode' {
+  $previousAuto = $script:AutoMode
+  $previousAllow = $env:CHECK_AI_CLI_ALLOW_REMOTE_SCRIPT
+  try {
+    $script:AutoMode = $true
+    Remove-Item Env:CHECK_AI_CLI_ALLOW_REMOTE_SCRIPT -ErrorAction SilentlyContinue
+
+    function Get-BashCommandPath() { return 'C:\Program Files\Git\bin\bash.exe' }
+    function Test-BashUsable([string]$BashPath) { return $true }
+    function Write-Warn([string]$Message) { $script:CapturedWarnings += $Message }
+
+    $result = Try-InstallOpenCodeWithCurl '1.15.13'
+
+    Assert-True (-not $result) 'Expected OpenCode curl installer to be skipped in auto mode without explicit remote-script opt-in.'
+    Assert-True ($script:CapturedWarnings -contains '[SECURITY] Auto mode: skipping remote script execution from https://opencode.ai/install. Set CHECK_AI_CLI_ALLOW_REMOTE_SCRIPT=1 to allow.') 'Expected auto mode to warn when OpenCode curl remote script is skipped.'
+  } finally {
+    $script:AutoMode = $previousAuto
+    if ($null -eq $previousAllow) { Remove-Item Env:CHECK_AI_CLI_ALLOW_REMOTE_SCRIPT -ErrorAction SilentlyContinue } else { $env:CHECK_AI_CLI_ALLOW_REMOTE_SCRIPT = $previousAllow }
+  }
+}
+
 Write-Host '[PASS] All OpenCode resolution regression tests passed.' -ForegroundColor Green

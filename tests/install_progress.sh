@@ -99,16 +99,16 @@ test_resolve_base_falls_back_to_latest_main_commit_on_release_lookup_failure() {
   assert_equal "$output" 'https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/0123456789abcdef0123456789abcdef01234567' 'Expected shell installer to fall back to the latest main commit when stable release lookup fails.'
 }
 
-test_resolve_base_falls_back_to_main_when_all_ref_lookups_fail() {
+test_resolve_base_requires_opt_in_for_main_when_all_ref_lookups_fail() {
   local output
   output="$(
     CHECK_AI_CLI_SKIP_MAIN=1 bash --noprofile --norc -c "
       source \"$ROOT_DIR/install.sh\"
       fetch_text() { return 1; }
-      resolve_base 2>/dev/null
+      if resolve_base 2>/dev/null; then printf unexpected; else printf failed; fi
     "
   )"
-  assert_equal "$output" 'https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main' 'Expected shell installer to fall back to main only when release and main commit lookups both fail.'
+  assert_equal "$output" 'failed' 'Expected shell installer to require explicit opt-in before mutable main fallback.'
 }
 
 test_resolve_base_respects_explicit_ref() {
@@ -142,6 +142,7 @@ test_main_exit_trap_under_nounset() {
       set -euo pipefail
       CHECK_AI_CLI_REF=main
       source \"$ROOT_DIR/install.sh\"
+      local_payload_available() { return 1; }
       require_fetch_tool() { return 0; }
       require_sha256_tool() { return 0; }
       mktemp() { printf '%s\n' \"\$PWD/mock-stage\"; }
@@ -161,12 +162,49 @@ test_main_exit_trap_under_nounset() {
   assert_equal "$output" 'ready' 'Expected main to exit cleanly without nounset trap failures.'
 }
 
+
+
+test_installer_log_output_does_not_pollute_resolve_base_stdout() {
+  local stdout
+  stdout="$(
+    CHECK_AI_CLI_SKIP_MAIN=1 CHECK_AI_CLI_ALLOW_MAIN_FALLBACK=1 bash --noprofile --norc -c "
+      source \"$ROOT_DIR/install.sh\"
+      fetch_text() { return 1; }
+      resolve_base
+    " 2>/dev/null
+  )"
+  assert_equal "$stdout" 'https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main' 'Expected resolve_base stdout to contain only the resolved URL.'
+}
+
+
+
+test_shell_installer_prefers_local_payload_without_remote_ref() {
+  local tmp dest status
+  tmp="$(mktemp -d)"
+  dest="$(mktemp -d)"
+  cp -R "$ROOT_DIR"/. "$tmp"/
+  (
+    cd "$tmp"
+    CHECK_AI_CLI_INSTALL_DIR="$dest" CHECK_AI_CLI_SKIP_MAIN=1 bash --noprofile --norc -c '
+      source ./install.sh
+      fetch_text(){ echo remote_resolution_should_not_run >&2; return 1; }
+      add_to_path(){ return 0; }
+      main >/tmp/check-ai-cli-local-install.out 2>/tmp/check-ai-cli-local-install.err
+    '
+  )
+  status=$?
+  rm -rf "$tmp" "$dest"
+  assert_equal "$status" '0' 'Expected shell installer to install from local payload without resolving remote refs.'
+}
+
+run_test 'shell installer prefers local payload without remote ref' test_shell_installer_prefers_local_payload_without_remote_ref
+run_test 'installer log output does not pollute resolve_base stdout' test_installer_log_output_does_not_pollute_resolve_base_stdout
 run_test 'install.sh can load helpers without executing main flow' test_source_without_main
 run_test 'Main shell checker suppresses native fetch progress' test_main_checker_fetch_text_suppresses_native_progress
 run_test 'download_with_retry works under nounset' test_download_with_retry_under_nounset
 run_test 'resolve_base prefers latest stable release' test_resolve_base_prefers_latest_stable_release
 run_test 'resolve_base falls back to latest main commit on release lookup failure' test_resolve_base_falls_back_to_latest_main_commit_on_release_lookup_failure
-run_test 'resolve_base falls back to main when all ref lookups fail' test_resolve_base_falls_back_to_main_when_all_ref_lookups_fail
+run_test 'resolve_base requires opt-in for main when all ref lookups fail' test_resolve_base_requires_opt_in_for_main_when_all_ref_lookups_fail
 run_test 'resolve_base respects explicit ref' test_resolve_base_respects_explicit_ref
 run_test 'resolve_base respects explicit raw base' test_resolve_base_respects_explicit_raw_base
 run_test 'main exits cleanly under nounset' test_main_exit_trap_under_nounset

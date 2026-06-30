@@ -16,15 +16,26 @@ function Write-Success([string]$Message) { Write-Host "[SUCCESS] $Message" -Fore
 function Write-Warn([string]$Message) { Write-Host "[WARNING] $Message" -ForegroundColor Yellow }
 function Write-Fail([string]$Message) { Write-Host "[ERROR] $Message" -ForegroundColor Red }
 
-function Require-Git() {
-  $git = Get-Command git -ErrorAction SilentlyContinue
-  if (-not $git) { throw "git not found." }
+function Test-GitAvailable() {
+  return [bool](Get-Command git -ErrorAction SilentlyContinue)
 }
 
 function Get-RepoRoot() {
-  $root = (git rev-parse --show-toplevel 2>$null)
-  if ([string]::IsNullOrWhiteSpace($root)) { throw "Not a git repository." }
-  return $root.Trim()
+  $packageRoot = Split-Path -Parent $PSScriptRoot
+  if (Test-GitAvailable) {
+    $root = (git rev-parse --show-toplevel 2>$null)
+    if (-not [string]::IsNullOrWhiteSpace($root)) {
+      $gitRoot = $root.Trim()
+      # Release payloads may be unpacked inside a parent git repository. Only use
+      # git-index hashing when this script's package root is the actual repo root.
+      if ([IO.Path]::GetFullPath($gitRoot).TrimEnd('\','/') -eq [IO.Path]::GetFullPath($packageRoot).TrimEnd('\','/')) {
+        $script:UseGitIndexForChecksums = $true
+        return $gitRoot
+      }
+    }
+  }
+  $script:UseGitIndexForChecksums = $false
+  return $packageRoot
 }
 
 function Get-TargetPaths() {
@@ -57,22 +68,32 @@ function Write-BlobToFile([string]$Sha, [string]$OutFile) {
   cmd /c $cmd | Out-Null
 }
 
+function Get-Sha256FromFile([string]$Path) {
+  if (-not (Test-Path -LiteralPath $Path)) { throw "Missing file: $Path" }
+  $getFileHash = Get-Command Get-FileHash -ErrorAction SilentlyContinue
+  if ($getFileHash) {
+    return (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash.ToLowerInvariant()
+  }
+  $out = certutil -hashfile $Path SHA256
+  $hash = ($out | Select-Object -Skip 1 -First 1) -replace '\s',''
+  if ([string]::IsNullOrWhiteSpace($hash)) { throw "Failed to hash: $Path" }
+  return $hash.ToLowerInvariant()
+}
+
 function Get-Sha256FromIndex([string]$Path) {
   $sha = Get-BlobSha $Path
   $tmp = Join-Path ([IO.Path]::GetTempPath()) ("check-ai-cli-" + [Guid]::NewGuid().ToString('N') + ".tmp")
   try {
     Write-BlobToFile $sha $tmp
-    $getFileHash = Get-Command Get-FileHash -ErrorAction SilentlyContinue
-    if ($getFileHash) {
-      return (Get-FileHash -Algorithm SHA256 -LiteralPath $tmp).Hash.ToLowerInvariant()
-    }
-    $out = certutil -hashfile $tmp SHA256
-    $hash = ($out | Select-Object -Skip 1 -First 1) -replace '\s',''
-    if ([string]::IsNullOrWhiteSpace($hash)) { throw "Failed to hash: $Path" }
-    return $hash.ToLowerInvariant()
+    return Get-Sha256FromFile $tmp
   } finally {
     Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
   }
+}
+
+function Get-Sha256ForTarget([string]$Path) {
+  if ($script:UseGitIndexForChecksums) { return Get-Sha256FromIndex $Path }
+  return Get-Sha256FromFile (Join-Path (Get-Location) $Path)
 }
 
 function Render-Manifest([string[]]$Paths) {
@@ -80,7 +101,7 @@ function Render-Manifest([string[]]$Paths) {
   $lines += "# SHA256 checksums for Check-AI-CLI"
   $lines += "# Format: <sha256>  <relative-path>"
   foreach ($p in $Paths) {
-    $hash = Get-Sha256FromIndex $p
+    $hash = Get-Sha256ForTarget $p
     $lines += "$hash  $p"
   }
   return ($lines -join "`n") + "`n"
@@ -97,13 +118,12 @@ function Read-FileText([string]$Path) {
 }
 
 function Main() {
-  Require-Git
   $root = Get-RepoRoot
   Set-Location $root
 
   $paths = Get-TargetPaths
   if (-not $paths -or $paths.Count -eq 0) { throw "No target files found." }
-  Assert-NoUnstagedTargetChanges $paths
+  if ($script:UseGitIndexForChecksums) { Assert-NoUnstagedTargetChanges $paths }
 
   $content = Render-Manifest $paths
   $outFile = Join-Path $root 'checksums.sha256'

@@ -49,9 +49,9 @@ CRITICAL_FILES=(
 ALL_FILES=(
   "checksums.sha256"
 )
-while IFS= read -r file; do
+while IFS= read -r file || [[ -n "$file" ]]; do
   ALL_FILES+=("$file")
-done < <(read_distribution_files)
+done <<< "$(read_distribution_files)"
 
 get_local_hash() {
   local file="$1"

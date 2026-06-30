@@ -7,10 +7,10 @@ set -euo pipefail
 
 INSTALL_DIR="${CHECK_AI_CLI_INSTALL_DIR:-.}"
 
-log_info() { printf "[INFO] %s\n" "$*"; }
-log_ok() { printf "[SUCCESS] %s\n" "$*"; }
-log_warn() { printf "[WARNING] %s\n" "$*"; }
-log_err() { printf "[ERROR] %s\n" "$*"; }
+log_info() { printf "[INFO] %s\n" "$*" >&2; }
+log_ok() { printf "[SUCCESS] %s\n" "$*" >&2; }
+log_warn() { printf "[WARNING] %s\n" "$*" >&2; }
+log_err() { printf "[ERROR] %s\n" "$*" >&2; }
 
 confirm_delete() {
   local dir="$1"

@@ -119,6 +119,76 @@ test_version_at_least_rejects_when_local_missing() {
   printf '[PASS] (implicit)\n'
 }
 
+
+
+test_should_skip_native_when_stable_behind_target() {
+  local rc
+  should_use_claude_native_update '2.1.196' '2.1.185'
+  rc=$?
+  if [ "$rc" -eq 0 ]; then
+    printf '[FAIL] Expected native updater to be skipped when stable is behind target.
+' >&2
+    exit 1
+  fi
+}
+
+test_should_allow_native_when_stable_reaches_target() {
+  local rc
+  should_use_claude_native_update '2.1.185' '2.1.185'
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    printf '[FAIL] Expected native updater to be allowed when stable reaches target.
+' >&2
+    exit 1
+  fi
+}
+
+
+
+test_get_latest_claude_stdout_is_pure_when_sources_conflict() {
+  local stdout stderr
+  stdout="$(
+    get_claude_repo_latest_version() { printf '2.1.200'; }
+    get_claude_bootstrap_stable_version() { printf '2.1.185'; }
+    get_npm_latest_version() { printf '2.1.196'; }
+    get_latest_claude
+  )"
+  assert_equal "$stdout" '2.1.196' 'Expected get_latest_claude stdout to contain only the selected version.'
+}
+
+test_check_tool_updates_when_latest_sources_conflict() {
+  local output
+  output="$(
+    get_claude_repo_latest_version() { printf '2.1.200'; }
+    get_claude_bootstrap_stable_version() { printf '2.1.185'; }
+    get_npm_latest_version() { printf '2.1.196'; }
+    get_local_claude() { printf '2.1.195'; }
+    confirm_yes() { return 0; }
+    update_claude() { printf 'UPDATE_CALLED\n'; }
+    check_tool 'Claude Code' get_latest_claude get_local_claude update_claude
+  )"
+  if ! printf '%s' "$output" | grep -q 'UPDATE_CALLED'; then
+    printf '[FAIL] Expected update to run when local version is below conflict-selected target.\nOutput: %s\n' "$output" >&2
+    exit 1
+  fi
+}
+
+test_get_best_npm_mirror_stdout_is_pure_url() {
+  local stdout
+  stdout="$(
+    NETWORK_REGION='china'
+    test_url_timing() { return 0; }
+    detect_network_environment() { NETWORK_REGION='china'; }
+    get_best_npm_mirror
+  )"
+  assert_equal "$stdout" "$NPM_MIRROR_TAOBAO" 'Expected get_best_npm_mirror stdout to contain only the registry URL.'
+}
+
+run_test 'get_latest_claude stdout is pure when sources conflict' test_get_latest_claude_stdout_is_pure_when_sources_conflict
+run_test 'check_tool updates when latest sources conflict' test_check_tool_updates_when_latest_sources_conflict
+run_test 'get_best_npm_mirror stdout is pure URL' test_get_best_npm_mirror_stdout_is_pure_url
+run_test 'should skip native update when stable is behind target' test_should_skip_native_when_stable_behind_target
+run_test 'should allow native update when stable reaches target' test_should_allow_native_when_stable_reaches_target
 run_test 'try_claude_native_update skips when claude is absent' test_native_update_skipped_when_claude_absent
 run_test 'try_claude_native_update invokes claude update when present' test_native_update_invokes_claude_update_when_present
 run_test 'native update timeout honors CHECK_AI_CLI_CLAUDE_UPDATE_TIMEOUT_SECONDS' test_native_update_honors_timeout_env

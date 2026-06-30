@@ -18,10 +18,10 @@ COLOR_WARN='\033[33m'
 COLOR_ERR='\033[31m'
 COLOR_RESET='\033[0m'
 
-log_info() { echo -e "${COLOR_INFO}[INFO] $*${COLOR_RESET}"; }
-log_ok() { echo -e "${COLOR_OK}[SUCCESS] $*${COLOR_RESET}"; }
-log_warn() { echo -e "${COLOR_WARN}[WARNING] $*${COLOR_RESET}"; }
-log_err() { echo -e "${COLOR_ERR}[ERROR] $*${COLOR_RESET}"; }
+log_info() { echo -e "${COLOR_INFO}[INFO] $*${COLOR_RESET}" >&2; }
+log_ok() { echo -e "${COLOR_OK}[SUCCESS] $*${COLOR_RESET}" >&2; }
+log_warn() { echo -e "${COLOR_WARN}[WARNING] $*${COLOR_RESET}" >&2; }
+log_err() { echo -e "${COLOR_ERR}[ERROR] $*${COLOR_RESET}" >&2; }
 
 # Check if command exists
 command_exists() { command -v "$1" >/dev/null 2>&1; }
@@ -332,6 +332,15 @@ get_profile_file() {
   esac
 }
 
+validate_path_entry() {
+  local dir="${1:-}"
+  [ -n "$dir" ] || return 1
+  case "$dir" in
+    *$'\n'*|*$'\r'*|*\"*|*"'"*|*'`'*|*'$'*) return 1 ;;
+  esac
+  return 0
+}
+
 get_path_marker() {
   printf 'check-ai-cli:path:%s\n' "$(printf '%s' "$1" | tr '/\\: .' '_')"
 }
@@ -357,10 +366,11 @@ ensure_profile_path_prefers() {
   local normalized
   normalized="$(normalize_dir "$1" 2>/dev/null || true)"
   [ -n "$normalized" ] || return 1
+  validate_path_entry "$normalized" || { log_warn "Refusing to persist an unsafe PATH entry."; return 1; }
   persist_path_preference "$normalized"
   PATH="$(prepend_path_entry "$PATH" "$normalized")"
   export PATH
-  log_info "Moved $normalized to the front of your PATH permanently"
+  log_info "Moved a tool directory to the front of your PATH permanently"
 }
 
 emit_dir_if_exists() {
@@ -380,18 +390,24 @@ get_tool_candidate_dirs() {
 }
 
 repair_tool_path() {
-  local tool_id="$1" dirs=() dir idx
-  while IFS= read -r dir; do dirs+=("$dir"); done < <(get_tool_candidate_dirs "$tool_id")
+  local tool_id="$1" dirs=() dir idx tmp
+  tmp="$(mktemp 2>/dev/null || mktemp -t check-ai-cli-path)" || return 1
+  get_tool_candidate_dirs "$tool_id" > "$tmp" || { rm -f "$tmp"; return 1; }
+  while IFS= read -r dir || [ -n "$dir" ]; do
+    [ -n "$dir" ] || continue
+    dirs+=("$dir")
+  done < "$tmp"
+  rm -f "$tmp"
   [ "${#dirs[@]}" -gt 0 ] || return 1
   for ((idx=${#dirs[@]}-1; idx>=0; idx--)); do ensure_profile_path_prefers "${dirs[$idx]}"; done
   return 0
 }
 
-get_local_factory() { repair_tool_path factory >/dev/null 2>&1 || true; get_local_version droid || get_local_version factory || true; }
-get_local_claude() { repair_tool_path claude >/dev/null 2>&1 || true; get_local_version claude || get_local_version claude-code || true; }
-get_local_codex() { repair_tool_path codex >/dev/null 2>&1 || true; get_local_version codex || true; }
-get_local_gemini() { repair_tool_path gemini >/dev/null 2>&1 || true; get_local_version gemini || true; }
-get_local_opencode() { repair_tool_path opencode >/dev/null 2>&1 || true; get_local_version opencode || true; }
+get_local_factory() { get_local_version droid || get_local_version factory || true; }
+get_local_claude() { get_local_version claude || get_local_version claude-code || true; }
+get_local_codex() { get_local_version codex || true; }
+get_local_gemini() { get_local_version gemini || true; }
+get_local_opencode() { get_local_version opencode || true; }
 
 get_latest_factory() {
   local text
@@ -433,18 +449,21 @@ resolve_version_conflict() {
 }
 
 get_latest_claude() {
-  local repo stable npm
+  local repo stable npm installable
   repo="$(get_claude_repo_latest_version)"
   stable="$(get_claude_bootstrap_stable_version)"
-  if [ -z "$repo" ] && [ -z "$stable" ]; then
-    npm="$(get_npm_latest_version '@anthropic-ai/claude-code')"
-    printf '%s\n' "$npm"
-    return
-  fi
-  # Prefer bootstrap stable: the native updater installs from the stable channel,
-  # which may lag behind GitHub releases due to staged rollout.
-  [ -n "$stable" ] && printf '%s\n' "$stable" && return
+  npm="$(get_npm_latest_version '@anthropic-ai/claude-code')"
+  installable="$(resolve_version_conflict 'Claude Code' 'stable' "$stable" 'npm' "$npm")"
+  [ -n "$installable" ] && printf '%s\n' "$installable" && return
   printf '%s\n' "$repo"
+}
+
+should_use_claude_native_update() {
+  local target="$1" stable="$2" cmp
+  [ -n "$stable" ] || return 1
+  [ -n "$target" ] || return 0
+  cmp="$(compare_semver "$stable" "$target" || true)"
+  [ "$cmp" = "0" ] || [ "$cmp" = "1" ]
 }
 
 get_latest_codex() {
@@ -491,10 +510,16 @@ confirm_yes() {
   esac
 }
 
+allow_remote_script_execution() { [ "${CHECK_AI_CLI_ALLOW_REMOTE_SCRIPT:-0}" = "1" ]; }
+
 # Security warning for remote script execution
 confirm_remote_script_execution() {
   local url="$1" tool_name="$2"
   if [ "$AUTO_MODE" = "1" ]; then
+    if ! allow_remote_script_execution; then
+      log_warn "[SECURITY] Auto mode: skipping remote script execution from $url. Set CHECK_AI_CLI_ALLOW_REMOTE_SCRIPT=1 to allow."
+      return 1
+    fi
     log_warn "[SECURITY] Auto mode: executing remote script from $url"
     return 0
   fi
@@ -618,10 +643,13 @@ install_factory_binary_windows() {
   fi
 
   local install_dir factory_bin_dir install_path rg_install_path
-  install_dir="$USERPROFILE/bin"
-  [ -n "$USERPROFILE" ] || install_dir="$HOME/bin"
-  factory_bin_dir="$USERPROFILE/.factory/bin"
-  [ -n "$USERPROFILE" ] || factory_bin_dir="$HOME/.factory/bin"
+  if [ -n "${USERPROFILE:-}" ]; then
+    install_dir="$USERPROFILE/bin"
+    factory_bin_dir="$USERPROFILE/.factory/bin"
+  else
+    install_dir="$HOME/bin"
+    factory_bin_dir="$HOME/.factory/bin"
+  fi
   install_path="$install_dir/$binary_name"
   rg_install_path="$factory_bin_dir/$rg_binary_name"
 
@@ -708,11 +736,12 @@ test_claude_version_at_least() {
 
 update_claude() {
   log_info "Updating Claude Code..."
-  local target
+  local target stable
   target="$(get_latest_claude || true)"
+  stable="$(get_claude_bootstrap_stable_version || true)"
 
-  # 1. Native updater (fast, self-contained). Mirrors PowerShell priority.
-  if try_claude_native_update; then
+  # 1. Native updater only when the stable channel can reach the selected target.
+  if should_use_claude_native_update "$target" "$stable" && try_claude_native_update; then
     repair_tool_path claude >/dev/null 2>&1 || true
     if test_claude_version_at_least "$target"; then return 0; fi
     if [ -n "$target" ]; then
@@ -720,6 +749,8 @@ update_claude() {
     else
       log_warn "native Claude update completed but local Claude version could not be verified."
     fi
+  elif ! should_use_claude_native_update "$target" "$stable"; then
+    log_info "Skipping native Claude update: stable channel v$stable is older than target v$target."
   fi
 
   # 2. Official install.sh (heavier, downloads the full installer).
@@ -858,11 +889,14 @@ print_versions() {
   [ -n "$localv" ] && log_ok "Local version: v$localv" || log_warn "Local version: not installed"
 }
 
+DID_UPDATE=0
+
 handle_update_flow() {
   local latest="$1" localv="$2" update_fn="$3"
+  DID_UPDATE=0
   if [ -z "$localv" ]; then
     [ -n "$latest" ] || log_warn "Latest version unknown. Installing anyway."
-    confirm_yes "Install now? (Y/N): " && "$update_fn"
+    if confirm_yes "Install now? (Y/N): "; then "$update_fn" && DID_UPDATE=1; fi
     return 0
   fi
   [ -n "$latest" ] || { log_warn "Latest version unknown. Skipping update check."; return 0; }
@@ -870,7 +904,17 @@ handle_update_flow() {
   cmp="$(compare_semver "$localv" "$latest" || true)"
   [ "$cmp" = "0" ] && log_ok "Already up to date." && return 0
   [ "$cmp" = "1" ] && log_warn "Local version is newer than latest source." && return 0
-  [ "$cmp" = "-1" ] && confirm_yes "Update now? (Y/N): " && "$update_fn"
+  if [ "$cmp" = "-1" ] && confirm_yes "Update now? (Y/N): "; then "$update_fn" && DID_UPDATE=1; fi
+}
+
+report_post_update() {
+  local latest="$1" local_fn="$2" new_local cmp
+  log_info "Re-checking local version..."
+  new_local="$($local_fn || true)"
+  [ -n "$new_local" ] && log_ok "Local version: v$new_local" || { log_warn "Update may not have installed correctly."; return 0; }
+  [ -n "$latest" ] || return 0
+  cmp="$(compare_semver "$new_local" "$latest" || true)"
+  [ "$cmp" = "-1" ] && log_warn "Update may have failed (still older than latest)."
 }
 
 check_tool() {
@@ -882,6 +926,7 @@ check_tool() {
   localv="$("$local_fn" || true)"
   print_versions "$latest" "$localv"
   handle_update_flow "$latest" "$localv" "$update_fn"
+  [ "$DID_UPDATE" = "1" ] && report_post_update "$latest" "$local_fn"
 }
 
 show_banner() {
@@ -901,8 +946,9 @@ ask_selection() {
   echo "  [4] Gemini CLI"
   echo "  [5] OpenCode"
   echo "  [A] Check all (default)"
+  echo "  [U] Check all and Update all (auto-yes)"
   echo "  [Q] Quit"
-  read -r -p "Enter choice (1/2/3/4/5/A/Q): " choice || true
+  read -r -p "Enter choice (1/2/3/4/5/A/U/Q): " choice || true
   echo "${choice:-A}" | tr '[:lower:]' '[:upper:]'
 }
 
@@ -913,11 +959,14 @@ main() {
   select_best_npm_mirror
   sel="$(ask_selection)"
   if [ "$sel" = "Q" ]; then exit 0; fi
-  if [ "$sel" = "1" ] || [ "$sel" = "A" ]; then check_tool "Factory CLI (Droid)" get_latest_factory get_local_factory update_factory; fi
-  if [ "$sel" = "2" ] || [ "$sel" = "A" ]; then check_tool "Claude Code" get_latest_claude get_local_claude update_claude; fi
-  if [ "$sel" = "3" ] || [ "$sel" = "A" ]; then check_tool "OpenAI Codex" get_latest_codex get_local_codex update_codex; fi
-  if [ "$sel" = "4" ] || [ "$sel" = "A" ]; then check_tool "Gemini CLI" get_latest_gemini get_local_gemini update_gemini; fi
-  if [ "$sel" = "5" ] || [ "$sel" = "A" ]; then check_tool "OpenCode" get_latest_opencode get_local_opencode update_opencode; fi
+  if [ "$sel" = "U" ]; then AUTO_MODE=1; fi
+  local check_all=0
+  [ "$sel" = "A" ] || [ "$sel" = "U" ] && check_all=1
+  if [ "$sel" = "1" ] || [ "$check_all" = "1" ]; then check_tool "Factory CLI (Droid)" get_latest_factory get_local_factory update_factory; fi
+  if [ "$sel" = "2" ] || [ "$check_all" = "1" ]; then check_tool "Claude Code" get_latest_claude get_local_claude update_claude; fi
+  if [ "$sel" = "3" ] || [ "$check_all" = "1" ]; then check_tool "OpenAI Codex" get_latest_codex get_local_codex update_codex; fi
+  if [ "$sel" = "4" ] || [ "$check_all" = "1" ]; then check_tool "Gemini CLI" get_latest_gemini get_local_gemini update_gemini; fi
+  if [ "$sel" = "5" ] || [ "$check_all" = "1" ]; then check_tool "OpenCode" get_latest_opencode get_local_opencode update_opencode; fi
 }
 
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then

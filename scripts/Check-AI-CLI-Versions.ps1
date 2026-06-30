@@ -17,6 +17,23 @@ function Get-AutoMode() {
 
 $script:AutoMode = Get-AutoMode
 
+# Check mode is read-only by default; updates temporarily allow PATH repair.
+$script:AllowPathRepair = $false
+
+function Test-PathRepairAllowed() { return $script:AllowPathRepair -eq $true }
+
+function Invoke-WithPathRepairAllowed([scriptblock]$Action) {
+  $prev = $script:AllowPathRepair
+  $script:AllowPathRepair = $true
+  try { & $Action } finally { $script:AllowPathRepair = $prev }
+}
+
+function Get-AllowRemoteScriptFlag() {
+  $v = $env:CHECK_AI_CLI_ALLOW_REMOTE_SCRIPT
+  if ([string]::IsNullOrWhiteSpace($v)) { return $false }
+  return $v.Trim() -eq '1'
+}
+
 # Consistent output formatting
 function Write-Info([string]$Message) { Write-Host "[INFO] $Message" -ForegroundColor Cyan }
 function Write-Success([string]$Message) { Write-Host "[SUCCESS] $Message" -ForegroundColor Green }
@@ -1112,25 +1129,25 @@ function Get-BestClaudeVersionCandidate() {
 function Get-LocalClaudeVersion() {
   $candidate = Get-BestClaudeVersionCandidate
   if ($candidate) {
-    Ensure-UserPathPrefers $candidate.Dir
+    if (Test-PathRepairAllowed) { Ensure-UserPathPrefers $candidate.Dir }
     return $candidate.Version
   }
-  [void](Repair-ToolUserPath 'claude')
+  if (Test-PathRepairAllowed) { [void](Repair-ToolUserPath 'claude') }
   return Get-LocalCommandVersion @('claude','claude-code')
 }
 
 function Get-LocalCodexVersion() {
-  [void](Repair-ToolUserPath 'codex')
+  if (Test-PathRepairAllowed) { [void](Repair-ToolUserPath 'codex') }
   return Get-LocalCommandVersion @('codex')
 }
 
 function Get-LocalGeminiVersion() {
-  [void](Repair-ToolUserPath 'gemini')
+  if (Test-PathRepairAllowed) { [void](Repair-ToolUserPath 'gemini') }
   return Get-LocalCommandVersion @('gemini')
 }
 
 function Get-LocalFactoryVersion() {
-  [void](Repair-ToolUserPath 'factory')
+  if (Test-PathRepairAllowed) { [void](Repair-ToolUserPath 'factory') }
   $droid = Get-CommandVersionInfo 'droid'
   $factory = Get-CommandVersionInfo 'factory'
 
@@ -1192,15 +1209,32 @@ function Resolve-VersionConflict([string]$ToolName, [string]$PrimaryLabel, [stri
   return $selected
 }
 
-function Get-LatestClaudeVersion() {
+function Get-ClaudeLatestInfo() {
   $repo = Get-ClaudeRepoLatestVersion
   $stable = Get-ClaudeBootstrapStableVersion
   $npm = Get-NpmLatestVersion '@anthropic-ai/claude-code'
-  # Native stable and npm are installable sources. GitHub releases may be ahead
-  # due to staged rollout, so only use repo metadata if installable sources fail.
-  $installable = Resolve-VersionConflict 'Claude Code' 'stable' $stable 'npm' $npm
-  if ($installable) { return $installable }
-  return $repo
+  $target = Resolve-VersionConflict 'Claude Code' 'stable' $stable 'npm' $npm
+  $source = $null
+  if ($target) {
+    if ($npm -and $target -eq $npm) { $source = 'npm' }
+    elseif ($stable -and $target -eq $stable) { $source = 'stable' }
+    else { $source = 'installable' }
+  } elseif ($repo) {
+    $target = $repo
+    $source = 'repo'
+  }
+  return @{ Target = $target; Source = $source; Stable = $stable; Npm = $npm; Repo = $repo }
+}
+
+function Get-LatestClaudeVersion() {
+  return (Get-ClaudeLatestInfo).Target
+}
+
+function Test-ClaudeNativeUpdateAllowed([string]$TargetVersion, [string]$StableVersion) {
+  if ([string]::IsNullOrWhiteSpace($StableVersion)) { return $false }
+  if ([string]::IsNullOrWhiteSpace($TargetVersion)) { return $true }
+  $cmp = Compare-Version $StableVersion $TargetVersion
+  return ($cmp -eq 0 -or $cmp -eq 1)
 }
 
 function Get-LatestCodexVersion() {
@@ -1275,6 +1309,10 @@ function Confirm-Yes([string]$Prompt) {
 # Security warning for remote script execution
 function Confirm-RemoteScriptExecution([string]$Url, [string]$ToolName, [string]$ActionDescription = 'download and execute a script from the internet', [string]$WarningTitle = 'Remote Script Execution') {
   if ($script:AutoMode) {
+    if ($WarningTitle -eq 'Remote Script Execution' -and -not (Get-AllowRemoteScriptFlag)) {
+      Write-Warn "[SECURITY] Auto mode: skipping remote script execution from $Url. Set CHECK_AI_CLI_ALLOW_REMOTE_SCRIPT=1 to allow."
+      return $false
+    }
     Write-Warn "[SECURITY] Auto mode: $ActionDescription from $Url"
     return $true
   }
@@ -1364,6 +1402,9 @@ function Update-ClaudeViaInstallScript() {
   }
 
   $url = 'https://claude.ai/install.ps1'
+  if (-not (Confirm-RemoteScriptExecution $url 'Claude Code')) {
+    throw 'Remote script execution declined'
+  }
   $scriptText = Get-Text $url
   if ([string]::IsNullOrWhiteSpace($scriptText)) {
     throw 'Failed to download install.ps1'
@@ -1381,54 +1422,109 @@ function Update-ClaudeViaNpm() {
 
 # Install/update Claude Code (native updater preferred, official install and npm fallbacks)
 function Update-Claude() {
+
   Write-Info "Updating Claude Code..."
 
   [void](Repair-ToolUserPath 'claude')
-  $target = Get-LatestClaudeVersion
+
+  $latestInfo = Get-ClaudeLatestInfo
+
+  $target = $latestInfo.Target
+
+  $stable = $latestInfo.Stable
+
   $nativeDetail = $null
+
   $installScriptDetail = $null
 
-  try {
-    Invoke-ClaudeNativeUpdate
-    if (Test-ClaudeVersionAtLeast $target) { return }
-    if ($target) {
-      Write-Warn "native Claude update completed but local version is still older than target v$target."
-    } else {
-      Write-Warn "native Claude update completed but local Claude version could not be verified."
+  if (Test-ClaudeNativeUpdateAllowed $target $stable) {
+
+    try {
+
+      Invoke-ClaudeNativeUpdate
+
+      if (Test-ClaudeVersionAtLeast $target) { return }
+
+      if ($target) {
+
+        Write-Warn "native Claude update completed but local version is still older than target v$target."
+
+      } else {
+
+        Write-Warn "native Claude update completed but local Claude version could not be verified."
+
+      }
+
+    } catch {
+
+      $nativeDetail = $_.Exception.Message
+
+      if ([string]::IsNullOrWhiteSpace($nativeDetail)) { $nativeDetail = 'native updater failed' }
+
+      Write-Warn "native Claude update failed: $nativeDetail"
+
     }
-  } catch {
-    $nativeDetail = $_.Exception.Message
-    if ([string]::IsNullOrWhiteSpace($nativeDetail)) { $nativeDetail = 'native updater failed' }
-    Write-Warn "native Claude update failed: $nativeDetail"
+
+  } else {
+
+    $nativeDetail = "skipped because stable channel v$stable is older than target v$target"
+
+    Write-Info "Skipping native Claude update: stable channel v$stable is older than target v$target."
+
   }
 
   try {
+
     Update-ClaudeViaInstallScript
+
     if (Test-ClaudeVersionAtLeast $target) { return }
+
     if ($target) {
+
       $installScriptDetail = "official install.ps1 completed but local version is still older than target v$target"
+
       Write-Warn "official Claude install script completed but local version is still older than target v$target."
+
     } else {
+
       $installScriptDetail = 'official install.ps1 completed but local Claude version could not be verified'
+
       Write-Warn "official Claude install script completed but local Claude version could not be verified."
+
     }
+
   } catch {
+
     $installScriptDetail = $_.Exception.Message
+
     if ([string]::IsNullOrWhiteSpace($installScriptDetail)) { $installScriptDetail = 'official install.ps1 failed' }
+
     Write-Warn "official Claude install script failed: $installScriptDetail"
+
   }
 
   try {
+
     Update-ClaudeViaNpm
+
   } catch {
+
     $npmDetail = $_.Exception.Message
+
     if ([string]::IsNullOrWhiteSpace($npmDetail)) { $npmDetail = 'npm fallback failed' }
+
     $details = @()
+
     if ($nativeDetail) { $details += "native updater: $nativeDetail" }
+
     if ($installScriptDetail) { $details += "official install.ps1: $installScriptDetail" }
+
     $details += "npm fallback: $npmDetail"
+
     throw "Claude Code update failed: $($details -join '; '). Try 'claude update', reinstall via irm https://claude.ai/install.ps1 | iex, or run npm install -g @anthropic-ai/claude-code@latest"
+
   }
+
 }
 
 # Install/update OpenAI Codex (Windows defaults to npm)
@@ -1469,6 +1565,7 @@ function Get-OpenCodeUserBinDir() {
 }
 
 function Repair-OpenCodeUserPath() {
+  if (-not (Test-PathRepairAllowed)) { return $false }
   return (Repair-ToolUserPath 'opencode')
 }
 
@@ -1492,8 +1589,9 @@ function Should-PreferOpenCodeUserInfo([hashtable]$Resolved, [hashtable]$User) {
 }
 
 function Get-PreferredOpenCodeInfo() {
-  [void](Repair-OpenCodeUserPath)
+  $repairAllowed = Repair-OpenCodeUserPath
   $resolved = Get-OpenCodeResolvedInfo
+  if (-not $repairAllowed) { return $resolved }
   $user = Get-OpenCodeUserInfo
   if (Should-PreferOpenCodeUserInfo $resolved $user) { return $user }
   return $resolved
@@ -1711,6 +1809,10 @@ function Try-InstallOpenCodeWithCurl([string]$TargetVersion) {
     return $false
   }
   $v = Get-SemVer $TargetVersion
+  if (-not (Confirm-RemoteScriptExecution 'https://opencode.ai/install' 'OpenCode')) {
+    Write-Warn 'Remote script execution declined, trying other methods...'
+    return $false
+  }
   $cmd = 'curl -fsSL https://opencode.ai/install | bash'
   if ($v) { $cmd = "curl -fsSL https://opencode.ai/install | bash -s -- --version $v" }
   try {
@@ -1870,7 +1972,7 @@ function Get-AndPrintLocal([scriptblock]$GetLocal) {
 }
 
 function Try-Update([scriptblock]$DoUpdate) {
-  try { & $DoUpdate } catch { Write-Fail $_.Exception.Message }
+  try { Invoke-WithPathRepairAllowed $DoUpdate } catch { Write-Fail $_.Exception.Message }
 }
 
 function Handle-UpdateFlow([string]$Latest, [string]$Local, [scriptblock]$DoUpdate) {
@@ -1923,7 +2025,7 @@ function Check-OneTool([string]$Title, [scriptblock]$GetLatest, [scriptblock]$Ge
   $latest = Get-AndPrintLatest $GetLatest
   $local = Get-AndPrintLocal $GetLocal
   $didUpdate = Handle-UpdateFlow $latest $local $DoUpdate
-  if ($didUpdate) { Report-PostUpdate $Title $latest $GetLocal }
+  if ($didUpdate) { Invoke-WithPathRepairAllowed { Report-PostUpdate $Title $latest $GetLocal } }
 }
 
 function Show-Banner() {

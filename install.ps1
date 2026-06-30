@@ -5,7 +5,7 @@ $ErrorActionPreference = 'Stop'
 
 # This script supports "irm ... | iex" one-liner install/update for this repo's files
 # Env vars:
-# - CHECK_AI_CLI_REF: pin tag/commit/main; default latest stable release, else latest main commit, fallback main
+# - CHECK_AI_CLI_REF: pin tag/commit/main; default latest stable release, else latest main commit; local ZIP installs use bundled files
 # - CHECK_AI_CLI_RAW_BASE: raw base URL (mirror)
 # - CHECK_AI_CLI_INSTALL_DIR: install directory (default Program Files)
 # - CHECK_AI_CLI_PATH_SCOPE: CurrentUser or Machine (default Machine)
@@ -23,6 +23,12 @@ function Get-AllowUntrustedMirrorFlag() {
 }
 
 function Get-DefaultRef() { return 'main' }
+
+function Get-AllowMainFallbackFlag() {
+  $v = $env:CHECK_AI_CLI_ALLOW_MAIN_FALLBACK
+  if ([string]::IsNullOrWhiteSpace($v)) { return $false }
+  return $v.Trim() -eq '1'
+}
 
 function Test-HasExplicitRef() {
   return -not [string]::IsNullOrWhiteSpace($env:CHECK_AI_CLI_REF)
@@ -78,8 +84,11 @@ function Get-ResolvedRef() {
   $mainCommit = Get-LatestMainCommitRef
   if (-not [string]::IsNullOrWhiteSpace($mainCommit)) { return $mainCommit }
   $fallback = Get-DefaultRef
-  Write-Warn "Latest stable release ref unavailable. Falling back to $fallback."
-  return $fallback
+  if (Get-AllowMainFallbackFlag) {
+    Write-Warn "Latest stable release ref unavailable. Falling back to $fallback because CHECK_AI_CLI_ALLOW_MAIN_FALLBACK=1."
+    return $fallback
+  }
+  throw "Unable to resolve a stable release or immutable main commit. Set CHECK_AI_CLI_ALLOW_MAIN_FALLBACK=1 to allow mutable main fallback."
 }
 
 function Test-IsTrustedBase([string]$Base) {
@@ -458,6 +467,60 @@ function Get-InstallProgressPercent([int]$Index, [int]$Total) {
   return [int](($Index - 1) * 100 / [Math]::Max(1, $Total))
 }
 
+function Get-LocalPackageRoot() {
+  if ([string]::IsNullOrWhiteSpace($PSScriptRoot)) { return $null }
+  return $PSScriptRoot
+}
+
+function Test-LocalPayloadAvailable([string]$Root) {
+  if ([string]::IsNullOrWhiteSpace($Root)) { return $false }
+  if (-not (Test-Path -LiteralPath (Join-Path $Root (Get-ManifestRemotePath)))) { return $false }
+  if (-not (Test-Path -LiteralPath (Join-Path $Root (Get-DistributionListRemotePath)))) { return $false }
+  return $true
+}
+
+function Test-ShouldUseLocalPayload() {
+  return (Test-LocalPayloadAvailable (Get-LocalPackageRoot))
+}
+
+function Get-LocalSourcePath([string]$Root, [string]$RemotePath) {
+  return (Join-Path $Root ($RemotePath -replace '/', '\'))
+}
+
+function Verify-LocalPayload([string]$Root, [hashtable]$Manifest, [object[]]$Entries) {
+  $listRemote = Get-DistributionListRemotePath
+  Verify-FileHash $Manifest $listRemote (Get-LocalSourcePath $Root $listRemote)
+  foreach ($e in $Entries) {
+    $src = Get-LocalSourcePath $Root $e.Remote
+    if (-not (Test-Path -LiteralPath $src)) { throw "Missing local payload file: $($e.Remote)" }
+    Verify-FileHash $Manifest $e.Remote $src
+  }
+}
+
+function Install-AllFromLocal([string]$Dir, [string]$Scope, [bool]$Run) {
+  $root = Get-LocalPackageRoot
+  if (-not (Test-LocalPayloadAvailable $root)) { throw 'Local install payload is incomplete.' }
+  Write-Info "Installing from local package: $root"
+  $manifestText = Get-Content -Raw -LiteralPath (Join-Path $root (Get-ManifestRemotePath))
+  if ([string]::IsNullOrWhiteSpace($manifestText)) { throw "Local checksums.sha256 is empty" }
+  $manifest = Read-Manifest $manifestText
+  $distributionText = Get-Content -Raw -LiteralPath (Join-Path $root (Get-DistributionListRemotePath))
+  $files = Get-InstallEntries (Read-DistributionFileList $distributionText)
+  Verify-LocalPayload $root $manifest $files
+  foreach ($f in $files) {
+    $src = Get-LocalSourcePath $root $f.Remote
+    $dst = Join-Path $Dir $f.Local
+    Deploy-OneFile $src $dst
+  }
+  $binDir = Join-Path $Dir 'bin'
+  Add-ToPath $binDir $Scope
+  Write-Success "Installed to: $Dir"
+  Print-NextSteps $Dir
+  Warn-ShadowedCurrentUserInstall $Dir $Scope
+  Print-ChinaTip
+  if ($Run) { & (Join-Path $Dir 'bin\check-ai-cli.ps1') }
+}
+
 function Install-All([string]$Dir, [string]$Scope, [bool]$Run) {
   $base = Get-BaseUrl
   $stage = New-StagingDir
@@ -509,7 +572,9 @@ function Get-SkipMain() {
 
 function Print-AdminHint() {
   Write-Host ""
-  Write-Host "Run PowerShell as Administrator, then rerun:"
+  Write-Host "If installing from the downloaded ZIP, rerun the local .\install.ps1 after setting CurrentUser install variables below."
+  Write-Host ""
+  Write-Host "For remote install as Administrator, rerun:"
   Write-Host "  irm https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main/install.ps1 | iex"
   Write-Host ""
   Write-Host "Or install to CurrentUser without admin:"
@@ -528,9 +593,13 @@ function Invoke-InstallerMain() {
     if (Test-IsUnderProgramFiles $installDir) { Require-Admin "writing to Program Files: $installDir" }
     if ($pathScope -eq 'Machine') { Require-Admin "updating Machine PATH" }
 
-    Require-WebRequest
     Ensure-Directory $installDir
-    Install-All $installDir $pathScope $runAfter
+    if (Test-ShouldUseLocalPayload) {
+      Install-AllFromLocal $installDir $pathScope $runAfter
+    } else {
+      Require-WebRequest
+      Install-All $installDir $pathScope $runAfter
+    }
   } catch {
     Write-Progress -Activity 'Installing Check-AI-CLI' -Completed
     Write-Fail $_.Exception.Message
