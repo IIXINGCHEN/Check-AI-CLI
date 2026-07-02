@@ -1,0 +1,363 @@
+$ErrorActionPreference = 'Stop'
+
+$repoRoot = Split-Path -Parent $PSScriptRoot
+. (Join-Path $repoRoot 'scripts\Check-AI-CLI-Versions.ps1')
+
+function Assert-Equal($Actual, $Expected, [string]$Message) {
+  if ($Actual -ne $Expected) {
+    throw "$Message`nExpected: $Expected`nActual: $Actual"
+  }
+}
+
+function Assert-True([bool]$Condition, [string]$Message) {
+  if (-not $Condition) { throw $Message }
+}
+
+function Assert-StartsWith([string]$Actual, [string]$ExpectedPrefix, [string]$Message) {
+  if (($null -eq $Actual) -or (-not $Actual.StartsWith($ExpectedPrefix, [System.StringComparison]::OrdinalIgnoreCase))) {
+    throw "$Message`nExpected prefix: $ExpectedPrefix`nActual: $Actual"
+  }
+}
+
+function Assert-NotContains([string]$Actual, [string]$UnexpectedSubstring, [string]$Message) {
+  if (($null -ne $Actual) -and $Actual.Contains($UnexpectedSubstring)) {
+    throw "$Message`nUnexpected substring: $UnexpectedSubstring`nActual: $Actual"
+  }
+}
+
+function Reset-TestState {
+  $script:CapturedWarnings = @()
+}
+
+function Run-Test([string]$Name, [scriptblock]$Body) {
+  try {
+    Reset-TestState
+    & $Body
+    Write-Host "[PASS] $Name" -ForegroundColor Green
+  } catch {
+    Write-Host "[FAIL] $Name" -ForegroundColor Red
+    throw
+  }
+}
+
+function Write-Warn([string]$Message) {
+  $script:CapturedWarnings += $Message
+}
+
+Run-Test 'OpenCode resolution warnings do not log absolute paths' {
+  Write-OpenCodeStandaloneOnly 'C:\Users\Tester\.opencode\bin\opencode.exe' '1.2.21'
+  Write-OpenCodeResolvedMismatch @{ Source = 'C:\Users\Tester\AppData\Roaming\npm\opencode.ps1'; Version = '1.2.17' } 'C:\Users\Tester\.opencode\bin\opencode.exe' '1.2.21'
+
+  foreach ($warning in $script:CapturedWarnings) {
+    Assert-NotContains $warning 'C:\Users\Tester' 'Expected OpenCode resolution warning to avoid absolute local paths.'
+  }
+}
+
+Run-Test 'Get-LocalOpenCodeVersion repairs old shim resolution to prefer standalone install' {
+  $originalPath = $env:PATH
+  try {
+    $script:StoredUserPath = 'C:\Tools;C:\Legacy'
+    $env:PATH = 'C:\Windows\System32;C:\Users\Tester\AppData\Roaming\npm;C:\Legacy'
+    $script:ResolvedOpenCode = @{ Name = 'opencode'; Version = '1.2.17'; Source = 'C:\Users\Tester\AppData\Roaming\npm\opencode.ps1' }
+
+    function Get-UserPathValue() {
+      return $script:StoredUserPath
+    }
+
+    function Set-UserPathValue([string]$PathValue) {
+      $script:StoredUserPath = $PathValue
+      $script:ResolvedOpenCode = @{ Name = 'opencode'; Version = '1.2.21'; Source = 'C:\Users\Tester\.opencode\bin\opencode.exe' }
+    }
+
+    function Get-OpenCodeUserInstallPath() {
+      return 'C:\Users\Tester\.opencode\bin\opencode.exe'
+    }
+
+    function Get-PreferredToolPathDirs([string]$ToolId) {
+      if ($ToolId -eq 'opencode') { return @('C:\Users\Tester\.opencode\bin') }
+      return @()
+    }
+
+    function Get-OpenCodeResolvedInfo() {
+      return $script:ResolvedOpenCode
+    }
+
+    function Get-OpenCodeVersionAtPath([string]$Path) {
+      return '1.2.21'
+    }
+
+    $version = Get-LocalOpenCodeVersion
+
+    Assert-Equal $version '1.2.21' 'Expected old shim resolution to be replaced by the standalone OpenCode install.'
+    Assert-StartsWith $script:StoredUserPath 'C:\Users\Tester\.opencode\bin' 'Expected User PATH to prioritize the standalone OpenCode bin directory.'
+    Assert-StartsWith $env:PATH 'C:\Users\Tester\.opencode\bin' 'Expected current process PATH to prioritize the standalone OpenCode bin directory.'
+  } finally {
+    $env:PATH = $originalPath
+  }
+}
+
+Run-Test 'Ensure-UserPathPrefers moves target directory to the front of user and process PATH' {
+  $originalPath = $env:PATH
+  try {
+    $script:StoredUserPath = 'C:\Tools;C:\Users\Tester\.opencode\bin;C:\Other'
+    $env:PATH = 'C:\Windows\System32;C:\Users\Tester\.opencode\bin;C:\Legacy'
+
+    function Get-UserPathValue() {
+      return $script:StoredUserPath
+    }
+
+    function Get-PreferredToolPathDirs([string]$ToolId) {
+      if ($ToolId -eq 'opencode') { return @('C:\Users\Tester\.opencode\bin') }
+      return @()
+    }
+
+    function Set-UserPathValue([string]$PathValue) {
+      $script:StoredUserPath = $PathValue
+    }
+
+    Ensure-UserPathPrefers 'C:\Users\Tester\.opencode\bin'
+
+    Assert-StartsWith $script:StoredUserPath 'C:\Users\Tester\.opencode\bin' 'Expected persisted User PATH to prioritize the OpenCode bin directory.'
+    Assert-StartsWith $env:PATH 'C:\Users\Tester\.opencode\bin' 'Expected current process PATH to prioritize the OpenCode bin directory.'
+  } finally {
+    $env:PATH = $originalPath
+  }
+}
+
+Run-Test 'Get-LocalOpenCodeVersion repairs PATH when standalone install exists but command is unresolved' {
+  $originalPath = $env:PATH
+  try {
+    $script:StoredUserPath = 'C:\Tools'
+    $env:PATH = 'C:\Windows\System32;C:\Legacy'
+    $script:ResolvedOpenCode = @{ Name = 'opencode'; Version = $null; Source = $null }
+
+    function Get-UserPathValue() {
+      return $script:StoredUserPath
+    }
+
+    function Set-UserPathValue([string]$PathValue) {
+      $script:StoredUserPath = $PathValue
+      $script:ResolvedOpenCode = @{ Name = 'opencode'; Version = '1.2.21'; Source = 'C:\Users\Tester\.opencode\bin\opencode.exe' }
+    }
+
+    function Get-OpenCodeUserInstallPath() {
+      return 'C:\Users\Tester\.opencode\bin\opencode.exe'
+    }
+
+    function Get-PreferredToolPathDirs([string]$ToolId) {
+      if ($ToolId -eq 'opencode') { return @('C:\Users\Tester\.opencode\bin') }
+      return @()
+    }
+
+    function Get-OpenCodeResolvedInfo() {
+      return $script:ResolvedOpenCode
+    }
+
+    function Get-OpenCodeVersionAtPath([string]$Path) {
+      return '1.2.21'
+    }
+
+    $version = Get-LocalOpenCodeVersion
+
+    Assert-Equal $version '1.2.21' 'Expected Get-LocalOpenCodeVersion to recover by promoting the standalone OpenCode install into PATH.'
+    Assert-StartsWith $script:StoredUserPath 'C:\Users\Tester\.opencode\bin' 'Expected User PATH repair to persist the OpenCode bin directory first.'
+    Assert-StartsWith $env:PATH 'C:\Users\Tester\.opencode\bin' 'Expected current process PATH repair to prioritize the OpenCode bin directory.'
+  } finally {
+    $env:PATH = $originalPath
+  }
+}
+
+Run-Test 'Repair-ToolUserPath is quiet when preferred opencode paths are already ordered' {
+  $originalPath = $env:PATH
+  try {
+    $script:StoredUserPath = 'C:\Users\Tester\.opencode\bin;C:\Users\Tester\AppData\Roaming\npm;C:\Tools'
+    $env:PATH = $script:StoredUserPath
+    $script:CapturedInfo = @()
+
+    function Get-UserPathValue() {
+      return $script:StoredUserPath
+    }
+
+    function Set-UserPathValue([string]$PathValue) {
+      throw "Set-UserPathValue should not be called when PATH is already ordered: $PathValue"
+    }
+
+    function Get-PreferredToolPathDirs([string]$ToolId) {
+      if ($ToolId -eq 'opencode') {
+        return @('C:\Users\Tester\.opencode\bin', 'C:\Users\Tester\AppData\Roaming\npm')
+      }
+      return @()
+    }
+
+    function Write-Info([string]$Message) {
+      $script:CapturedInfo += $Message
+    }
+
+    $result = Repair-ToolUserPath 'opencode'
+
+    Assert-True $result 'Expected Repair-ToolUserPath to report that preferred directories exist.'
+    Assert-Equal $script:StoredUserPath 'C:\Users\Tester\.opencode\bin;C:\Users\Tester\AppData\Roaming\npm;C:\Tools' 'Expected persisted User PATH order to remain unchanged.'
+    Assert-Equal $env:PATH 'C:\Users\Tester\.opencode\bin;C:\Users\Tester\AppData\Roaming\npm;C:\Tools' 'Expected process PATH order to remain unchanged.'
+    Assert-Equal $script:CapturedInfo.Count 0 'Expected no info log when preferred OpenCode paths are already ordered.'
+  } finally {
+    $env:PATH = $originalPath
+  }
+}
+
+Run-Test 'Get-OpenCodeCommandPath prefers standalone install over npm shim when versions match' {
+  function Get-OpenCodeResolvedInfo() {
+    return @{ Name = 'opencode'; Version = '1.2.27'; Source = 'C:\Users\Tester\AppData\Roaming\npm\opencode.ps1' }
+  }
+
+  function Get-OpenCodeUserInstallPath() {
+    return 'C:\Users\Tester\.opencode\bin\opencode.exe'
+  }
+
+  function Get-OpenCodeVersionAtPath([string]$Path) {
+    return '1.2.27'
+  }
+
+  function Repair-OpenCodeUserPath() {
+    return $true
+  }
+
+  $path = Get-OpenCodeCommandPath
+
+  Assert-Equal $path 'C:\Users\Tester\.opencode\bin\opencode.exe' 'Expected standalone OpenCode install to outrank the npm shim when versions match.'
+}
+
+Run-Test 'Get-LocalOpenCodeVersion suppresses mismatch warning when standalone install is preferred' {
+  function Get-OpenCodeResolvedInfo() {
+    return @{ Name = 'opencode'; Version = '1.2.27'; Source = 'C:\Users\Tester\AppData\Roaming\npm\opencode.ps1' }
+  }
+
+  function Get-OpenCodeUserInstallPath() {
+    return 'C:\Users\Tester\.opencode\bin\opencode.exe'
+  }
+
+  function Get-OpenCodeVersionAtPath([string]$Path) {
+    return '1.2.27'
+  }
+
+  function Repair-OpenCodeUserPath() {
+    return $true
+  }
+
+  $version = Get-LocalOpenCodeVersion
+
+  Assert-Equal $version '1.2.27' 'Expected standalone OpenCode install to supply the local version when it matches the npm shim version.'
+  Assert-Equal $script:CapturedWarnings.Count 0 'Expected no mismatch warning when the standalone OpenCode install is preferred.'
+}
+
+Run-Test 'Update-OpenCode prefers native self upgrade before curl install' {
+  $script:CapturedInfo = @()
+  $script:CallOrder = @()
+
+  function Write-Info([string]$Message) {
+    $script:CapturedInfo += $Message
+  }
+
+  function Get-TargetOpenCodeVersion() {
+    return $null
+  }
+
+  function Get-LatestOpenCodeVersion() {
+    return '1.14.22'
+  }
+
+  function Get-OpenCodeCommandPath() {
+    return 'C:\Users\Tester\.opencode\bin\opencode.exe'
+  }
+
+  function Try-OpenCodeSelfUpgrade([string]$TargetVersion) {
+    $script:CallOrder += "native:$TargetVersion"
+    return $TargetVersion -eq '1.14.22'
+  }
+
+  function Test-OpenCodeAtLeast([string]$TargetVersion) {
+    $script:CallOrder += "verify:$TargetVersion"
+    return $TargetVersion -eq '1.14.22'
+  }
+
+  function Try-InstallOpenCodeWithCurl([string]$TargetVersion) {
+    $script:CallOrder += "curl:$TargetVersion"
+    throw 'curl install should not run when native upgrade succeeds'
+  }
+
+  function Try-InstallOpenCodeWithScoop() { throw 'scoop should not run' }
+  function Try-InstallOpenCodeWithChoco() { throw 'choco should not run' }
+  function Try-InstallOpenCodeWithNpm([string]$TargetVersion) { throw 'npm should not run' }
+
+  Update-OpenCode
+
+  Assert-Equal ($script:CallOrder -join ',') 'native:1.14.22,verify:1.14.22' 'Expected native opencode upgrade to run before curl and verify against latest target.'
+  Assert-True ($script:CapturedInfo -contains 'Trying: opencode upgrade') 'Expected update flow to log the native OpenCode upgrade attempt.'
+}
+
+Run-Test 'Try-OpenCodeSelfUpgrade accepts target version even when upgrade exit status is unreliable' {
+  $script:CapturedWarnings = @()
+  $script:CallOrder = @()
+
+  function Get-OpenCodeCommandPath() {
+    return 'C:\Users\Tester\.opencode\bin\opencode.exe'
+  }
+
+  function Invoke-OpenCodeUpgradeMethod([string]$Path, [string]$ArgString, [string]$Method) {
+    $script:CallOrder += "upgrade:$Method"
+    return 'opencode upgrade failed with exit code 1'
+  }
+
+  function Test-OpenCodeAtLeast([string]$TargetVersion) {
+    $script:CallOrder += "verify:$TargetVersion"
+    return $TargetVersion -eq '1.15.7'
+  }
+
+  function Write-Info([string]$Message) { }
+  function Write-Warn([string]$Message) {
+    $script:CapturedWarnings += $Message
+  }
+
+  $result = Try-OpenCodeSelfUpgrade '1.15.7'
+
+  Assert-True $result 'Expected self upgrade to succeed when version verification proves the target was installed.'
+  Assert-Equal ($script:CallOrder -join ',') 'upgrade:,verify:1.15.7' 'Expected version verification immediately after the first upgrade attempt.'
+  Assert-Equal $script:CapturedWarnings.Count 0 'Expected no warning when the installed OpenCode version already satisfies the target.'
+}
+
+Run-Test 'Try-OpenCodeSelfUpgrade syncs standalone after npm method updates npm executable' {
+  $script:CapturedWarnings = @()
+  $script:CallOrder = @()
+  $script:StandaloneSynced = $false
+
+  function Get-OpenCodeCommandPath() {
+    return 'C:\Users\Tester\.opencode\bin\opencode.exe'
+  }
+
+  function Invoke-OpenCodeUpgradeMethod([string]$Path, [string]$ArgString, [string]$Method) {
+    $script:CallOrder += "upgrade:$Method"
+    return 'opencode upgrade failed with exit code 1'
+  }
+
+  function Sync-OpenCodeStandaloneFromNpm() {
+    $script:CallOrder += 'sync'
+    $script:StandaloneSynced = $true
+    return $true
+  }
+
+  function Test-OpenCodeAtLeast([string]$TargetVersion) {
+    $script:CallOrder += "verify:$TargetVersion"
+    return $script:StandaloneSynced
+  }
+
+  function Write-Info([string]$Message) { }
+  function Write-Warn([string]$Message) {
+    $script:CapturedWarnings += $Message
+  }
+
+  $result = Try-OpenCodeSelfUpgrade '1.15.13'
+
+  Assert-True $result 'Expected npm-method self upgrade to succeed after syncing the npm-updated executable into standalone.'
+  Assert-Equal ($script:CallOrder -join ',') 'upgrade:,verify:1.15.13,upgrade:npm,sync,verify:1.15.13' 'Expected npm self-upgrade to sync standalone before the final version check.'
+  Assert-Equal $script:CapturedWarnings.Count 0 'Expected no unreliable-exit warning after synced version verification succeeds.'
+}
+Write-Host '[PASS] All OpenCode resolution regression tests passed.' -ForegroundColor Green
