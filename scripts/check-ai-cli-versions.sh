@@ -435,39 +435,34 @@ select_higher_version() {
 resolve_version_conflict() {
   local tool_name="$1" primary_label="$2" primary="$3" secondary_label="$4" secondary="$5" selected
   selected="$(select_higher_version "$primary" "$secondary")"
-  [ -n "$primary" ] && [ -n "$secondary" ] && [ "$primary" != "$secondary" ] && log_warn "$tool_name latest version conflict: $primary_label=v$primary, $secondary_label=v$secondary. Using v$selected."
+  [ -n "$primary" ] && [ -n "$secondary" ] && [ "$primary" != "$secondary" ] && log_info "$tool_name latest version sources differ: $primary_label=v$primary, $secondary_label=v$secondary. Using v$selected."
   printf '%s\n' "$selected"
 }
 
 get_latest_claude() {
-  local repo stable npm
+  local repo stable npm installable
   repo="$(get_claude_repo_latest_version)"
   stable="$(get_claude_bootstrap_stable_version)"
-  if [ -z "$repo" ] && [ -z "$stable" ]; then
-    npm="$(get_npm_latest_version '@anthropic-ai/claude-code')"
-    printf '%s\n' "$npm"
-    return
-  fi
-  # Prefer bootstrap stable: the native updater installs from the stable channel,
-  # which may lag behind GitHub releases due to staged rollout.
-  [ -n "$stable" ] && printf '%s\n' "$stable" && return
+  npm="$(get_npm_latest_version '@anthropic-ai/claude-code')"
+  installable="$(resolve_version_conflict 'Claude Code' 'stable' "$stable" 'npm' "$npm")"
+  [ -n "$installable" ] && printf '%s\n' "$installable" && return
   printf '%s\n' "$repo"
 }
 
 get_latest_codex() {
   local repo npm
-  repo="$(get_github_latest_release_version 'openai/codex')"
-  [ -n "$repo" ] && printf '%s\n' "$repo" && return
   npm="$(get_npm_latest_version '@openai/codex')"
-  printf '%s\n' "$npm"
+  [ -n "$npm" ] && printf '%s\n' "$npm" && return
+  repo="$(get_github_latest_release_version 'openai/codex')"
+  printf '%s\n' "$repo"
 }
 
 get_latest_gemini() {
   local repo npm
-  repo="$(get_github_latest_release_version 'google-gemini/gemini-cli')"
-  [ -n "$repo" ] && printf '%s\n' "$repo" && return
   npm="$(get_npm_latest_version '@google/gemini-cli')"
-  printf '%s\n' "$npm"
+  [ -n "$npm" ] && printf '%s\n' "$npm" && return
+  repo="$(get_github_latest_release_version 'google-gemini/gemini-cli')"
+  printf '%s\n' "$repo"
 }
 
 get_latest_opencode() {
