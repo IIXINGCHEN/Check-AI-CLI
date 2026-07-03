@@ -18,6 +18,11 @@ function Assert-True([bool]$Condition, [string]$Message) {
 function Assert-Null($Actual, [string]$Message) {
   if ($null -ne $Actual) { throw "$Message`nExpected: <null>`nActual:   $Actual" }
 }
+function Assert-NotContains([string]$Actual, [string]$UnexpectedSubstring, [string]$Message) {
+  if (($null -ne $Actual) -and $Actual.Contains($UnexpectedSubstring)) {
+    throw "$Message`nUnexpected substring: $UnexpectedSubstring`nActual:   $Actual"
+  }
+}
 # "Not set" = absent or empty/whitespace. PS 5.1 and PS 7 differ on whether a
 # missing env var reads back as $null or '', so env assertions use this form.
 function Assert-EnvNotSet([string]$Name, [string]$Message) {
@@ -47,6 +52,7 @@ function Reset-ProxyEnv() {
   $script:EffectiveProxyUrl = $null
   $script:EffectiveNoProxy = $null
   $script:NetworkInfo = $null
+  $script:CapturedInfos = @()
   $script:CapturedWarnings = @()
 }
 
@@ -65,6 +71,9 @@ function Run-Test([string]$Name, [scriptblock]$Body) {
 function Write-Warn([string]$Message) {
   $script:CapturedWarnings += $Message
 }
+function Write-Info([string]$Message) {
+  $script:CapturedInfos += $Message
+}
 
 Run-Test 'Initialize-NetworkDetection warns when only PAC proxy is detected' {
   function Get-SystemProxySettings() {
@@ -78,6 +87,24 @@ Run-Test 'Initialize-NetworkDetection warns when only PAC proxy is detected' {
   [void](Initialize-NetworkDetection)
 
   Assert-True ($script:CapturedWarnings -contains 'PAC auto-config detected but cannot be resolved automatically. Set HTTP_PROXY/HTTPS_PROXY for reliable CLI updates.') 'Expected PAC-only proxy configurations to produce an actionable warning.'
+}
+
+Run-Test 'Initialize-NetworkDetection hides proxy credentials in logs' {
+  function Get-SystemProxySettings() {
+    return @{ Enabled = $false; Server = $null; Bypass = $null; AutoConfig = $false; AutoConfigUrl = $null }
+  }
+  function Get-EnvProxySettings() {
+    return New-EnvProxy -Https 'http://user:secret@127.0.0.1:8080'
+  }
+  function Test-ActualConnectivity() {
+    return @{ GoogleOK = $false; GoogleTime = -1; BaiduOK = $false; BaiduTime = -1; NpmjsOK = $false; NpmjsTime = -1; NpmmirrorOK = $false; NpmmirrorTime = -1 }
+  }
+
+  [void](Initialize-NetworkDetection)
+  $infoText = ($script:CapturedInfos -join "`n")
+
+  Assert-NotContains $infoText 'secret' 'Expected proxy logs to hide password text.'
+  Assert-True ($infoText.Contains('http://***@127.0.0.1:8080')) 'Expected proxy logs to keep a redacted proxy location.'
 }
 
 Run-Test 'Get-NormalizedProxy adds http:// scheme to bare host:port (registry form)' {

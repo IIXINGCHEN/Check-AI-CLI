@@ -160,6 +160,44 @@ test_install_factory_aborts_on_checksum_mismatch() {
   fi
 }
 
+test_install_factory_uses_home_when_userprofile_unset() {
+  local temp_root rc
+  temp_root="$(mktemp -d)"
+  (
+    OSTYPE=msys
+    export OSTYPE
+    unset USERPROFILE
+    HOME="$temp_root/home"
+    export HOME
+
+    command_exists() { return 0; }
+    fetch_text() {
+      case "$1" in
+        *"/cli/windows") printf '$version = "9.9.9"\n$baseUrl = "https://downloads.test"\n' ;;
+        *.sha256) printf 'aaaa' ;;
+        *) return 1 ;;
+      esac
+    }
+    download_file() { printf 'fake-binary-content' > "$2"; return 0; }
+    sha256_file() { printf 'aaaa'; }
+    log_info() { :; }
+    log_warn() { :; }
+    log_err() { :; }
+    cp() { return 0; }
+    sleep() { return 0; }
+    ensure_profile_path_prefers() { return 0; }
+    repair_tool_path() { return 0; }
+
+    install_factory_binary_windows
+  )
+  rc=$?
+  rm -rf "$temp_root"
+  if [ "$rc" -ne 0 ]; then
+    printf '[FAIL] Expected install_factory_binary_windows to fall back to HOME when USERPROFILE is unset.\n' >&2
+    exit 1
+  fi
+}
+
 run_test 'is_windows_shell detects MSYS OSTYPE' test_is_windows_shell_detects_msys
 run_test 'is_windows_shell detects MINGW via uname' test_is_windows_shell_detects_mingw_uname
 run_test 'is_windows_shell rejects Linux' test_is_windows_shell_rejects_linux
@@ -167,5 +205,6 @@ run_test 'sha256_tool_exists succeeds when sha256sum present' test_sha256_tool_e
 run_test 'sha256_tool_exists succeeds when only shasum present' test_sha256_tool_exists_when_only_shasum_present
 run_test 'sha256_tool_exists fails when neither present' test_sha256_tool_exists_fails_when_neither_present
 run_test 'install_factory_binary_windows aborts on checksum mismatch' test_install_factory_aborts_on_checksum_mismatch
+run_test 'install_factory_binary_windows falls back to HOME without USERPROFILE' test_install_factory_uses_home_when_userprofile_unset
 
 printf '[PASS] All Factory binary verification shell tests passed.\n'

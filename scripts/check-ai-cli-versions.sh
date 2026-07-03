@@ -18,10 +18,14 @@ COLOR_WARN='\033[33m'
 COLOR_ERR='\033[31m'
 COLOR_RESET='\033[0m'
 
-log_info() { echo -e "${COLOR_INFO}[INFO] $*${COLOR_RESET}"; }
-log_ok() { echo -e "${COLOR_OK}[SUCCESS] $*${COLOR_RESET}"; }
-log_warn() { echo -e "${COLOR_WARN}[WARNING] $*${COLOR_RESET}"; }
-log_err() { echo -e "${COLOR_ERR}[ERROR] $*${COLOR_RESET}"; }
+log_info() { echo -e "${COLOR_INFO}[INFO] $*${COLOR_RESET}" >&2; }
+log_ok() { echo -e "${COLOR_OK}[SUCCESS] $*${COLOR_RESET}" >&2; }
+log_warn() { echo -e "${COLOR_WARN}[WARNING] $*${COLOR_RESET}" >&2; }
+log_err() { echo -e "${COLOR_ERR}[ERROR] $*${COLOR_RESET}" >&2; }
+
+log_safe_proxy_url() {
+  printf '%s' "${1:-}" | sed -E 's#^([A-Za-z][A-Za-z0-9+.-]*://)[^/@[:space:]]+@#\1***@#'
+}
 
 # Check if command exists
 command_exists() { command -v "$1" >/dev/null 2>&1; }
@@ -94,7 +98,7 @@ detect_network_environment() {
   
   if [ -n "$env_proxy" ]; then
     has_proxy="yes"
-    log_info "Environment proxy detected: $env_proxy"
+    log_info "Environment proxy detected: $(log_safe_proxy_url "$env_proxy")"
   else
     log_info "No proxy configured (direct connection)"
   fi
@@ -628,11 +632,11 @@ install_factory_binary_windows() {
     fi
   fi
 
-  local install_dir factory_bin_dir install_path rg_install_path
-  install_dir="$USERPROFILE/bin"
-  [ -n "$USERPROFILE" ] || install_dir="$HOME/bin"
-  factory_bin_dir="$USERPROFILE/.factory/bin"
-  [ -n "$USERPROFILE" ] || factory_bin_dir="$HOME/.factory/bin"
+  local install_dir factory_bin_dir install_path rg_install_path user_home
+  user_home="${USERPROFILE:-${HOME:-}}"
+  [ -n "$user_home" ] || { log_warn "USERPROFILE/HOME is not set."; rm -rf "$tmpdir" 2>/dev/null; return 1; }
+  install_dir="$user_home/bin"
+  factory_bin_dir="$user_home/.factory/bin"
   install_path="$install_dir/$binary_name"
   rg_install_path="$factory_bin_dir/$rg_binary_name"
 
@@ -881,7 +885,7 @@ handle_update_flow() {
   local latest="$1" localv="$2" update_fn="$3"
   if [ -z "$localv" ]; then
     [ -n "$latest" ] || log_warn "Latest version unknown. Installing anyway."
-    confirm_yes "Install now? (Y/N): " && "$update_fn"
+    if confirm_yes "Install now? (Y/N): "; then "$update_fn"; return $?; fi
     return 0
   fi
   [ -n "$latest" ] || { log_warn "Latest version unknown. Skipping update check."; return 0; }
@@ -889,7 +893,8 @@ handle_update_flow() {
   cmp="$(compare_semver "$localv" "$latest" || true)"
   [ "$cmp" = "0" ] && log_ok "Already up to date." && return 0
   [ "$cmp" = "1" ] && log_warn "Local version is newer than latest source." && return 0
-  [ "$cmp" = "-1" ] && confirm_yes "Update now? (Y/N): " && "$update_fn"
+  if [ "$cmp" = "-1" ] && confirm_yes "Update now? (Y/N): "; then "$update_fn"; return $?; fi
+  return 0
 }
 
 check_tool() {
@@ -926,17 +931,18 @@ ask_selection() {
 }
 
 main() {
-  local sel
+  local sel status=0
   require_fetch_tool || exit 1
   show_banner
   select_best_npm_mirror
   sel="$(ask_selection)"
   if [ "$sel" = "Q" ]; then exit 0; fi
-  if [ "$sel" = "1" ] || [ "$sel" = "A" ]; then check_tool "Factory CLI (Droid)" get_latest_factory get_local_factory update_factory; fi
-  if [ "$sel" = "2" ] || [ "$sel" = "A" ]; then check_tool "Claude Code" get_latest_claude get_local_claude update_claude; fi
-  if [ "$sel" = "3" ] || [ "$sel" = "A" ]; then check_tool "OpenAI Codex" get_latest_codex get_local_codex update_codex; fi
-  if [ "$sel" = "4" ] || [ "$sel" = "A" ]; then check_tool "Gemini CLI" get_latest_gemini get_local_gemini update_gemini; fi
-  if [ "$sel" = "5" ] || [ "$sel" = "A" ]; then check_tool "OpenCode" get_latest_opencode get_local_opencode update_opencode; fi
+  if [ "$sel" = "1" ] || [ "$sel" = "A" ]; then check_tool "Factory CLI (Droid)" get_latest_factory get_local_factory update_factory || status=$?; fi
+  if [ "$sel" = "2" ] || [ "$sel" = "A" ]; then check_tool "Claude Code" get_latest_claude get_local_claude update_claude || status=$?; fi
+  if [ "$sel" = "3" ] || [ "$sel" = "A" ]; then check_tool "OpenAI Codex" get_latest_codex get_local_codex update_codex || status=$?; fi
+  if [ "$sel" = "4" ] || [ "$sel" = "A" ]; then check_tool "Gemini CLI" get_latest_gemini get_local_gemini update_gemini || status=$?; fi
+  if [ "$sel" = "5" ] || [ "$sel" = "A" ]; then check_tool "OpenCode" get_latest_opencode get_local_opencode update_opencode || status=$?; fi
+  return "$status"
 }
 
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then

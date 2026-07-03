@@ -651,6 +651,11 @@ function ConvertTo-ProxyUrl([string]$Raw) {
   return ('http://' + $v)
 }
 
+function Get-LogSafeProxyUrl([string]$Url) {
+  if ([string]::IsNullOrWhiteSpace($Url)) { return $Url }
+  return [regex]::Replace($Url, '^([a-zA-Z][a-zA-Z0-9+.\-]*://)[^/@\s]+@', '$1***@')
+}
+
 function Test-HttpProxyScheme([string]$Url) {
   if ([string]::IsNullOrWhiteSpace($Url)) { return $false }
   $u = $Url.ToLowerInvariant()
@@ -888,14 +893,14 @@ function Initialize-NetworkDetection() {
   # Show proxy status
   if ($hasProxy) {
     if ($sysProxy.Enabled) {
-      Write-Info "System proxy detected: $($sysProxy.Server)"
+      Write-Info "System proxy detected: $(Get-LogSafeProxyUrl $sysProxy.Server)"
     }
     if ($sysProxy.AutoConfig) {
       Write-Info "PAC auto-config detected: $($sysProxy.AutoConfigUrl)"
     }
     if ($envProxy.HttpProxy -or $envProxy.HttpsProxy) {
       $proxyUrl = if ($envProxy.HttpsProxy) { $envProxy.HttpsProxy } else { $envProxy.HttpProxy }
-      Write-Info "Environment proxy detected: $proxyUrl"
+      Write-Info "Environment proxy detected: $(Get-LogSafeProxyUrl $proxyUrl)"
     }
   } else {
     Write-Info "No proxy configured (direct connection)"
@@ -908,10 +913,11 @@ function Initialize-NetworkDetection() {
   $effectiveProxy = Get-NormalizedProxy $sysProxy $envProxy
   if ($effectiveProxy) {
     [void](Set-EffectiveProxyEnvironment $effectiveProxy)
+    $safeProxyUrl = Get-LogSafeProxyUrl $effectiveProxy.Url
     if ($effectiveProxy.IsHttpProxy) {
-      Write-Info "Applying detected proxy to all network operations: $($effectiveProxy.Url)"
+      Write-Info "Applying detected proxy to all network operations: $safeProxyUrl"
     } else {
-      Write-Info "Applying proxy to subprocess downloads (SOCKS; own fetches stay direct): $($effectiveProxy.Url)"
+      Write-Info "Applying proxy to subprocess downloads (SOCKS; own fetches stay direct): $safeProxyUrl"
     }
   } else {
     $script:EffectiveProxyUrl = $null
