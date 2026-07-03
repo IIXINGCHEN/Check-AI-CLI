@@ -284,4 +284,44 @@ Run-Test 'Get-LocalFactoryVersion repairs user bin before probing droid' {
   }
 }
 
+Run-Test 'Get-LocalFactoryVersion prefers newer npm droid over older user bin install' {
+  $originalPath = $env:PATH
+  try {
+    $script:NativeFactoryDir = Join-Path ([IO.Path]::GetTempPath()) 'factory-native-bin-test'
+    $script:NpmFactoryDir = Join-Path ([IO.Path]::GetTempPath()) 'factory-npm-bin-test'
+    $script:StoredUserPath = "$script:NativeFactoryDir;$script:NpmFactoryDir"
+    $env:PATH = "$script:NativeFactoryDir;$script:NpmFactoryDir;legacy-bin"
+
+    function Get-UserPathValue() {
+      return $script:StoredUserPath
+    }
+
+    function Set-UserPathValue([string]$PathValue) {
+      $script:StoredUserPath = $PathValue
+    }
+
+    function Get-PreferredToolPathDirs([string]$ToolId) {
+      if ($ToolId -eq 'factory') { return @($script:NativeFactoryDir, $script:NpmFactoryDir) }
+      return @()
+    }
+
+    function Get-CommandVersionInfo([string]$CommandName) {
+      if ($CommandName -ne 'droid') { return @{ Name = $CommandName; Version = $null; Source = $null } }
+      $firstPath = ($env:PATH -split ';')[0]
+      if ((Normalize-Dir $firstPath) -eq (Normalize-Dir $script:NpmFactoryDir)) {
+        return @{ Name = 'droid'; Version = '0.164.0'; Source = (Join-Path $script:NpmFactoryDir 'droid.cmd') }
+      }
+      return @{ Name = 'droid'; Version = '0.162.1'; Source = (Join-Path $script:NativeFactoryDir 'droid.exe') }
+    }
+
+    $version = Get-LocalFactoryVersion
+
+    Assert-Equal $version '0.164.0' 'Expected Factory version detection to prefer the newer npm fallback over an older user-bin install.'
+    Assert-StartsWith $script:StoredUserPath (Normalize-Dir $script:NpmFactoryDir) 'Expected User PATH to prioritize the newer npm Factory fallback.'
+    Assert-StartsWith $env:PATH (Normalize-Dir $script:NpmFactoryDir) 'Expected process PATH to prioritize the newer npm Factory fallback.'
+  } finally {
+    $env:PATH = $originalPath
+  }
+}
+
 Write-Host '[PASS] All tool PATH repair regression tests passed.' -ForegroundColor Green

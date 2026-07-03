@@ -8,6 +8,6 @@
 fbc72e4f107b24c0cd5573d273e7f13886e67b32e977d3c1adfddaa9092ee737  bin/check-ai-cli
 ae5ac3567a016a14da2d1a89fe0836bbfd6ff5c1af6e8edbd710b3f1a1343f82  bin/check-ai-cli.cmd
 c7b355981cdca80b7c165b54487dbfaa73994a07ce7901fd29a18e35ee02e0c5  bin/check-ai-cli.ps1
-74f44afe29952c8d2875da16e2a4734d78c1fb74b9f52788877cc60b060f77dc  scripts/Check-AI-CLI-Versions.ps1
+b7faf6ef7d869d5f3ded330e7b506e36b7e682b4ba80d56fad3cd7a2ef7226a9  scripts/Check-AI-CLI-Versions.ps1
 e44c561c3dd3a76a4ab709b9f951c8852e16fb7b9578bc2942f84b8d95d8fc58  scripts/check-ai-cli-versions.sh
 785b539349eb25a929ee1753b5fca3563a45af060f1adfaef9e109ff88697100  tools/PSModulePath.ps1

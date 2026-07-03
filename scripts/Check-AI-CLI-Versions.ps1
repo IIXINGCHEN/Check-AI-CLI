@@ -481,6 +481,8 @@ function Get-PreferredToolPathDirs([string]$ToolId) {
   if ($ToolId -eq 'factory') {
     $factoryDir = Join-Path $env:USERPROFILE 'bin'
     if (Test-Path -LiteralPath $factoryDir) { $dirs += $factoryDir }
+    $npmBin = Get-NpmGlobalBinDir
+    if ($npmBin) { $dirs += $npmBin }
   }
   if ($ToolId -eq 'claude') {
     $claudeDir = Get-ClaudeUserBinDir
@@ -1143,6 +1145,34 @@ function Get-BestClaudeVersionCandidate() {
   return $best
 }
 
+function Get-FactoryVersionCandidate([string]$Dir) {
+  $oldPath = $env:PATH
+  try {
+    $env:PATH = Prepend-PathEntry $env:PATH $Dir
+    foreach ($name in @('droid','factory')) {
+      $info = Get-CommandVersionInfo $name
+      if ($info.Version -and (Test-CommandSourceInDir $info.Source $Dir)) {
+        return @{ Dir = $Dir; Version = $info.Version; Source = $info.Source }
+      }
+    }
+  } finally {
+    $env:PATH = $oldPath
+  }
+  return $null
+}
+
+function Get-BestFactoryVersionCandidate() {
+  $best = $null
+  foreach ($dir in @(Get-PreferredToolPathDirs 'factory')) {
+    $candidate = Get-FactoryVersionCandidate $dir
+    if (-not $candidate) { continue }
+    if (-not $best -or (Compare-Version $best.Version $candidate.Version) -eq -1) {
+      $best = $candidate
+    }
+  }
+  return $best
+}
+
 function Get-LocalClaudeVersion() {
   $candidate = Get-BestClaudeVersionCandidate
   if ($candidate) {
@@ -1164,6 +1194,11 @@ function Get-LocalGeminiVersion() {
 }
 
 function Get-LocalFactoryVersion() {
+  $candidate = Get-BestFactoryVersionCandidate
+  if ($candidate) {
+    Ensure-UserPathPrefers $candidate.Dir
+    return $candidate.Version
+  }
   [void](Repair-ToolUserPath 'factory')
   $droid = Get-CommandVersionInfo 'droid'
   $factory = Get-CommandVersionInfo 'factory'
