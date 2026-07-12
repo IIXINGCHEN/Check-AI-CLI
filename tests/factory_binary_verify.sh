@@ -198,6 +198,70 @@ test_install_factory_uses_home_when_userprofile_unset() {
   fi
 }
 
+test_install_factory_skips_unverified_ripgrep() {
+  local temp_root rc
+  temp_root="$(mktemp -d)"
+  (
+    OSTYPE=msys
+    export OSTYPE
+    unset USERPROFILE
+    HOME="$temp_root/home"
+    export HOME
+
+    command_exists() { return 0; }
+    fetch_text() {
+      case "$1" in
+        *"/cli/windows") printf '$version = "9.9.9"\n$baseUrl = "https://downloads.test"\n' ;;
+        *"droid.exe.sha256") printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' ;;
+        *"rg.exe.sha256") printf 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' ;;
+        *) return 1 ;;
+      esac
+    }
+    download_file() { printf 'fake-binary-content' > "$2"; return 0; }
+    sha256_file() {
+      case "$1" in
+        *droid.exe) printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' ;;
+        *) printf 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc' ;;
+      esac
+    }
+    log_info() { :; }
+    log_warn() { :; }
+    log_err() { :; }
+    ensure_profile_path_prefers() { return 0; }
+    repair_tool_path() { return 0; }
+
+    install_factory_binary_windows
+    test ! -e "$HOME/.factory/bin/rg.exe"
+  )
+  rc=$?
+  rm -rf "$temp_root"
+  if [ "$rc" -ne 0 ]; then
+    printf '[FAIL] Expected a checksum-mismatched ripgrep binary to be skipped.\\n' >&2
+    exit 1
+  fi
+}
+
+test_factory_skips_older_npm_fallback() {
+  local rc
+  (
+    is_windows_shell() { return 1; }
+    command_exists() { [ "$1" = npm ]; }
+    confirm_remote_script_execution() { return 1; }
+    get_latest_factory() { printf '1.2.0'; }
+    get_npm_latest_version() { printf '1.1.0'; }
+    log_info() { :; }
+    log_warn() { :; }
+    log_err() { :; }
+    npm_install_global() { return 42; }
+    update_factory
+  )
+  rc=$?
+  if [ "$rc" -eq 0 ]; then
+    printf '[FAIL] Expected an older npm Factory fallback to be rejected.\\n' >&2
+    exit 1
+  fi
+}
+
 run_test 'is_windows_shell detects MSYS OSTYPE' test_is_windows_shell_detects_msys
 run_test 'is_windows_shell detects MINGW via uname' test_is_windows_shell_detects_mingw_uname
 run_test 'is_windows_shell rejects Linux' test_is_windows_shell_rejects_linux
@@ -206,5 +270,7 @@ run_test 'sha256_tool_exists succeeds when only shasum present' test_sha256_tool
 run_test 'sha256_tool_exists fails when neither present' test_sha256_tool_exists_fails_when_neither_present
 run_test 'install_factory_binary_windows aborts on checksum mismatch' test_install_factory_aborts_on_checksum_mismatch
 run_test 'install_factory_binary_windows falls back to HOME without USERPROFILE' test_install_factory_uses_home_when_userprofile_unset
+run_test 'install_factory_binary_windows skips unverified ripgrep' test_install_factory_skips_unverified_ripgrep
+run_test 'update_factory skips older npm fallback' test_factory_skips_older_npm_fallback
 
 printf '[PASS] All Factory binary verification shell tests passed.\n'

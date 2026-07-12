@@ -16,6 +16,7 @@ function Get-AutoMode() {
 }
 
 $script:AutoMode = Get-AutoMode
+$script:UpdateFailed = $false
 
 function Get-AllowRemoteScriptExecution() {
   $v = $env:CHECK_AI_CLI_ALLOW_REMOTE_SCRIPT
@@ -236,6 +237,26 @@ function Invoke-WebRequestWithHeaders([string]$Uri, [string]$OutFile) {
   }
 }
 
+function Get-CurlApplication() {
+  return (Get-Command curl.exe -CommandType Application -ErrorAction SilentlyContinue)
+}
+
+function Invoke-CurlDownload([string]$Url, [string]$OutFile) {
+  $curl = Get-CurlApplication
+  if (-not $curl) { throw 'curl.exe is unavailable' }
+
+  # Windows ships curl.exe. It uses HTTP(S)_PROXY inherited from network
+  # detection and is a deliberately independent transport when HttpClient/IWR
+  # is truncated by a local proxy. HTTP/1.1 avoids common proxy HTTP/2 EOFs.
+  $curlArgs = @(
+    '--fail', '--location', '--silent', '--show-error', '--http1.1',
+    '--retry', '2', '--retry-all-errors', '--connect-timeout', '30',
+    '--max-time', '300', '--output', $OutFile, $Url
+  )
+  & $curl.Path @curlArgs
+  if ($LASTEXITCODE -ne 0) { throw "curl.exe failed with exit code $LASTEXITCODE" }
+}
+
 function Download-FileWithRetry([string]$Url, [string]$OutFile, [string]$Label) {
   $tries = Get-RetryCount
   $tmp = "$OutFile.download"
@@ -247,10 +268,27 @@ function Download-FileWithRetry([string]$Url, [string]$OutFile, [string]$Label) 
       Move-Item -LiteralPath $tmp -Destination $OutFile -Force
       return
     } catch {
+      $webError = $_.Exception.Message
       if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
-      if ($i -eq $tries) { throw "Failed to download ${Label}: $($_.Exception.Message)" }
-      Write-Warn "${Label} download attempt $i/$tries failed: $($_.Exception.Message)"
-      Start-Sleep -Seconds 2
+      if ($i -lt $tries) {
+        Write-Warn "${Label} download attempt $i/$tries failed: $webError"
+        Start-Sleep -Seconds 2
+        continue
+      }
+
+      # Retrying the same transport cannot repair a proxy/HttpClient protocol
+      # incompatibility. Use curl.exe once as an independent final transport.
+      Write-Warn "${Label} download via PowerShell failed; trying curl.exe with HTTP/1.1"
+      try {
+        Invoke-CurlDownload $Url $tmp
+        if (-not (Test-NonEmptyFile $tmp)) { throw 'Downloaded file is empty.' }
+        Move-Item -LiteralPath $tmp -Destination $OutFile -Force
+        return
+      } catch {
+        $curlError = $_.Exception.Message
+        if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
+        throw "Failed to download ${Label}: $webError; curl.exe fallback failed: $curlError"
+      }
     }
   }
 }
@@ -383,7 +421,7 @@ function Test-ValidPathEntry([string]$Dir) {
     Write-Warn 'Invalid path entry: empty or whitespace'
     return $false
   }
-  if ($Dir.Contains(';')) {
+  if ($Dir.Contains(';') -or $Dir -match '[\r\n]') {
     Write-Warn 'Invalid path entry: contains semicolon'
     return $false
   }
@@ -898,7 +936,7 @@ function Initialize-NetworkDetection() {
       Write-Info "System proxy detected: $(Get-LogSafeProxyUrl $sysProxy.Server)"
     }
     if ($sysProxy.AutoConfig) {
-      Write-Info "PAC auto-config detected: $($sysProxy.AutoConfigUrl)"
+      Write-Info "PAC auto-config detected: $(Get-LogSafeProxyUrl $sysProxy.AutoConfigUrl)"
     }
     if ($envProxy.HttpProxy -or $envProxy.HttpsProxy) {
       $proxyUrl = if ($envProxy.HttpsProxy) { $envProxy.HttpsProxy } else { $envProxy.HttpProxy }
@@ -1217,14 +1255,33 @@ function Get-LocalFactoryVersion() {
   return $null
 }
 
-# Extract latest Factory CLI version from its Windows installer script
+# Resolve both Factory release channels. The native bootstrap often publishes
+# before npm, so npm is not automatically an equivalent fallback target.
+$script:LatestFactoryOfficialVersion = $null
+$script:LatestFactoryNpmVersion = $null
+
 function Get-LatestFactoryVersion() {
+  $official = $null
   $text = Get-Text 'https://app.factory.ai/cli/windows'
   if ($text) {
     $m = [regex]::Match($text, '\$version\s*=\s*"([^"]+)"')
-    if ($m.Success) { return Get-SemVer $m.Groups[1].Value }
+    if ($m.Success) { $official = Get-SemVer $m.Groups[1].Value }
   }
-  return Get-NpmLatestVersion 'droid'
+  $npm = Get-NpmLatestVersion 'droid'
+  $script:LatestFactoryOfficialVersion = $official
+  $script:LatestFactoryNpmVersion = $npm
+
+  if ($official -and $npm) {
+    $cmp = Compare-Version $official $npm
+    if ($cmp -ne 0) {
+      $selected = if ($cmp -eq 1) { $official } else { $npm }
+      Write-Info "Factory CLI latest version sources differ: official=v$official, npm=v$npm. Using v$selected."
+      return $selected
+    }
+    return $official
+  }
+  if ($official) { return $official }
+  return $npm
 }
 
 function Get-NpmLatestVersion([string]$PackageName) {
@@ -1385,6 +1442,12 @@ function Update-Factory() {
   } catch {
     Write-Warn "Official bootstrap failed: $($_.Exception.Message)"
   }
+  $official = $script:LatestFactoryOfficialVersion
+  $npm = $script:LatestFactoryNpmVersion
+  if ($official -and $npm -and (Compare-Version $npm $official) -eq -1) {
+    throw "Official Factory CLI v$official download failed, and npm latest is only v$npm. Skipping the older npm fallback because it cannot reach the selected target."
+  }
+
   Write-Info "Trying: npm install (fallback)"
   try {
     Invoke-NpmInstallGlobal 'droid@latest'
@@ -1506,6 +1569,9 @@ function Update-Claude() {
 
   try {
     Update-ClaudeViaNpm
+    if (-not (Test-ClaudeVersionAtLeast $target)) {
+      throw "npm Claude install completed but local version is still older than target v$target"
+    }
   } catch {
     $npmDetail = $_.Exception.Message
     if ([string]::IsNullOrWhiteSpace($npmDetail)) { $npmDetail = 'npm fallback failed' }
@@ -1961,7 +2027,10 @@ function Get-AndPrintLocal([scriptblock]$GetLocal) {
 }
 
 function Try-Update([scriptblock]$DoUpdate) {
-  try { & $DoUpdate } catch { Write-Fail $_.Exception.Message }
+  try { & $DoUpdate } catch {
+    $script:UpdateFailed = $true
+    Write-Fail $_.Exception.Message
+  }
 }
 
 function Handle-UpdateFlow([string]$Latest, [string]$Local, [scriptblock]$DoUpdate) {
@@ -2073,6 +2142,7 @@ if ($MyInvocation.InvocationName -ne '.') {
 
   if ($FactoryOnly) {
     Invoke-Selection '1'
+    if ($script:UpdateFailed) { exit 1 }
     exit 0
   }
 
@@ -2081,4 +2151,5 @@ if ($MyInvocation.InvocationName -ne '.') {
     exit 0
   }
   Invoke-Selection $sel
+  if ($script:UpdateFailed) { exit 1 }
 }

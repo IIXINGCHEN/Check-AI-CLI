@@ -57,18 +57,18 @@ test_url_timing() {
   local start end elapsed
   
   if command_exists curl; then
-    start=$(date +%s%3N 2>/dev/null || date +%s)
+    start=$(date +%s)
     if curl -fsSL --connect-timeout "$timeout" --max-time "$timeout" "$url" >/dev/null 2>&1; then
-      end=$(date +%s%3N 2>/dev/null || date +%s)
-      elapsed=$((end - start))
+      end=$(date +%s)
+      elapsed=$(( (end - start) * 1000 ))
       echo "$elapsed"
       return 0
     fi
   elif command_exists wget; then
-    start=$(date +%s%3N 2>/dev/null || date +%s)
+    start=$(date +%s)
     if wget -q --timeout="$timeout" -O /dev/null "$url" 2>/dev/null; then
-      end=$(date +%s%3N 2>/dev/null || date +%s)
-      elapsed=$((end - start))
+      end=$(date +%s)
+      elapsed=$(( (end - start) * 1000 ))
       echo "$elapsed"
       return 0
     fi
@@ -616,14 +616,16 @@ install_factory_binary_windows() {
   fi
   log_info "Factory CLI checksum verification passed"
 
-  # ripgrep is optional - only verify if it downloads successfully.
+  # ripgrep is optional, but never install an unverified binary.
+  local rg_verified="0"
   if download_file "$rg_url" "$rg_binary_path"; then
-    expected="$(fetch_text "$rg_sha_url" | awk '{print tolower($1)}')"
+    expected="$(fetch_text "$rg_sha_url" 2>/dev/null | awk '{print tolower($1)}' || true)"
     actual="$(sha256_file "$rg_binary_path" | tr '[:upper:]' '[:lower:]')"
     if [ -n "$expected" ] && [ -n "$actual" ] && [ "$expected" = "$actual" ]; then
       log_info "ripgrep checksum verification passed"
+      rg_verified="1"
     else
-      log_warn "ripgrep checksum verification skipped or failed (non-fatal)"
+      log_warn "ripgrep checksum verification failed; skipping ripgrep install"
     fi
   fi
 
@@ -644,7 +646,9 @@ install_factory_binary_windows() {
     sleep 1
     cp -f "$binary_path" "$install_path" || { log_warn "Failed to install Factory binary."; rm -rf "$tmpdir"; return 1; }
   }
-  cp -f "$rg_binary_path" "$rg_install_path" 2>/dev/null || true
+  if [ "$rg_verified" = "1" ]; then
+    cp -f "$rg_binary_path" "$rg_install_path" 2>/dev/null || true
+  fi
 
   rm -rf "$tmpdir" 2>/dev/null
   log_info "Factory CLI v$version installed successfully."
@@ -654,6 +658,7 @@ install_factory_binary_windows() {
 }
 
 update_factory() {
+  local official npm cmp
   log_info "Updating Factory CLI (Droid)..."
 
   # On Windows shells (Git Bash / MSYS / Cygwin), prefer the verified binary
@@ -674,6 +679,13 @@ update_factory() {
   fi
 
   if command_exists npm; then
+    official="$(get_latest_factory || true)"
+    npm="$(get_npm_latest_version 'droid' || true)"
+    cmp="$(compare_semver "$npm" "$official" || true)"
+    if [ -n "$official" ] && [ -n "$npm" ] && [ "$cmp" = "-1" ]; then
+      log_err "Official Factory CLI v$official download failed, and npm latest is only v$npm. Skipping the older npm fallback."
+      return 1
+    fi
     log_info "Trying: npm install"
     npm_install_global 'droid@latest' || return 1
     repair_tool_path factory >/dev/null 2>&1 || true
@@ -760,7 +772,8 @@ update_claude() {
     log_info "Trying: npm install"
     if npm_install_global '@anthropic-ai/claude-code'; then
       repair_tool_path claude >/dev/null 2>&1 || true
-      return 0
+      if test_claude_version_at_least "$target"; then return 0; fi
+      log_warn "npm Claude install completed but local version is still older than target v$target."
     fi
   fi
 

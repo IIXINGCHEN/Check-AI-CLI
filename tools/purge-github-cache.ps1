@@ -39,13 +39,14 @@ function Get-LocalFileHash([string]$RelativePath) {
 }
 
 function Get-RemoteFileHash([string]$Url) {
+  $stream = $null
   try {
     $headers = @{
       'Cache-Control' = 'no-cache, no-store, must-revalidate'
       'Pragma' = 'no-cache'
       'User-Agent' = 'check-ai-cli-cache-purger'
     }
-    $content = (Invoke-WebRequest -Uri $Url -Headers $headers -UseBasicParsing -TimeoutSec 15).Content
+    $content = (Invoke-WebRequest -Uri $Url -Headers $headers -UseBasicParsing -TimeoutSec 15 -ErrorAction Stop).Content
     if ($content -is [byte[]]) {
       $stream = [System.IO.MemoryStream]::new($content)
     } else {
@@ -53,10 +54,11 @@ function Get-RemoteFileHash([string]$Url) {
       $stream = [System.IO.MemoryStream]::new($bytes)
     }
     $hash = Get-FileHash -InputStream $stream -Algorithm SHA256
-    $stream.Dispose()
     return $hash.Hash.ToLowerInvariant()
   } catch {
     return $null
+  } finally {
+    if ($stream) { $stream.Dispose() }
   }
 }
 
@@ -85,7 +87,7 @@ function Invoke-PurgeGitHubRaw([string]$RelativePath) {
 function Invoke-PurgeJsDelivr([string]$RelativePath) {
   $purgeUrl = "$PurgeJsDelivrUrl/$RelativePath"
   try {
-    $null = Invoke-WebRequest -Uri $purgeUrl -UseBasicParsing -TimeoutSec 10 -ErrorAction SilentlyContinue
+    $null = Invoke-WebRequest -Uri $purgeUrl -UseBasicParsing -TimeoutSec 10 -ErrorAction Stop
     Write-Success "  jsDelivr purged: $RelativePath"
   } catch {
     Write-Warn "  jsDelivr purge failed: $RelativePath"
@@ -187,7 +189,7 @@ foreach ($file in $filesToPurge) {
 
 if ($Wait) {
   Write-Host ""
-  Wait-ForCacheSync $filesToPurge
+  if (-not (Wait-ForCacheSync $filesToPurge)) { exit 1 }
 }
 
 Write-Host ""

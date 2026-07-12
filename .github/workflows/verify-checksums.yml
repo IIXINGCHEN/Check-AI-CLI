@@ -1,10 +1,11 @@
 name: verify-checksums
 
 on:
-  push:
-    branches: ["main"]
   pull_request:
     branches: ["main"]
+
+permissions:
+  contents: read
 
 jobs:
   verify:
@@ -15,4 +16,3 @@ jobs:
         shell: pwsh
         run: |
           ./tools/Update-Checksums.ps1 -Check
-

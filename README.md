@@ -705,3 +705,24 @@ Register-ScheduledTask -Action $action -Trigger $trigger `
 - ✅ 跨平台支持 (Windows/macOS/Linux)
 - ✅ 多数据源备用方案
 - ✅ 交互式安装界面
+
+
+## Automatic checksum lifecycle
+
+`checksums.sha256` is generated from the canonical `distribution-files.txt` list.
+Do not edit the manifest manually and do not regenerate it from files after a
+verification failure.
+
+- Pull requests run `Update-Checksums.ps1 -Check` and fail when the manifest is stale.
+- Pushes to `main` that change release payload files regenerate and commit the manifest automatically.
+- Tagged releases refuse to publish unless the committed manifest is current.
+- Online installs resolve `main` to a 40-character commit SHA before downloading the manifest and payload, preventing a mutable-branch time-of-check/time-of-use mismatch.
+- Set `CHECK_AI_CLI_EXPECTED_MANIFEST_SHA256` to a trusted 64-character digest when an out-of-band manifest pin is available.
+
+Example pinned install:
+
+```powershell
+$env:CHECK_AI_CLI_REF = 'v1.2.3'
+$env:CHECK_AI_CLI_EXPECTED_MANIFEST_SHA256 = '<trusted sha256 of checksums.sha256>'
+.\install.ps1
+```
