@@ -7,7 +7,8 @@ if /I "%CHECK_AI_CLI_TEST_INSTALL_ROOT%" NEQ "" set "INSTALL_ROOT=%CHECK_AI_CLI_
 set "PF=%ProgramFiles%"
 set "IS_PROGRAM_FILES=0"
 if defined PF (
-  echo %INSTALL_ROOT%| findstr /B /I /C:"%PF%" >nul && set "IS_PROGRAM_FILES=1"
+  if /I "%INSTALL_ROOT%"=="%PF%" set "IS_PROGRAM_FILES=1"
+  echo %INSTALL_ROOT%| findstr /B /I /C:"%PF%\" >nul && set "IS_PROGRAM_FILES=1"
 )
 if "%IS_PROGRAM_FILES%"=="1" (
   set "USER_INSTALL_ROOT=%LOCALAPPDATA%\Programs\Tools\Check-AI-CLI"

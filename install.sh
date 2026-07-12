@@ -39,6 +39,14 @@ get_requested_ref() {
   printf '%s' "$DEFAULT_REF"
 }
 
+is_commit_sha() {
+  [[ "${1:-}" =~ ^[a-fA-F0-9]{40}$ ]]
+}
+
+is_release_tag() {
+  [[ "${1:-}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]]
+}
+
 get_latest_release_api_url() {
   printf '%s' 'https://api.github.com/repos/IIXINGCHEN/Check-AI-CLI/releases/latest'
 }
@@ -79,19 +87,39 @@ get_latest_main_commit_ref() {
 }
 
 get_resolved_ref() {
-  local stable main_commit fallback
-  if has_explicit_ref; then get_requested_ref; return 0; fi
+  local requested stable main_commit
+  if has_explicit_ref; then
+    requested="$(get_requested_ref)"
+    if is_commit_sha "$requested"; then
+      printf '%s' "$requested" | tr '[:upper:]' '[:lower:]'
+      return 0
+    fi
+    if is_release_tag "$requested"; then
+      printf '%s' "$requested"
+      return 0
+    fi
+    if [ "$requested" = 'main' ]; then
+      main_commit="$(get_latest_main_commit_ref || true)"
+      if is_commit_sha "$main_commit"; then
+        printf '%s' "$main_commit" | tr '[:upper:]' '[:lower:]'
+        return 0
+      fi
+      log_err 'Failed to resolve CHECK_AI_CLI_REF=main to an immutable commit SHA.' >&2
+      return 1
+    fi
+    log_err "CHECK_AI_CLI_REF must be a semantic-version tag, a 40-character commit SHA, or main: $requested" >&2
+    return 1
+  fi
   stable="$(get_latest_stable_ref || true)"
-  if [ -n "$stable" ]; then printf '%s' "$stable"; return 0; fi
+  if is_release_tag "$stable"; then printf '%s' "$stable"; return 0; fi
   main_commit="$(get_latest_main_commit_ref || true)"
-  if [ -n "$main_commit" ]; then printf '%s' "$main_commit"; return 0; fi
-  fallback="$(get_requested_ref)"
-  log_warn "Latest stable release ref unavailable. Falling back to $fallback." >&2
-  printf '%s' "$fallback"
+  if is_commit_sha "$main_commit"; then printf '%s' "$main_commit" | tr '[:upper:]' '[:lower:]'; return 0; fi
+  log_err 'Failed to resolve an immutable release tag or main commit. Refusing mutable main fallback.' >&2
+  return 1
 }
 
 resolve_base() {
-  local base
+  local base resolved_ref
   if [ -n "$RAW_BASE" ]; then
     base="${RAW_BASE%/}"
     if ! is_trusted_base "$base"; then
@@ -115,7 +143,8 @@ resolve_base() {
     echo "$base"
     return 0
   fi
-  echo "https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/$(get_resolved_ref)"
+  resolved_ref="$(get_resolved_ref)" || return 1
+  echo "https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/$resolved_ref"
 }
 
 clamp_retry
@@ -198,6 +227,70 @@ require_sha256_tool() {
   return 1
 }
 
+assert_manifest_anchor() {
+  local manifest="$1" expected actual
+  expected="$(printf '%s' "${CHECK_AI_CLI_EXPECTED_MANIFEST_SHA256:-}" | tr '[:upper:]' '[:lower:]')"
+  [ -n "$expected" ] || return 0
+  if [[ ! "$expected" =~ ^[a-f0-9]{64}$ ]]; then
+    log_err 'CHECK_AI_CLI_EXPECTED_MANIFEST_SHA256 must contain exactly 64 hexadecimal characters.'
+    return 1
+  fi
+  actual="$(sha256_file "$manifest" 2>/dev/null | tr '[:upper:]' '[:lower:]')" || actual=''
+  if [ "$actual" != "$expected" ]; then
+    log_err 'checksums.sha256 does not match CHECK_AI_CLI_EXPECTED_MANIFEST_SHA256.'
+    return 1
+  fi
+  log_ok 'Manifest SHA-256 pin verified.'
+}
+
+validate_distribution_path() {
+  local path="$1" segment
+  [ -n "$path" ] || { log_err 'Distribution path is empty.'; return 1; }
+  [[ "$path" != /* && "$path" != *'\'* && "$path" != *:* ]] || {
+    log_err "Invalid distribution path: $path"
+    return 1
+  }
+  [[ "$path" != *$'\n'* && "$path" != *$'\r'* && "$path" != *[[:space:]]* && "$path" != *'|'* ]] || {
+    log_err "Invalid distribution path: $path"
+    return 1
+  }
+  IFS='/' read -r -a segments <<< "$path"
+  for segment in "${segments[@]}"; do
+    if [ -z "$segment" ] || [ "$segment" = '.' ] || [ "$segment" = '..' ]; then
+      log_err "Invalid distribution path: $path"
+      return 1
+    fi
+  done
+}
+
+validate_manifest() {
+  local manifest="$1" line hash path extra count=0
+  local seen=""
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="${line%$'\r'}"
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+    [ -n "$line" ] || continue
+    [[ "$line" = \#* ]] && continue
+    read -r hash path extra <<< "$line"
+    if [ -z "${hash:-}" ] || [ -z "${path:-}" ] || [ -n "${extra:-}" ] ||
+      [[ ! "$hash" =~ ^[a-fA-F0-9]{64}$ ]]; then
+      log_err "Malformed checksum manifest line: $line"
+      return 1
+    fi
+    validate_distribution_path "$path" || return 1
+    case "|$seen|" in
+      *"|$path|"*)
+      log_err "Duplicate checksum entry: $path"
+      return 1
+      ;;
+    esac
+    seen="$seen|$path"
+    count=$((count + 1))
+  done < "$manifest"
+  [ "$count" -gt 0 ] || { log_err 'Checksum manifest has no entries.'; return 1; }
+}
+
 list_manifest_paths() {
   local manifest="$1"
   awk 'NF>=2 && $1 !~ /^#/ {print $2}' "$manifest"
@@ -208,8 +301,25 @@ distribution_list_path() {
 }
 
 list_distribution_paths() {
-  local file_list="$1"
-  awk 'NF && $1 !~ /^#/ {sub(/[[:space:]]*#.*/,""); if ($0 != "") print $1}' "$file_list"
+  local file_list="$1" line path
+  local seen=""
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="${line%$'\r'}"
+    line="${line%%#*}"
+    line="${line#${line%%[![:space:]]*}}"
+    line="${line%${line##*[![:space:]]}}"
+    [ -n "$line" ] || continue
+    path="$line"
+    validate_distribution_path "$path" || return 1
+    case "|$seen|" in
+      *"|$path|"*)
+      log_err "Duplicate distribution path: $path"
+      return 1
+      ;;
+    esac
+    seen="$seen|$path"
+    printf '%s\n' "$path"
+  done < "$file_list"
 }
 
 get_expected_hash() {
@@ -228,13 +338,14 @@ verify_hash() {
 }
 
 download_all() {
-  local stage="$1" f
+  local stage="$1" f paths
   mkdir -p "$stage/scripts" "$stage/bin"
-  while read -r f; do
+  paths="$(list_distribution_paths "$stage/$(distribution_list_path)")" || return 1
+  while IFS= read -r f; do
     [ -n "$f" ] || continue
     log_info "Downloading: $f"
     download_with_retry "$BASE/$f" "$stage/$f" || return 1
-  done < <(list_distribution_paths "$stage/$(distribution_list_path)")
+  done <<< "$paths"
 }
 
 download_manifest() {
@@ -250,11 +361,39 @@ download_distribution_list() {
 }
 
 verify_all() {
-  local stage="$1" f
-  while read -r f; do
+  local stage="$1" f paths
+  paths="$(list_distribution_paths "$stage/$(distribution_list_path)")" || return 1
+  while IFS= read -r f; do
     [ -n "$f" ] || continue
     verify_hash "$stage/checksums.sha256" "$f" "$stage/$f" || return 1
-  done < <(list_distribution_paths "$stage/$(distribution_list_path)")
+  done <<< "$paths"
+}
+
+write_install_marker() {
+  local dir="$1"
+  printf 'Check-AI-CLI\n' > "$dir/.check-ai-cli-installed"
+}
+
+resolve_install_dir() {
+  local dir="$1"
+  [[ "$dir" != *$'\n'* && "$dir" != *$'\r'* && "$dir" != *$'\t'* && -n "$dir" ]] || {
+    log_err 'CHECK_AI_CLI_INSTALL_DIR must be a non-empty path without newlines.'
+    return 1
+  }
+  mkdir -p "$dir"
+  (cd "$dir" && pwd)
+}
+
+restore_deploy() {
+  local records="$1" existed backup target
+  while IFS=$'\t' read -r existed backup target; do
+    [ -n "$target" ] || continue
+    if [ "$existed" = "1" ]; then
+      cp -a "$backup" "$target" 2>/dev/null || true
+    else
+      rm -f -- "$target" 2>/dev/null || true
+    fi
+  done < "$records"
 }
 
 deploy_one() {
@@ -263,17 +402,45 @@ deploy_one() {
   dst="$dir/$rel"
   tmp="$dst.new"
   ensure_parent_dir "$dst"
-  cp -f "$src" "$tmp"
-  mv -f "$tmp" "$dst"
+  cp -f "$src" "$tmp" || { rm -f -- "$tmp"; return 1; }
+  mv -f "$tmp" "$dst" || { rm -f -- "$tmp"; return 1; }
 }
 
 deploy_all() {
-  local stage="$1" dir="$2" f
+  local stage="$1" dir="$2" f paths rollback records backup target existed rc idx=0
   mkdir -p "$dir/scripts" "$dir/bin"
+  rollback="$(mktemp -d)" || return 1
+  records="$rollback/records"
+  : > "$records"
+  paths="$(list_distribution_paths "$stage/$(distribution_list_path)")" || {
+    rm -rf -- "$rollback"
+    return 1
+  }
   while read -r f; do
     [ -n "$f" ] || continue
-    deploy_one "$stage" "$dir" "$f"
-  done < <(list_distribution_paths "$stage/$(distribution_list_path)")
+    target="$dir/$f"
+    if [ -e "$target" ]; then
+      backup="$rollback/$idx"
+      cp -a "$target" "$backup" || {
+        restore_deploy "$records"
+        rm -rf -- "$rollback"
+        return 1
+      }
+      existed="1"
+    else
+      backup=""
+      existed="0"
+    fi
+    printf '%s\t%s\t%s\n' "$existed" "$backup" "$target" >> "$records"
+    deploy_one "$stage" "$dir" "$f" || {
+      rc=$?
+      restore_deploy "$records"
+      rm -rf -- "$rollback"
+      return "$rc"
+    }
+    idx=$((idx + 1))
+  done <<< "$paths"
+  rm -rf -- "$rollback"
 }
 
 get_profile_file() {
@@ -301,9 +468,9 @@ add_to_path() {
   grep -Fv "$marker" "$file" > "$tmp" 2>/dev/null || true
   shell_name="$(basename "${SHELL:-bash}")"
   if [ "$shell_name" = "fish" ]; then
-    printf 'fish_add_path -m "%s" # %s\n' "$dir" "$marker" >> "$tmp"
+    printf "fish_add_path -m '%s' # %s\n" "$(printf '%s' "$dir" | sed "s/'/'\\\\''/g")" "$marker" >> "$tmp"
   else
-    printf 'export PATH="%s:$PATH" # %s\n' "$dir" "$marker" >> "$tmp"
+    printf "export PATH='%s':\$PATH # %s\n" "$(printf '%s' "$dir" | sed "s/'/'\\\\''/g")" "$marker" >> "$tmp"
   fi
   mv "$tmp" "$file"
   export PATH="$dir:$PATH"
@@ -335,9 +502,13 @@ main() {
   require_fetch_tool || exit 1
   download_manifest "$stage" || { log_err "Failed to download checksums.sha256"; exit 1; }
   require_sha256_tool || exit 1
+  assert_manifest_anchor "$stage/checksums.sha256" || exit 1
+  validate_manifest "$stage/checksums.sha256" || exit 1
   download_distribution_list "$stage" || { log_err "Failed to download distribution-files.txt"; exit 1; }
   download_all "$stage" || { log_err "Download failed."; exit 1; }
   verify_all "$stage" || { log_err "Checksum verification failed."; exit 1; }
+  INSTALL_DIR="$(resolve_install_dir "$INSTALL_DIR")"
+  write_install_marker "$INSTALL_DIR"
   deploy_all "$stage" "$INSTALL_DIR" || { log_err "Deploy failed."; exit 1; }
   print_next_steps "$INSTALL_DIR"
 }

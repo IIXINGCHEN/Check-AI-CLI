@@ -122,9 +122,24 @@ test_proxy_logs_hide_credentials() {
   assert_contains "$output" 'http://***@127.0.0.1:8080' 'Expected proxy logs to keep a redacted proxy location.'
 }
 
+test_uninstaller_refuses_unmarked_directory() {
+  local temp_root rc
+  temp_root="$(mktemp -d)"
+  set +e
+  CHECK_AI_CLI_INSTALL_DIR="$temp_root" bash "$REPO_ROOT/uninstall.sh" </dev/null >/dev/null 2>&1
+  rc=$?
+  set -e
+  rm -rf "$temp_root"
+  if [ "$rc" -eq 0 ]; then
+    printf '[FAIL] Expected the shell uninstaller to refuse an unmarked directory.\\n' >&2
+    exit 1
+  fi
+}
+
 run_test 'select_best_npm_mirror returns only the URL' test_select_best_npm_mirror_returns_url_only
 run_test 'install.sh resolve_base returns only the URL' test_untrusted_mirror_resolution_returns_url_only
 run_test 'handle_update_flow propagates install failure' test_missing_install_failure_is_not_reported_success
 run_test 'main returns non-zero for selected update failure' test_main_returns_nonzero_for_selected_update_failure
 run_test 'proxy logs hide credentials' test_proxy_logs_hide_credentials
+run_test 'uninstaller refuses unmarked directory' test_uninstaller_refuses_unmarked_directory
 printf '[PASS] All shell output contract tests passed.\n'

@@ -32,7 +32,10 @@ function Get-CurrentUserInstallRoot() {
 
 function Test-IsUnderProgramFiles([string]$Path) {
   $pf = [Environment]::GetFolderPath('ProgramFiles').TrimEnd('\')
-  return $Path.TrimEnd('\').StartsWith($pf, [StringComparison]::OrdinalIgnoreCase)
+  if ([string]::IsNullOrWhiteSpace($pf) -or [string]::IsNullOrWhiteSpace($Path)) { return $false }
+  $candidate = [IO.Path]::GetFullPath($Path).TrimEnd('\')
+  return $candidate.Equals($pf, [StringComparison]::OrdinalIgnoreCase) -or
+    $candidate.StartsWith($pf + '\', [StringComparison]::OrdinalIgnoreCase)
 }
 
 # Entrypoint for PATH usage

@@ -27,10 +27,12 @@ function Assert-ThrowsContains([scriptblock]$Action, [string]$ExpectedSubstring,
 function Reset-TestState {
   $script:CapturedWarnings = @()
   $script:CapturedInfos = @()
+  $script:CapturedFailures = @()
   $env:CHECK_AI_CLI_OPENCODE_VERSION = ''
   $env:CHECK_AI_CLI_CLAUDE_UPDATE_TIMEOUT_SECONDS = ''
   $env:CHECK_AI_CLI_ALLOW_REMOTE_SCRIPT = ''
   $script:AutoMode = $false
+  $script:UpdateFailed = $false
 }
 
 function Run-Test([string]$Name, [scriptblock]$Body) {
@@ -50,6 +52,10 @@ function Write-Warn([string]$Message) {
 
 function Write-Info([string]$Message) {
   $script:CapturedInfos += $Message
+}
+
+function Write-Fail([string]$Message) {
+  $script:CapturedFailures += $Message
 }
 
 Run-Test 'Get-LatestClaudeVersion prefers bootstrap stable over repo (installable channel)' {
@@ -176,7 +182,8 @@ Run-Test 'Update-Claude skips native stable updater when stable channel is older
   function Repair-ToolUserPath([string]$ToolId) { return $true }
   function Get-LatestClaudeVersion() { return '2.1.198' }
   function Get-ClaudeBootstrapStableVersion() { return '2.1.187' }
-  function Get-LocalClaudeVersion() { return '2.1.196' }
+  $script:LocalClaudeVersion = '2.1.196'
+  function Get-LocalClaudeVersion() { return $script:LocalClaudeVersion }
 
   $script:NativeUpdateCalls = 0
   $script:NpmInstallCalls = 0
@@ -192,6 +199,7 @@ Run-Test 'Update-Claude skips native stable updater when stable channel is older
 
   function Update-ClaudeViaNpm() {
     $script:NpmInstallCalls += 1
+    $script:LocalClaudeVersion = '2.1.198'
   }
 
   Update-Claude
@@ -288,6 +296,8 @@ Run-Test 'Update-Claude falls back to npm when native and official install paths
     $script:NpmInstallCalls += 1
   }
 
+  function Test-ClaudeVersionAtLeast([string]$TargetVersion) { return $true }
+
   Update-Claude
 
   Assert-Equal $script:NpmInstallCalls 1 'Expected Claude update to try npm after native and official install paths fail.'
@@ -330,7 +340,8 @@ Run-Test 'Update-Claude falls back to npm when official install script leaves Cl
   function Repair-ToolUserPath([string]$ToolId) { return $true }
   function Get-LatestClaudeVersion() { return '2.1.119' }
   function Get-ClaudeBootstrapStableVersion() { return '2.1.119' }
-  function Get-LocalClaudeVersion() { return '2.1.112' }
+  $script:LocalClaudeVersion = '2.1.112'
+  function Get-LocalClaudeVersion() { return $script:LocalClaudeVersion }
 
   $script:NpmInstallCalls = 0
 
@@ -343,6 +354,7 @@ Run-Test 'Update-Claude falls back to npm when official install script leaves Cl
 
   function Update-ClaudeViaNpm() {
     $script:NpmInstallCalls += 1
+    $script:LocalClaudeVersion = '2.1.119'
   }
 
   Update-Claude
@@ -413,6 +425,12 @@ Run-Test 'Report-PostUpdate recommends all supported Claude recovery steps' {
   Assert-True ($script:CapturedWarnings -contains 'Tip: try claude update') 'Expected native Claude update remediation hint.'
   Assert-True ($script:CapturedWarnings -contains 'Tip: if needed, reinstall via irm https://claude.ai/install.ps1 | iex') 'Expected official Claude install script remediation hint.'
   Assert-True ($script:CapturedWarnings -contains 'Tip: fallback via npm install -g @anthropic-ai/claude-code@latest') 'Expected Claude post-update guidance to include npm fallback remediation.'
+}
+
+Run-Test 'Try-Update records failures for the process exit status' {
+  $script:UpdateFailed = $false
+  Try-Update { throw 'simulated update failure' }
+  Assert-True $script:UpdateFailed 'Expected a failed update attempt to mark the checker as failed.'
 }
 
 Write-Host '[PASS] All latest version source regression tests passed.' -ForegroundColor Green

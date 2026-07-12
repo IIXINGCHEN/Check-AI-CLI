@@ -46,6 +46,8 @@ function Reset-TestDoubles {
   $script:ConfirmCalls = @()
   $script:InstallFactoryCalls = 0
   $script:NpmInstallCalls = @()
+  $script:LatestFactoryOfficialVersion = $null
+  $script:LatestFactoryNpmVersion = $null
 }
 
 function Run-Test([string]$Name, [scriptblock]$Body) {
@@ -185,6 +187,28 @@ Run-Test 'Update-Factory falls back to npm when bootstrap download fails' {
   Assert-Equal $script:NpmInstallCalls.Count 1 'Expected Update-Factory to use npm fallback after bootstrap failure.'
   Assert-Equal $script:NpmInstallCalls[0] 'droid@latest' 'Expected Factory npm fallback to install the official droid package.'
   Assert-True ($script:CapturedWarnings -contains 'Official bootstrap failed: bootstrap unavailable') 'Expected bootstrap failure to be logged before npm fallback.'
+}
+
+Run-Test 'Update-Factory rejects an older npm fallback after official download failure' {
+  $script:LatestFactoryOfficialVersion = '0.170.0'
+  $script:LatestFactoryNpmVersion = '0.162.1'
+  function Install-FactoryFromBootstrap() {
+    $script:InstallFactoryCalls += 1
+    throw 'proxy EOF'
+  }
+
+  Assert-ThrowsContains { Update-Factory } 'npm latest is only v0.162.1' 'Expected stale npm fallback to be rejected explicitly.'
+  Assert-Equal $script:NpmInstallCalls.Count 0 'Expected no npm install when npm cannot reach the selected official target.'
+}
+
+Run-Test 'Get-LatestFactoryVersion reports channel drift and selects the newer version' {
+  function Get-Text([string]$Url) { return '$version = "0.170.0"' }
+  function Get-NpmLatestVersion([string]$PackageName) { return '0.162.1' }
+
+  $version = Get-LatestFactoryVersion
+
+  Assert-Equal $version '0.170.0' 'Expected the newer official Factory version.'
+  Assert-True ($script:CapturedInfos -contains 'Factory CLI latest version sources differ: official=v0.170.0, npm=v0.162.1. Using v0.170.0.') 'Expected channel drift to be visible.'
 }
 
 Run-Test 'Get-FactoryArchitectures detects WOW64 AMD64 hosts and falls back to baseline without AVX2' {
@@ -376,6 +400,10 @@ Run-Test 'Download-FileWithRetry removes temp file after retry exhaustion' {
       throw 'network down'
     }
 
+    function Invoke-CurlDownload([string]$Url, [string]$OutFile) {
+      throw 'curl unavailable in test'
+    }
+
     function Start-Sleep {
       param([int]$Seconds)
     }
@@ -388,6 +416,26 @@ Run-Test 'Download-FileWithRetry removes temp file after retry exhaustion' {
     if (Test-Path -LiteralPath $tempDir) {
       Remove-Item -LiteralPath $tempDir -Recurse -Force -ErrorAction SilentlyContinue
     }
+  }
+}
+
+Run-Test 'Download-FileWithRetry falls back to curl after PowerShell EOF failures' {
+  $originalRetry = $env:CHECK_AI_CLI_RETRY
+  $tempDir = Join-Path ([IO.Path]::GetTempPath()) ([Guid]::NewGuid().ToString('N'))
+  $outFile = Join-Path $tempDir 'factory.exe'
+  New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+  try {
+    $env:CHECK_AI_CLI_RETRY = '1'
+    function Invoke-WebRequestWithHeaders([string]$Uri, [string]$OutFile) { throw 'unexpected EOF' }
+    function Invoke-CurlDownload([string]$Url, [string]$OutFile) { Set-Content -LiteralPath $OutFile -Value 'complete-binary' }
+
+    Download-FileWithRetry 'https://downloads.factory.ai/factory.exe' $outFile 'Factory CLI binary'
+
+    Assert-True (Test-Path -LiteralPath $outFile) 'Expected curl fallback to publish the completed file.'
+    Assert-True ((Get-Item -LiteralPath $outFile).Length -gt 0) 'Expected a non-empty completed file.'
+  } finally {
+    $env:CHECK_AI_CLI_RETRY = $originalRetry
+    if (Test-Path -LiteralPath $tempDir) { Remove-Item -LiteralPath $tempDir -Recurse -Force -ErrorAction SilentlyContinue }
   }
 }
 

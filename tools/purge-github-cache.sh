@@ -70,16 +70,21 @@ get_local_hash() {
 }
 
 get_remote_hash() {
-  local url="$1"
-  local content
-  content=$(curl -fsSL -H "Cache-Control: no-cache" -H "Pragma: no-cache" "$url" 2>/dev/null) || return 1
-  if command -v sha256sum &>/dev/null; then
-    echo "$content" | sha256sum | cut -d' ' -f1
-  elif command -v shasum &>/dev/null; then
-    echo "$content" | shasum -a 256 | cut -d' ' -f1
-  else
-    echo ""
+  local url="$1" tmp hash
+  tmp="$(mktemp)" || return 1
+  if ! curl -fsSL -H "Cache-Control: no-cache" -H "Pragma: no-cache" "$url" -o "$tmp" 2>/dev/null; then
+    rm -f -- "$tmp"
+    return 1
   fi
+  if command -v sha256sum &>/dev/null; then
+    hash="$(sha256sum "$tmp" | cut -d' ' -f1)"
+  elif command -v shasum &>/dev/null; then
+    hash="$(shasum -a 256 "$tmp" | cut -d' ' -f1)"
+  else
+    hash=""
+  fi
+  rm -f -- "$tmp"
+  printf '%s\n' "$hash"
 }
 
 purge_github_raw() {

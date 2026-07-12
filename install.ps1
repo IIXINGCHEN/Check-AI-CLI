@@ -10,6 +10,7 @@ $ErrorActionPreference = 'Stop'
 # - CHECK_AI_CLI_INSTALL_DIR: install directory (default Program Files)
 # - CHECK_AI_CLI_PATH_SCOPE: CurrentUser or Machine (default Machine)
 # - CHECK_AI_CLI_RUN: set to 1 to run after install
+# - CHECK_AI_CLI_EXPECTED_MANIFEST_SHA256: optional out-of-band manifest pin
 
 function Write-Info([string]$Message) { Write-Host "[INFO] $Message" -ForegroundColor Cyan }
 function Write-Success([string]$Message) { Write-Host "[SUCCESS] $Message" -ForegroundColor Green }
@@ -71,15 +72,32 @@ function Get-LatestMainCommitRef() {
   }
 }
 
+function Test-IsCommitSha([string]$Ref) {
+  return (-not [string]::IsNullOrWhiteSpace($Ref)) -and ($Ref -match '^[a-fA-F0-9]{40}$')
+}
+
+function Test-IsReleaseTag([string]$Ref) {
+  return (-not [string]::IsNullOrWhiteSpace($Ref)) -and ($Ref -match '^v[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$')
+}
+
 function Get-ResolvedRef() {
-  if (Test-HasExplicitRef) { return (Get-RequestedRef) }
+  if (Test-HasExplicitRef) {
+    $requested = Get-RequestedRef
+    if (Test-IsCommitSha $requested) { return $requested.ToLowerInvariant() }
+    if (Test-IsReleaseTag $requested) { return $requested }
+    if ($requested -eq 'main') {
+      $mainCommit = Get-LatestMainCommitRef
+      if (-not [string]::IsNullOrWhiteSpace($mainCommit)) { return $mainCommit }
+      throw 'Failed to resolve CHECK_AI_CLI_REF=main to an immutable commit SHA.'
+    }
+    throw "CHECK_AI_CLI_REF must be a semantic-version tag, a 40-character commit SHA, or main: $requested"
+  }
+
   $stable = Get-LatestStableRef
   if (-not [string]::IsNullOrWhiteSpace($stable)) { return $stable }
   $mainCommit = Get-LatestMainCommitRef
   if (-not [string]::IsNullOrWhiteSpace($mainCommit)) { return $mainCommit }
-  $fallback = Get-DefaultRef
-  Write-Warn "Latest stable release ref unavailable. Falling back to $fallback."
-  return $fallback
+  throw 'Failed to resolve an immutable release tag or main commit. Refusing mutable main fallback.'
 }
 
 function Test-IsTrustedBase([string]$Base) {
@@ -130,7 +148,9 @@ function Get-PathScope() {
   $s = $env:CHECK_AI_CLI_PATH_SCOPE
   if ([string]::IsNullOrWhiteSpace($s)) { if (Test-IsAdmin) { return 'Machine' } ; return 'CurrentUser' }
   $t = $s.Trim()
-  if ($t -ne 'Machine' -and $t -ne 'CurrentUser') { return 'Machine' }
+  if ($t -ne 'Machine' -and $t -ne 'CurrentUser') {
+    throw 'CHECK_AI_CLI_PATH_SCOPE must be Machine or CurrentUser.'
+  }
   return $t
 }
 
@@ -148,7 +168,10 @@ function Test-IsAdmin() {
 
 function Test-IsUnderProgramFiles([string]$Path) {
   $pf = [Environment]::GetFolderPath('ProgramFiles').TrimEnd('\')
-  return $Path.TrimEnd('\').StartsWith($pf, [StringComparison]::OrdinalIgnoreCase)
+  if ([string]::IsNullOrWhiteSpace($pf) -or [string]::IsNullOrWhiteSpace($Path)) { return $false }
+  $candidate = [IO.Path]::GetFullPath($Path).TrimEnd('\')
+  return $candidate.Equals($pf, [StringComparison]::OrdinalIgnoreCase) -or
+    $candidate.StartsWith($pf + '\', [StringComparison]::OrdinalIgnoreCase)
 }
 
 function Require-Admin([string]$Reason) {
@@ -220,6 +243,37 @@ function Get-ManifestRemotePath() { return 'checksums.sha256' }
 
 function Get-DistributionListRemotePath() { return 'distribution-files.txt' }
 
+function Get-ExpectedManifestSha256() {
+  $value = $env:CHECK_AI_CLI_EXPECTED_MANIFEST_SHA256
+  if ([string]::IsNullOrWhiteSpace($value)) { return $null }
+  $normalized = $value.Trim().ToLowerInvariant()
+  if ($normalized -notmatch '^[a-f0-9]{64}$') {
+    throw 'CHECK_AI_CLI_EXPECTED_MANIFEST_SHA256 must contain exactly 64 hexadecimal characters.'
+  }
+  return $normalized
+}
+
+function Assert-ManifestAnchor([string]$ManifestFile) {
+  $expected = Get-ExpectedManifestSha256
+  if (-not $expected) { return }
+  $actual = Get-Sha256 $ManifestFile
+  if ($actual -ne $expected) { throw 'checksums.sha256 does not match CHECK_AI_CLI_EXPECTED_MANIFEST_SHA256.' }
+  Write-Success 'Manifest SHA-256 pin verified.'
+}
+
+function Assert-SafeDistributionPath([string]$Path) {
+  if ([string]::IsNullOrWhiteSpace($Path)) { throw 'Distribution path is empty.' }
+  if ([IO.Path]::IsPathRooted($Path) -or $Path.Contains('\') -or $Path.Contains(':')) {
+    throw "Invalid distribution path: $Path"
+  }
+  foreach ($segment in @($Path -split '/')) {
+    if ([string]::IsNullOrWhiteSpace($segment) -or $segment -eq '.' -or $segment -eq '..') {
+      throw "Invalid distribution path: $Path"
+    }
+  }
+  return $Path
+}
+
 function Ensure-ParentDirectory([string]$Path) {
   $parent = Split-Path -Parent $Path
   if ([string]::IsNullOrWhiteSpace($parent)) { return }
@@ -249,12 +303,19 @@ function Read-Manifest([string]$Text) {
     $t = $line.Trim()
     if ([string]::IsNullOrWhiteSpace($t)) { continue }
     if ($t.StartsWith('#')) { continue }
-    $parts = $t -split '\s+'
-    if ($parts.Count -lt 2) { continue }
+    $parts = $t -split '\s+', 2
+    if ($parts.Count -ne 2) { throw "Malformed checksum manifest line: $t" }
     $hash = $parts[0].Trim().ToLowerInvariant()
     $path = $parts[1].Trim()
-    if (-not $map.ContainsKey($path)) { $map[$path] = $hash }
+    if ($hash -notmatch '^[a-f0-9]{64}$') { throw "Invalid SHA-256 in checksum manifest: $path" }
+    [void](Assert-SafeDistributionPath $path)
+    if ($map.ContainsKey($path)) {
+      if ($map[$path] -ne $hash) { throw "Conflicting checksum entries for: $path" }
+      throw "Duplicate checksum entry for: $path"
+    }
+    $map[$path] = $hash
   }
+  if ($map.Count -eq 0) { throw 'Checksum manifest has no entries.' }
   return $map
 }
 
@@ -264,10 +325,10 @@ function Read-DistributionFileList([string]$Text) {
   foreach ($line in @($Text -split "`n")) {
     $t = ($line -replace '#.*$', '').Trim()
     if ([string]::IsNullOrWhiteSpace($t)) { continue }
-    if (-not $seen.ContainsKey($t)) {
-      $seen[$t] = $true
-      $paths += $t
-    }
+    [void](Assert-SafeDistributionPath $t)
+    if ($seen.ContainsKey($t)) { throw "Duplicate distribution path: $t" }
+    $seen[$t] = $true
+    $paths += $t
   }
   return $paths
 }
@@ -310,6 +371,7 @@ function Install-AllFromLocalPayload([string]$PayloadRoot, [string]$Dir, [string
   Write-Info "Installing from local payload: $PayloadRoot"
 
   $manifestFile = Join-Path $PayloadRoot (Get-ManifestRemotePath)
+  Assert-ManifestAnchor $manifestFile
   $manifestText = Get-Content -Raw -LiteralPath $manifestFile
   if ([string]::IsNullOrWhiteSpace($manifestText)) { throw "Local checksums.sha256 is empty" }
   $manifest = Read-Manifest $manifestText
@@ -329,6 +391,7 @@ function Install-AllFromLocalPayload([string]$PayloadRoot, [string]$Dir, [string
     Verify-FileHash $manifest $f.Remote $localFile
   }
 
+  Write-InstallMarker $Dir
   Deploy-All $PayloadRoot $Dir $files
   $binDir = Join-Path $Dir 'bin'
   Add-ToPath $binDir $Scope
@@ -372,15 +435,46 @@ function Stage-OneFile([string]$Base, [string]$StageDir, [hashtable]$Entry) {
 function Deploy-OneFile([string]$StageFile, [string]$TargetFile) {
   Ensure-ParentDirectory $TargetFile
   $tmp = "$TargetFile.new"
-  Copy-Item -LiteralPath $StageFile -Destination $tmp -Force
-  Move-Item -LiteralPath $tmp -Destination $TargetFile -Force
+  try {
+    Copy-Item -LiteralPath $StageFile -Destination $tmp -Force
+    Move-Item -LiteralPath $tmp -Destination $TargetFile -Force
+  } finally {
+    if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
+  }
+}
+
+function Write-InstallMarker([string]$Dir) {
+  $marker = Join-Path $Dir '.check-ai-cli-installed'
+  [IO.File]::WriteAllText($marker, "Check-AI-CLI`n", [Text.Encoding]::ASCII)
 }
 
 function Deploy-All([string]$StageDir, [string]$InstallDir, [object[]]$Entries) {
-  foreach ($e in $Entries) {
-    $src = Join-Path $StageDir $e.Local
-    $dst = Join-Path $InstallDir $e.Local
-    Deploy-OneFile $src $dst
+  $rollbackDir = New-StagingDir
+  $records = @()
+  try {
+    foreach ($e in $Entries) {
+      $src = Join-Path $StageDir $e.Local
+      $dst = Join-Path $InstallDir $e.Local
+      $exists = Test-Path -LiteralPath $dst
+      $backup = Join-Path $rollbackDir ([Guid]::NewGuid().ToString('N'))
+      $records += @{ Target = $dst; Exists = $exists; Backup = $backup }
+      if ($exists) { Copy-Item -LiteralPath $dst -Destination $backup -Force -ErrorAction Stop }
+      Deploy-OneFile $src $dst
+    }
+  } catch {
+    for ($i = $records.Count - 1; $i -ge 0; $i--) {
+      $record = $records[$i]
+      try {
+        if ($record.Exists) {
+          Copy-Item -LiteralPath $record.Backup -Destination $record.Target -Force -ErrorAction SilentlyContinue
+        } elseif (Test-Path -LiteralPath $record.Target) {
+          Remove-Item -LiteralPath $record.Target -Force -ErrorAction SilentlyContinue
+        }
+      } catch { }
+    }
+    throw
+  } finally {
+    if (Test-Path -LiteralPath $rollbackDir) { Remove-Item -LiteralPath $rollbackDir -Recurse -Force -ErrorAction SilentlyContinue }
   }
 }
 
@@ -426,7 +520,7 @@ function Set-EnvValue([string]$Name, [string]$Value, [string]$Scope) {
 
 function Test-ValidPathEntry([string]$Dir) {
   # Reject paths containing semicolons (PATH injection attempt)
-  if ($Dir.Contains(';')) {
+  if ($Dir.Contains(';') -or $Dir -match '[\r\n]') {
     Write-Warn "Invalid path entry (contains semicolon): $Dir"
     return $false
   }
@@ -453,7 +547,7 @@ function Add-ToPath([string]$Dir, [string]$Scope) {
   if (-not (Test-ValidPathEntry $normalized)) {
     throw "Refusing to add invalid normalized path entry to PATH: $normalized"
   }
-  $newPath = "$current;$normalized"
+  $newPath = if ([string]::IsNullOrWhiteSpace($current)) { $normalized } else { "$current;$normalized" }
   Set-EnvValue 'Path' $newPath $Scope
   $env:Path = $newPath
 }
@@ -502,7 +596,8 @@ function Print-NextSteps([string]$Dir) {
 function Print-ChinaTip() {
   Write-Host "Tip:"
   Write-Host "  Prefer HTTP_PROXY/HTTPS_PROXY for speed in mainland China."
-  Write-Host "  Set `$env:CHECK_AI_CLI_REF to pin a tag/commit for stability."
+  Write-Host "  Set `$env:CHECK_AI_CLI_REF to pin a tag/commit; main is resolved to a commit SHA."
+  Write-Host "  Set `$env:CHECK_AI_CLI_EXPECTED_MANIFEST_SHA256 for out-of-band manifest pinning."
   Write-Host "  Set `$env:CHECK_AI_CLI_RAW_BASE only if you trust the mirror."
   Write-Host "  Set `$env:CHECK_AI_CLI_ALLOW_UNTRUSTED_MIRROR = '1' to bypass mirror check."
   Write-Host ""
@@ -521,11 +616,13 @@ function Install-All([string]$Dir, [string]$Scope, [bool]$Run) {
   }
 
   $base = Get-BaseUrl
+  Write-Info "Using immutable release source: $base"
   $stage = New-StagingDir
   try {
     $manifestUrl = "$base/$(Get-ManifestRemotePath)"
     $manifestFile = Join-Path $stage 'checksums.sha256'
     Download-FileWithRetry $manifestUrl $manifestFile
+    Assert-ManifestAnchor $manifestFile
     $manifestText = Get-Content -Raw -LiteralPath $manifestFile
     if ([string]::IsNullOrWhiteSpace($manifestText)) { throw "Failed to download checksums.sha256" }
     $manifest = Read-Manifest $manifestText
@@ -547,6 +644,7 @@ function Install-All([string]$Dir, [string]$Scope, [bool]$Run) {
       Verify-FileHash $manifest $f.Remote $staged
     }
     Write-Progress -Activity 'Installing Check-AI-CLI' -Status 'Deploying' -PercentComplete 100
+    Write-InstallMarker $Dir
     Deploy-All $stage $Dir $files
     Write-Progress -Activity 'Installing Check-AI-CLI' -Completed
   } finally {
@@ -594,9 +692,17 @@ function Invoke-InstallerMain() {
     Install-All $installDir $pathScope $runAfter
   } catch {
     Write-Progress -Activity 'Installing Check-AI-CLI' -Completed
-    Write-Fail $_.Exception.Message
-    Print-AdminHint
-    Print-ChinaTip
+    $message = $_.Exception.Message
+    Write-Fail $message
+    if ($message -like 'Checksum mismatch:*' -or $message -like 'Missing checksum for:*' -or $message -like 'Local release payload is incomplete*') {
+      Write-Host ''
+      Write-Host 'Local payload integrity verification failed.'
+      Write-Host 'Re-extract a trusted release ZIP; do not bypass checksum verification.'
+      Write-Host ''
+    } else {
+      Print-AdminHint
+      Print-ChinaTip
+    }
     exit 1
   }
 }

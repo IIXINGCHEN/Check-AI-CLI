@@ -11,6 +11,9 @@ on:
       - "distribution-files.txt"
   workflow_dispatch:  # Allow manual trigger
 
+permissions:
+  contents: read
+
 jobs:
   purge-cache:
     runs-on: ubuntu-latest

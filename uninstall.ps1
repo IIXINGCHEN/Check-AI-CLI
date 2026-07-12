@@ -25,7 +25,9 @@ function Get-PathScope() {
   $s = $env:CHECK_AI_CLI_PATH_SCOPE
   if ([string]::IsNullOrWhiteSpace($s)) { if (Test-IsAdmin) { return 'Machine' } ; return 'CurrentUser' }
   $t = $s.Trim()
-  if ($t -ne 'Machine' -and $t -ne 'CurrentUser') { return 'Machine' }
+  if ($t -ne 'Machine' -and $t -ne 'CurrentUser') {
+    throw 'CHECK_AI_CLI_PATH_SCOPE must be Machine or CurrentUser.'
+  }
   return $t
 }
 
@@ -43,6 +45,14 @@ function Require-Admin([string]$Reason) {
 function Normalize-Dir([string]$Dir) {
   $full = [IO.Path]::GetFullPath($Dir)
   return $full.TrimEnd('\\')
+}
+
+function Test-IsUnderProgramFiles([string]$Path) {
+  $pf = [Environment]::GetFolderPath('ProgramFiles').TrimEnd('\\')
+  if ([string]::IsNullOrWhiteSpace($pf) -or [string]::IsNullOrWhiteSpace($Path)) { return $false }
+  $candidate = [IO.Path]::GetFullPath($Path).TrimEnd('\\')
+  return $candidate.Equals($pf, [StringComparison]::OrdinalIgnoreCase) -or
+    $candidate.StartsWith($pf + '\\', [StringComparison]::OrdinalIgnoreCase)
 }
 
 function Get-EnvRegistryPath([string]$Scope) {
@@ -94,16 +104,40 @@ function Confirm-Delete([string]$Dir) {
   return $ans -eq 'DELETE'
 }
 
+function Require-InstallMarker([string]$Dir) {
+  $full = [IO.Path]::GetFullPath($Dir).TrimEnd('\\')
+  $root = [IO.Path]::GetPathRoot($full).TrimEnd('\\')
+  if ([string]::IsNullOrWhiteSpace($full) -or $full -eq $root) {
+    throw "Refusing to remove a filesystem root: $Dir"
+  }
+  $home = if ([string]::IsNullOrWhiteSpace($env:USERPROFILE)) { $null } else { [IO.Path]::GetFullPath($env:USERPROFILE).TrimEnd('\\') }
+  if ($home -and $full.Equals($home, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "Refusing to remove the user profile directory: $Dir"
+  }
+  $item = Get-Item -LiteralPath $Dir -ErrorAction Stop
+  if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw "Refusing to remove a reparse-point directory: $Dir"
+  }
+  $marker = Join-Path $Dir '.check-ai-cli-installed'
+  if (-not (Test-Path -LiteralPath $marker -PathType Leaf)) {
+    throw "Refusing to remove an unmarked directory: $Dir"
+  }
+  if ([IO.File]::ReadAllText($marker).Trim() -ne 'Check-AI-CLI') {
+    throw "Invalid Check-AI-CLI installation marker: $Dir"
+  }
+}
+
 try {
   $installDir = Get-InstallDir
   $scope = Get-PathScope
   $binDir = Join-Path $installDir 'bin'
 
   if ($scope -eq 'Machine') { Require-Admin "updating Machine PATH" }
-  if ($installDir.StartsWith([Environment]::GetFolderPath('ProgramFiles'), [StringComparison]::OrdinalIgnoreCase)) {
+  if (Test-IsUnderProgramFiles $installDir) {
     Require-Admin "removing Program Files directory"
   }
 
+  Require-InstallMarker $installDir
   if (-not (Confirm-Delete $installDir)) { Write-Warn "Canceled."; exit 0 }
 
   Update-Path $scope $binDir

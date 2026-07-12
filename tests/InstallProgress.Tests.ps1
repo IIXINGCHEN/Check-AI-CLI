@@ -174,37 +174,34 @@ Get-BaseUrl
   Assert-Equal $result 'https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/0123456789abcdef0123456789abcdef01234567' 'Expected installer to fall back to the latest main commit when latest release lookup fails.'
 }
 
-Run-Test 'Get-BaseUrl falls back to main when stable release and main commit lookups fail' {
+Run-Test 'Get-BaseUrl fails closed when no immutable ref can be resolved' {
   $script = @"
 `$env:CHECK_AI_CLI_SKIP_MAIN = '1'
 Remove-Item Env:CHECK_AI_CLI_REF -ErrorAction SilentlyContinue
 Remove-Item Env:CHECK_AI_CLI_RAW_BASE -ErrorAction SilentlyContinue
 . '$repoRoot\install.ps1'
-`$script:Warnings = @()
-function Write-Warn([string]`$Message) { `$script:Warnings += `$Message }
 function Invoke-RestMethod { throw 'boom' }
-`$url = Get-BaseUrl
-'{0}|{1}' -f `$url, (`$script:Warnings -join ',')
+try { Get-BaseUrl } catch { `$_.Exception.Message }
 "@
 
   $result = Invoke-PwshSnippet $script
 
-  Assert-Equal $result 'https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main|Latest stable release ref unavailable. Falling back to main.' 'Expected installer to fall back to main only when both latest release and latest main commit lookups fail.'
+  Assert-Equal $result 'Failed to resolve an immutable release tag or main commit. Refusing mutable main fallback.' 'Expected installer to fail closed instead of using mutable main.'
 }
 
-Run-Test 'Get-BaseUrl respects explicit CHECK_AI_CLI_REF' {
+Run-Test 'Get-BaseUrl resolves explicit main to a commit SHA' {
   $script = @"
 `$env:CHECK_AI_CLI_SKIP_MAIN = '1'
 `$env:CHECK_AI_CLI_REF = 'main'
 Remove-Item Env:CHECK_AI_CLI_RAW_BASE -ErrorAction SilentlyContinue
 . '$repoRoot\install.ps1'
-function Invoke-RestMethod { throw 'should not call releases api' }
+function Get-LatestMainCommitRef { return '0123456789abcdef0123456789abcdef01234567' }
 Get-BaseUrl
 "@
 
   $result = Invoke-PwshSnippet $script
 
-  Assert-Equal $result 'https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main' 'Expected explicit CHECK_AI_CLI_REF to bypass stable release resolution.'
+  Assert-Equal $result 'https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/0123456789abcdef0123456789abcdef01234567' 'Expected explicit main to be pinned to an immutable commit.'
 }
 
 Run-Test 'Get-BaseUrl respects explicit CHECK_AI_CLI_RAW_BASE' {
