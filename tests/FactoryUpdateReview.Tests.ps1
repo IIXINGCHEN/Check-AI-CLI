@@ -92,7 +92,7 @@ function Install-FactoryFromBootstrap() {
   $script:InstallFactoryCalls += 1
 }
 
-function Invoke-NpmInstallGlobal([string]$PackageSpec) {
+function Invoke-NpmInstallGlobal([string]$PackageSpec, [string]$Registry) {
   $script:NpmInstallCalls += $PackageSpec
 }
 
@@ -176,10 +176,12 @@ Run-Test 'Update-Factory uses verified binary download warning text' {
 }
 
 Run-Test 'Update-Factory falls back to npm when bootstrap download fails' {
+  $script:BestNpmMirror = 'https://registry.npmjs.org'
   function Install-FactoryFromBootstrap() {
     $script:InstallFactoryCalls += 1
     throw 'bootstrap unavailable'
   }
+  function Get-FactoryNpmVersion() { return '0.170.0' }
 
   Update-Factory
 
@@ -199,6 +201,31 @@ Run-Test 'Update-Factory rejects an older npm fallback after official download f
 
   Assert-ThrowsContains { Update-Factory } 'npm latest is only v0.162.1' 'Expected stale npm fallback to be rejected explicitly.'
   Assert-Equal $script:NpmInstallCalls.Count 0 'Expected no npm install when npm cannot reach the selected official target.'
+}
+
+Run-Test 'Update-Factory retries official npm registry when mirror omits Windows optional binary' {
+  $script:LatestFactoryOfficialVersion = '0.170.0'
+  $script:LatestFactoryNpmVersion = '0.170.0'
+  $script:BestNpmMirror = 'https://registry.npmmirror.com'
+  $script:NpmInstallRegistries = @()
+  $script:FactoryNpmVersions = @('missing', '0.170.0')
+
+  function Install-FactoryFromBootstrap() { throw 'proxy EOF' }
+  function Invoke-NpmInstallGlobal([string]$PackageSpec, [string]$Registry) {
+    $script:NpmInstallRegistries += $Registry
+  }
+  function Get-FactoryNpmVersion() {
+    $version = $script:FactoryNpmVersions[0]
+    $script:FactoryNpmVersions = @($script:FactoryNpmVersions | Select-Object -Skip 1)
+    if ($version -eq 'missing') { return $null }
+    return $version
+  }
+
+  Update-Factory
+
+  Assert-Equal $script:NpmInstallRegistries.Count 2 'Expected Factory npm fallback to retry after the mirror omitted the Windows optional binary.'
+  Assert-Equal $script:NpmInstallRegistries[0] 'https://registry.npmmirror.com' 'Expected the configured regional mirror to be attempted first.'
+  Assert-Equal $script:NpmInstallRegistries[1] 'https://registry.npmjs.org' 'Expected the official registry to be used for the exact Windows optional binary.'
 }
 
 Run-Test 'Get-LatestFactoryVersion reports channel drift and selects the newer version' {

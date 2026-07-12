@@ -1373,9 +1373,9 @@ function Get-LatestOpenCodeVersion() {
 # Run npm install -g using the best regional mirror via --registry, applied per command.
 # This avoids persistently rewriting the user's ~/.npmrc (no Set/Restore needed, safe
 # under Ctrl+C or exceptions). Avoids PowerShell npm.ps1 "-Command" parsing edge cases.
-function Invoke-NpmInstallGlobal([string]$PackageSpec) {
-  if ($null -eq $script:BestNpmMirror) { $script:BestNpmMirror = Get-BestNpmMirror }
-  $registry = $script:BestNpmMirror
+function Invoke-NpmInstallGlobal([string]$PackageSpec, [string]$RegistryOverride = $null) {
+  if ([string]::IsNullOrWhiteSpace($RegistryOverride) -and $null -eq $script:BestNpmMirror) { $script:BestNpmMirror = Get-BestNpmMirror }
+  $registry = if ([string]::IsNullOrWhiteSpace($RegistryOverride)) { $script:BestNpmMirror } else { $RegistryOverride }
   $npmCmd = Get-Command npm.cmd -CommandType Application -ErrorAction SilentlyContinue
   if (-not $npmCmd) { $npmCmd = Get-Command npm -CommandType Application -ErrorAction SilentlyContinue }
   if ($npmCmd) {
@@ -1388,6 +1388,35 @@ function Invoke-NpmInstallGlobal([string]$PackageSpec) {
   if (-not $npmPs1) { throw "npm not found. Install Node.js first." }
   & powershell -NoProfile -ExecutionPolicy Bypass -File $npmPs1.Path install -g $PackageSpec --registry $registry
   if ($LASTEXITCODE -ne 0) { throw "npm install failed with exit code $LASTEXITCODE" }
+}
+
+function Get-FactoryNpmVersion() {
+  $npmBin = Get-NpmGlobalBinDir
+  if (-not $npmBin) { return $null }
+  $candidate = Get-FactoryVersionCandidate $npmBin
+  if ($candidate) { return $candidate.Version }
+  return $null
+}
+
+function Try-InstallFactoryViaNpm([string]$Registry, [string]$TargetVersion) {
+  try {
+    [void](Invoke-NpmInstallGlobal 'droid@latest' $Registry)
+    $version = Get-FactoryNpmVersion
+    if ($version -and (-not $TargetVersion -or (Compare-Version $version $TargetVersion) -ge 0)) { return $true }
+    if ($version) { Write-Warn "Factory npm install via $Registry produced older v$version; target is v$TargetVersion." }
+    else { Write-Warn "Factory npm install via $Registry did not produce a runnable Windows binary." }
+  } catch {
+    Write-Warn "Factory npm install via $Registry failed: $($_.Exception.Message)"
+  }
+  return $false
+}
+
+function Install-FactoryViaNpm([string]$TargetVersion) {
+  $official = $script:NpmMirrors['default']
+  $mirror = if ($script:BestNpmMirror) { $script:BestNpmMirror } else { Get-BestNpmMirror }
+  if (Try-InstallFactoryViaNpm $mirror $TargetVersion) { return }
+  if ($mirror -ne $official -and (Try-InstallFactoryViaNpm $official $TargetVersion)) { return }
+  throw "Factory npm fallback did not install a runnable Windows binary at or above v$TargetVersion."
 }
 
 # Standard yes/no confirmation prompt
@@ -1448,12 +1477,13 @@ function Update-Factory() {
     throw "Official Factory CLI v$official download failed, and npm latest is only v$npm. Skipping the older npm fallback because it cannot reach the selected target."
   }
 
-  Write-Info "Trying: npm install (fallback)"
   try {
-    Invoke-NpmInstallGlobal 'droid@latest'
+    $target = if ($official -and $npm -and (Compare-Version $official $npm) -eq 1) { $official } elseif ($npm) { $npm } else { $official }
+    Write-Info "Trying: npm install (fallback)"
+    Install-FactoryViaNpm $target
     Write-Info "Factory CLI installed via npm."
   } catch {
-    throw "Factory CLI installer failed. Both official bootstrap and npm fallback failed."
+    throw "Factory CLI installer failed. Both official bootstrap and npm fallback failed: $($_.Exception.Message)"
   }
 }
 
