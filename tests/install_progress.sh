@@ -186,6 +186,13 @@ test_main_exit_trap_under_nounset() {
       INSTALL_DIR=\"\$PWD/mock-install\"
       require_fetch_tool() { return 0; }
       require_sha256_tool() { return 0; }
+      fetch_text() {
+        if [ \"\$1\" = 'https://api.github.com/repos/IIXINGCHEN/Check-AI-CLI/git/ref/heads/main' ]; then
+          printf '{\"object\":{\"sha\":\"0123456789abcdef0123456789abcdef01234567\"}}'
+          return 0
+        fi
+        return 1
+      }
       mktemp() { printf '%s\n' \"\$PWD/mock-stage\"; }
       download_manifest() {
         mkdir -p \"\$1\"
