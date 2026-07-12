@@ -296,6 +296,8 @@ Run-Test 'Update-Claude falls back to npm when native and official install paths
     $script:NpmInstallCalls += 1
   }
 
+  function Test-ClaudeVersionAtLeast([string]$TargetVersion) { return $true }
+
   Update-Claude
 
   Assert-Equal $script:NpmInstallCalls 1 'Expected Claude update to try npm after native and official install paths fail.'
