@@ -576,8 +576,8 @@ function Warn-ShadowedCurrentUserInstall([string]$Dir, [string]$Scope) {
   if (-not (Test-InstallHasCommand $machineDir)) { return }
   $cmdPath = Join-Path $Dir 'bin\check-ai-cli.cmd'
   Write-Warn "Detected another Check-AI-CLI install at: $machineDir"
-  Write-Warn 'New PowerShell sessions may still launch the older Program Files copy before this CurrentUser install.'
-  Write-Warn "Recovery: run $cmdPath directly, or rerun the installer as Administrator to update the machine-wide copy, or uninstall the older Program Files install."
+  Write-Warn 'Both installation directories are active; the entrypoint selects the newer installed copy by file timestamp.'
+  Write-Warn "Recovery: run $cmdPath directly to use this CurrentUser install, or reinstall the preferred scope to refresh its copy."
 }
 
 function Print-NextSteps([string]$Dir) {

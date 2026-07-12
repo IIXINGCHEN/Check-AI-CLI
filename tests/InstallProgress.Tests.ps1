@@ -219,7 +219,7 @@ Get-BaseUrl
   Assert-Equal $result 'https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main' 'Expected explicit CHECK_AI_CLI_RAW_BASE to bypass stable release resolution.'
 }
 
-Run-Test 'Warn-ShadowedCurrentUserInstall reports an older machine-wide install' {
+Run-Test 'Warn-ShadowedCurrentUserInstall reports a second machine-wide install' {
   $script = @"
 `$env:CHECK_AI_CLI_SKIP_MAIN = '1'
 . '$repoRoot\install.ps1'
@@ -235,7 +235,7 @@ Warn-ShadowedCurrentUserInstall 'C:\Users\Tester\AppData\Local\Programs\Tools\Ch
 
   $result = Invoke-PwshSnippet $script
 
-  Assert-Equal $result 'Detected another Check-AI-CLI install at: C:\Program Files\Tools\Check-AI-CLI|New PowerShell sessions may still launch the older Program Files copy before this CurrentUser install.|Recovery: run C:\Users\Tester\AppData\Local\Programs\Tools\Check-AI-CLI\bin\check-ai-cli.cmd directly, or rerun the installer as Administrator to update the machine-wide copy, or uninstall the older Program Files install.' 'Expected installer to warn when a stale Program Files install can shadow a CurrentUser install.'
+  Assert-Equal $result 'Detected another Check-AI-CLI install at: C:\Program Files\Tools\Check-AI-CLI|Both installation directories are active; the entrypoint selects the newer installed copy by file timestamp.|Recovery: run C:\Users\Tester\AppData\Local\Programs\Tools\Check-AI-CLI\bin\check-ai-cli.cmd directly to use this CurrentUser install, or reinstall the preferred scope to refresh its copy.' 'Expected installer to explain deterministic selection when both installation scopes exist.'
 }
 
 Run-Test 'Warn-ShadowedCurrentUserInstall stays quiet when no machine-wide install exists' {
