@@ -58,8 +58,8 @@ $env:CHECK_AI_CLI_AUTO = '1'
 ### Windows (无需 clone, 一行命令安装到默认目录并加入 PATH)
 ```powershell
 # 推荐: self-healing raw bootstrap
-# 管理员 PowerShell: 默认安装到 C:\Program Files\Tools\Check-AI-CLI, 写入 Machine PATH
-# 非管理员 PowerShell: 默认安装到 %LOCALAPPDATA%\Programs\Tools\Check-AI-CLI, 写入 CurrentUser PATH
+# 安全默认: 始终安装到 %LOCALAPPDATA%\Programs\Tools\Check-AI-CLI, 写入 CurrentUser PATH
+# 不会因为当前窗口是管理员就自动装到 Program Files
 irm https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main/install.ps1 | iex
 
 # 兼容入口: raw main bootstrap
@@ -72,6 +72,30 @@ irm https://github.com/IIXINGCHEN/Check-AI-CLI/raw/main/install.ps1 | iex
 $env:CHECK_AI_CLI_INSTALL_DIR = (Get-Location).Path
 $env:CHECK_AI_CLI_PATH_SCOPE = 'CurrentUser'
 irm https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main/install.ps1 | iex
+```
+
+### Windows (可选全机安装, 仅显式 -Machine)
+```powershell
+# 本地仓库/解压包: 需要时才请求 UAC, 绝不是无参数默认行为
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Machine
+
+# 远程 one-liner 不会自动弹 UAC; 请先开管理员 PowerShell:
+$env:CHECK_AI_CLI_PATH_SCOPE = 'Machine'
+irm https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main/install.ps1 | iex
+```
+
+### Windows (卸载, 需要输入 `DELETE` 确认)
+```powershell
+# 卸载旧的 Program Files / Machine 安装 (需要管理员 PowerShell)
+# 不会删除 %LOCALAPPDATA%\Programs\Tools\Check-AI-CLI 的用户安装
+powershell -NoProfile -ExecutionPolicy Bypass -File .\uninstall.ps1 -ProgramFiles
+
+# 卸载当前用户安装 (非管理员即可)
+powershell -NoProfile -ExecutionPolicy Bypass -File .\uninstall.ps1
+
+# 兼容环境变量写法
+$env:CHECK_AI_CLI_UNINSTALL_PROGRAM_FILES = '1'
+powershell -NoProfile -ExecutionPolicy Bypass -File .\uninstall.ps1
 ```
 
 ### 安全与稳定(推荐设置)

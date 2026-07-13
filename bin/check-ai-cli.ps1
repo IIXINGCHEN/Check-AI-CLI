@@ -31,24 +31,41 @@ function Get-CurrentUserInstallRoot() {
 }
 
 function Test-IsUnderProgramFiles([string]$Path) {
-  $pf = [Environment]::GetFolderPath('ProgramFiles').TrimEnd('\')
-  if ([string]::IsNullOrWhiteSpace($pf) -or [string]::IsNullOrWhiteSpace($Path)) { return $false }
+  if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
   $candidate = [IO.Path]::GetFullPath($Path).TrimEnd('\')
+
+  # Test hook: when entrypoint tests inject an install root, treat that exact
+  # path as the Program Files payload without requiring a real PF write.
+  if ($env:CHECK_AI_CLI_TEST_MODE -eq '1' -and -not [string]::IsNullOrWhiteSpace($env:CHECK_AI_CLI_TEST_INSTALL_ROOT)) {
+    $testRoot = [IO.Path]::GetFullPath($env:CHECK_AI_CLI_TEST_INSTALL_ROOT).TrimEnd('\')
+    if ($candidate.Equals($testRoot, [StringComparison]::OrdinalIgnoreCase)) { return $true }
+  }
+
+  $pf = [Environment]::GetFolderPath('ProgramFiles').TrimEnd('\')
+  if ([string]::IsNullOrWhiteSpace($pf)) { return $false }
   return $candidate.Equals($pf, [StringComparison]::OrdinalIgnoreCase) -or
     $candidate.StartsWith($pf + '\', [StringComparison]::OrdinalIgnoreCase)
 }
 
-function Get-EntrypointLastWriteTimeUtc([string]$Path) {
-  try { return (Get-Item -LiteralPath $Path -ErrorAction Stop).LastWriteTimeUtc } catch { return $null }
+function Get-InstallMainScriptPath([string]$InstallRoot) {
+  return (Join-Path $InstallRoot 'scripts\Check-AI-CLI-Versions.ps1')
 }
 
-function Should-ForwardToCurrentUserInstall([string]$CurrentEntrypoint, [string]$UserEntrypoint) {
-  if (-not (Test-Path -LiteralPath $UserEntrypoint)) { return $false }
-  $currentTime = Get-EntrypointLastWriteTimeUtc $CurrentEntrypoint
-  $userTime = Get-EntrypointLastWriteTimeUtc $UserEntrypoint
-  if ($null -eq $userTime) { return $false }
-  if ($null -eq $currentTime) { return $true }
-  return $userTime -ge $currentTime
+# Prefer a CurrentUser install only when its main script is at least as new as
+# the Program Files payload. Blind forwarding lets a stale user copy permanently
+# shadow a newer machine-wide install (e.g. missing curl fallback / npm path fix).
+function Test-ShouldPreferUserInstall([string]$ProgramFilesRoot, [string]$UserRoot) {
+  $userMain = Get-InstallMainScriptPath $UserRoot
+  $pfMain = Get-InstallMainScriptPath $ProgramFilesRoot
+  if (-not (Test-Path -LiteralPath $userMain)) { return $false }
+  if (-not (Test-Path -LiteralPath $pfMain)) { return $true }
+  try {
+    $userTime = [IO.File]::GetLastWriteTimeUtc($userMain)
+    $pfTime = [IO.File]::GetLastWriteTimeUtc($pfMain)
+    return $userTime -ge $pfTime
+  } catch {
+    return $true
+  }
 }
 
 # Entrypoint for PATH usage
@@ -67,13 +84,11 @@ if ($env:CHECK_AI_CLI_TEST_INSTALL_ROOT) {
   $binDir = Join-Path $installRoot 'bin'
 }
 
-$mainScript = Join-Path $installRoot 'scripts\Check-AI-CLI-Versions.ps1'
-
 if (Test-IsUnderProgramFiles $installRoot) {
   $userInstallRoot = Get-CurrentUserInstallRoot
   $userEntrypoint = Join-Path $userInstallRoot 'bin\check-ai-cli.ps1'
   $currentEntrypoint = if ($MyInvocation.MyCommand.Path) { $MyInvocation.MyCommand.Path } else { (Join-Path $binDir 'check-ai-cli.ps1') }
-  if (($userEntrypoint -ne $currentEntrypoint) -and (Should-ForwardToCurrentUserInstall $currentEntrypoint $userEntrypoint)) {
+  if ((Test-Path -LiteralPath $userEntrypoint) -and ($userEntrypoint -ne $currentEntrypoint) -and (Test-ShouldPreferUserInstall $installRoot $userInstallRoot)) {
     if ($env:CHECK_AI_CLI_TEST_MODE -eq '1') {
       $script:ShadowRecoveryAction = 'forward'
       $script:ShadowRecoveryTarget = $userEntrypoint
@@ -82,13 +97,14 @@ if (Test-IsUnderProgramFiles $installRoot) {
     & $userEntrypoint @args
     exit $LASTEXITCODE
   }
+  if ($env:CHECK_AI_CLI_TEST_MODE -eq '1' -and (Test-Path -LiteralPath $userEntrypoint) -and ($userEntrypoint -ne $currentEntrypoint)) {
+    $script:ShadowRecoveryAction = 'keep-program-files'
+    $script:ShadowRecoveryTarget = (Get-InstallMainScriptPath $installRoot)
+    return
+  }
 }
 
-if ($env:CHECK_AI_CLI_TEST_MODE -eq '1') {
-  $script:ShadowRecoveryAction = 'local'
-  $script:ShadowRecoveryTarget = $mainScript
-  return
-}
+$mainScript = Join-Path $installRoot 'scripts\Check-AI-CLI-Versions.ps1'
 
 if (-not (Test-Path -LiteralPath $mainScript)) {
   throw "Main script not found: $mainScript"

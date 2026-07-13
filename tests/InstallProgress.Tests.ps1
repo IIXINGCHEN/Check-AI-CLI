@@ -9,6 +9,10 @@ function Assert-Equal($Actual, $Expected, [string]$Message) {
   }
 }
 
+function Assert-True([bool]$Condition, [string]$Message) {
+  if (-not $Condition) { throw $Message }
+}
+
 function Invoke-PwshSnippet([string]$Script) {
   $output = & $pwsh -NoProfile -Command $Script 2>&1
   if ($LASTEXITCODE -ne 0) {
@@ -16,6 +20,15 @@ function Invoke-PwshSnippet([string]$Script) {
     throw "Snippet failed:`n$text"
   }
   return (($output | Out-String).TrimEnd())
+}
+
+
+function Get-TestProgramFilesInstallDir() {
+  return (Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'Tools\Check-AI-CLI')
+}
+
+function Get-TestCurrentUserInstallDir([string]$UserName = 'Tester') {
+  return (Join-Path (Join-Path $env:SystemDrive ('Users\' + $UserName)) 'AppData\Local\Programs\Tools\Check-AI-CLI')
 }
 
 function Run-Test([string]$Name, [scriptblock]$Body) {
@@ -219,34 +232,89 @@ Get-BaseUrl
   Assert-Equal $result 'https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main' 'Expected explicit CHECK_AI_CLI_RAW_BASE to bypass stable release resolution.'
 }
 
-Run-Test 'Warn-ShadowedCurrentUserInstall reports a second machine-wide install' {
+Run-Test 'Warn-ShadowedCurrentUserInstall reports an older machine-wide install' {
+  $pf = Get-TestProgramFilesInstallDir
+  $user = Get-TestCurrentUserInstallDir
   $script = @"
 `$env:CHECK_AI_CLI_SKIP_MAIN = '1'
 . '$repoRoot\install.ps1'
 `$script:Warnings = @()
 function Write-Warn([string]`$Message) { `$script:Warnings += `$Message }
-function Get-MachineInstallDir() { return 'C:\Program Files\Tools\Check-AI-CLI' }
+function Get-MachineInstallDir() { return '$pf' }
 function Test-InstallHasCommand([string]`$Dir) {
-  return `$Dir -eq 'C:\Program Files\Tools\Check-AI-CLI'
+  return `$Dir -eq '$pf'
 }
-Warn-ShadowedCurrentUserInstall 'C:\Users\Tester\AppData\Local\Programs\Tools\Check-AI-CLI' 'CurrentUser'
+Warn-ShadowedCurrentUserInstall '$user' 'CurrentUser'
 `$script:Warnings -join '|'
 "@
 
   $result = Invoke-PwshSnippet $script
 
-  Assert-Equal $result 'Detected another Check-AI-CLI install at: C:\Program Files\Tools\Check-AI-CLI|Both installation directories are active; the entrypoint selects the newer installed copy by file timestamp.|Recovery: run C:\Users\Tester\AppData\Local\Programs\Tools\Check-AI-CLI\bin\check-ai-cli.cmd directly to use this CurrentUser install, or reinstall the preferred scope to refresh its copy.' 'Expected installer to explain deterministic selection when both installation scopes exist.'
+  Assert-True ($result -like ("Detected another Check-AI-CLI install at: $pf|*")) 'Expected shadow warning header.'
+  Assert-True ($result -like '*New PowerShell sessions may still launch the older Program Files copy*') 'Expected shadow impact explanation.'
+  Assert-True ($result -like '*uninstall.ps1 -ProgramFiles*') 'Expected Program Files uninstall recovery command.'
+  Assert-True ($result -like '*install.ps1 as Administrator*' -or $result -like '*rerun install.ps1 as Administrator*') 'Expected admin reinstall recovery option.'
+}
+
+Run-Test 'Default install target is CurrentUser even when the process is already elevated' {
+  $script = @"
+`$env:CHECK_AI_CLI_SKIP_MAIN = '1'
+Remove-Item Env:CHECK_AI_CLI_INSTALL_DIR -ErrorAction SilentlyContinue
+Remove-Item Env:CHECK_AI_CLI_PATH_SCOPE -ErrorAction SilentlyContinue
+Remove-Item Env:CHECK_AI_CLI_INSTALL_SCOPE -ErrorAction SilentlyContinue
+. '$repoRoot\install.ps1'
+function Test-IsAdmin() { return `$true }
+'dir=' + (Get-InstallDir) + '|scope=' + (Get-PathScope) + '|machine=' + (Test-MachineInstallRequested)
+"@
+
+  $result = Invoke-PwshSnippet $script
+  $userDir = Join-Path $env:LOCALAPPDATA 'Programs\Tools\Check-AI-CLI'
+  Assert-Equal $result ("dir=$userDir|scope=CurrentUser|machine=False") 'Expected safe CurrentUser default even under an elevated shell.'
+}
+
+Run-Test '-Machine / Machine PATH scope selects Program Files and requires admin' {
+  $script = @"
+`$env:CHECK_AI_CLI_SKIP_MAIN = '1'
+Remove-Item Env:CHECK_AI_CLI_INSTALL_DIR -ErrorAction SilentlyContinue
+`$env:CHECK_AI_CLI_PATH_SCOPE = 'Machine'
+. '$repoRoot\install.ps1'
+function Test-IsAdmin() { return `$false }
+'dir=' + (Get-InstallDir) + '|scope=' + (Get-PathScope) + '|machine=' + (Test-MachineInstallRequested) + '|needsAdmin=' + (Test-NeedsAdminForInstall (Get-InstallDir) (Get-PathScope))
+"@
+
+  $result = Invoke-PwshSnippet $script
+  $pfDir = Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'Tools\Check-AI-CLI'
+  Assert-equal $result ("dir=$pfDir|scope=Machine|machine=True|needsAdmin=True") 'Expected Machine scope to select Program Files and require admin.'
+}
+
+Run-Test 'Request-ElevatedInstall includes local-only UAC elevation and -Machine guidance' {
+  $script = @"
+`$env:CHECK_AI_CLI_SKIP_MAIN = '1'
+. '$repoRoot\install.ps1'
+`$text = (Get-Content -LiteralPath (Join-Path '$repoRoot' 'install.ps1') -Raw)
+if (`$text -notmatch 'function Request-ElevatedInstall') { throw 'missing Request-ElevatedInstall' }
+if (`$text -notmatch 'PSScriptRoot') { throw 'missing PSScriptRoot guard' }
+if (`$text -notmatch '-Machine') { throw 'missing -Machine guidance' }
+if (`$text -notmatch 'RunAs') { throw 'missing RunAs elevation path' }
+if (`$text -notmatch 'CHECK_AI_CLI_ELEVATION_DONE') { throw 'missing elevation re-entry marker' }
+'ok'
+"@
+
+  $result = Invoke-PwshSnippet $script
+  Assert-equal $result 'ok' 'Expected install.ps1 to include safe local-only UAC elevation and -Machine guidance.'
 }
 
 Run-Test 'Warn-ShadowedCurrentUserInstall stays quiet when no machine-wide install exists' {
+  $pf = Get-TestProgramFilesInstallDir
+  $user = Get-TestCurrentUserInstallDir
   $script = @"
 `$env:CHECK_AI_CLI_SKIP_MAIN = '1'
 . '$repoRoot\install.ps1'
 `$script:Warnings = @()
 function Write-Warn([string]`$Message) { `$script:Warnings += `$Message }
-function Get-MachineInstallDir() { return 'C:\Program Files\Tools\Check-AI-CLI' }
+function Get-MachineInstallDir() { return '$pf' }
 function Test-InstallHasCommand([string]`$Dir) { return `$false }
-Warn-ShadowedCurrentUserInstall 'C:\Users\Tester\AppData\Local\Programs\Tools\Check-AI-CLI' 'CurrentUser'
+Warn-ShadowedCurrentUserInstall '$user' 'CurrentUser'
 `$script:Warnings.Count
 "@
 

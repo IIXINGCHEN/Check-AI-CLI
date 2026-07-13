@@ -296,8 +296,6 @@ Run-Test 'Update-Claude falls back to npm when native and official install paths
     $script:NpmInstallCalls += 1
   }
 
-  function Test-ClaudeVersionAtLeast([string]$TargetVersion) { return $true }
-
   Update-Claude
 
   Assert-Equal $script:NpmInstallCalls 1 'Expected Claude update to try npm after native and official install paths fail.'
@@ -393,8 +391,14 @@ Run-Test 'Update-Claude reports npm failure after all Claude update paths fail' 
 }
 
 Run-Test 'Invoke-ClaudeNativeUpdate uses bounded timeout for claude update' {
-  function Get-Command([string]$Name, [object[]]$ArgumentList) {
-    if ($Name -eq 'claude') { return [pscustomobject]@{ Source = 'C:\Tools\claude.exe' } }
+  function Resolve-ApplicationCommandPath {
+    param(
+      [string[]]$Name,
+      [string[]]$CommandType = @('Application')
+    )
+    if ($Name -contains 'claude' -or $Name -contains 'claude.exe' -or $Name -contains 'claude.cmd') {
+      return 'C:\Tools\claude.exe'
+    }
     return $null
   }
 

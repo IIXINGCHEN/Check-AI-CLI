@@ -237,13 +237,56 @@ function Invoke-WebRequestWithHeaders([string]$Uri, [string]$OutFile) {
   }
 }
 
+# Get-Command can return Object[] when multiple PATH entries match the same
+# name (nvm + Program Files Node, Git curl + system32 curl, etc.). Reading
+# .Path/.Source on that array stringifies to a space-joined dual path, which
+# then fails with "The term 'A B' is not recognized". Always take the first
+# on-disk Application/ExternalScript candidate in PATH order.
+function Get-CommandSourcePath($CommandInfo) {
+  if ($null -eq $CommandInfo) { return $null }
+  # Only Application and ExternalScript have an on-disk Source safe to invoke.
+  # Functions/Cmdlets/Aliases expose a Definition body that must NOT be treated as a path.
+  if ($CommandInfo.CommandType -notin @('Application', 'ExternalScript')) { return $null }
+  $source = [string]$CommandInfo.Source
+  if ([string]::IsNullOrWhiteSpace($source)) { return $null }
+  return $source
+}
+
+function Resolve-ApplicationCommand {
+  param(
+    [Parameter(Mandatory = $true)][string[]]$Name,
+    [string[]]$CommandType = @('Application')
+  )
+
+  foreach ($candidateName in $Name) {
+    $commands = @(Get-Command $candidateName -All -CommandType $CommandType -ErrorAction SilentlyContinue)
+    foreach ($cmd in $commands) {
+      $source = Get-CommandSourcePath $cmd
+      if ([string]::IsNullOrWhiteSpace($source)) { continue }
+      if (-not (Test-Path -LiteralPath $source)) { continue }
+      return $cmd
+    }
+  }
+  return $null
+}
+
+function Resolve-ApplicationCommandPath {
+  param(
+    [Parameter(Mandatory = $true)][string[]]$Name,
+    [string[]]$CommandType = @('Application')
+  )
+
+  $cmd = Resolve-ApplicationCommand -Name $Name -CommandType $CommandType
+  return (Get-CommandSourcePath $cmd)
+}
+
 function Get-CurlApplication() {
-  return (Get-Command curl.exe -CommandType Application -ErrorAction SilentlyContinue)
+  return (Resolve-ApplicationCommand -Name @('curl.exe'))
 }
 
 function Invoke-CurlDownload([string]$Url, [string]$OutFile) {
-  $curl = Get-CurlApplication
-  if (-not $curl) { throw 'curl.exe is unavailable' }
+  $curlPath = Resolve-ApplicationCommandPath -Name @('curl.exe')
+  if (-not $curlPath) { throw 'curl.exe is unavailable' }
 
   # Windows ships curl.exe. It uses HTTP(S)_PROXY inherited from network
   # detection and is a deliberately independent transport when HttpClient/IWR
@@ -253,7 +296,7 @@ function Invoke-CurlDownload([string]$Url, [string]$OutFile) {
     '--retry', '2', '--retry-all-errors', '--connect-timeout', '30',
     '--max-time', '300', '--output', $OutFile, $Url
   )
-  & $curl.Path @curlArgs
+  & $curlPath @curlArgs
   if ($LASTEXITCODE -ne 0) { throw "curl.exe failed with exit code $LASTEXITCODE" }
 }
 
@@ -495,12 +538,17 @@ function Ensure-UserPathPrefers([string]$Dir) {
   $env:PATH = Prepend-PathEntry $env:PATH $normalized
 }
 
+function Get-NpmCommandPath() {
+  $npmPath = Resolve-ApplicationCommandPath -Name @('npm.cmd', 'npm') -CommandType @('Application')
+  if ($npmPath) { return $npmPath }
+  return (Resolve-ApplicationCommandPath -Name @('npm') -CommandType @('ExternalScript'))
+}
+
 function Get-NpmGlobalBinDir() {
-  $npmCmd = Get-Command npm.cmd -CommandType Application -ErrorAction SilentlyContinue
-  if (-not $npmCmd) { $npmCmd = Get-Command npm -CommandType Application -ErrorAction SilentlyContinue }
-  if (-not $npmCmd) { return $null }
+  $npmPath = Get-NpmCommandPath
+  if (-not $npmPath) { return $null }
   try {
-    $prefix = (& $npmCmd.Path config get prefix 2>$null | Out-String).Trim()
+    $prefix = (& $npmPath config get prefix 2>$null | Out-String).Trim()
     if ([string]::IsNullOrWhiteSpace($prefix) -or $prefix -eq 'undefined') { return $null }
     return $prefix.TrimEnd('/','\')
   } catch { return $null }
@@ -1128,16 +1176,6 @@ function Get-CommandVersionInfo([string]$CommandName) {
   return @{ Name = $CommandName; Version = $null; Source = $firstSource }
 }
 
-function Get-CommandSourcePath($CommandInfo) {
-  if ($null -eq $CommandInfo) { return $null }
-  # Only Application and ExternalScript have an on-disk Source safe to invoke.
-  # Functions/Cmdlets/Aliases expose a Definition body that must NOT be treated as a path.
-  if ($CommandInfo.CommandType -notin @('Application', 'ExternalScript')) { return $null }
-  $source = [string]$CommandInfo.Source
-  if ([string]::IsNullOrWhiteSpace($source)) { return $null }
-  return $source
-}
-
 # Get local command version, return $null if missing or failed
 function Get-LocalCommandVersion([string[]]$CommandNames) {
   foreach ($name in $CommandNames) {
@@ -1221,9 +1259,42 @@ function Get-LocalClaudeVersion() {
   return Get-LocalCommandVersion @('claude','claude-code')
 }
 
+function Invoke-CodexVersionProbe() {
+  $commands = @(Get-Command codex -All -ErrorAction SilentlyContinue)
+  foreach ($cmd in $commands) {
+    $source = Get-CommandSourcePath $cmd
+    if ([string]::IsNullOrWhiteSpace($source)) { continue }
+    try {
+      # Keep stderr: missing optional Windows packages only appear there.
+      $out = & $source '--version' 2>&1 | Out-String
+      $version = Get-SemVer $out
+      if ($version -or -not [string]::IsNullOrWhiteSpace($out)) {
+        return @{ Version = $version; Output = $out; Source = $source }
+      }
+    } catch {
+      $message = $_.Exception.Message
+      if (-not [string]::IsNullOrWhiteSpace($message)) {
+        return @{ Version = $null; Output = $message; Source = $source }
+      }
+    }
+  }
+  return @{ Version = $null; Output = ''; Source = $null }
+}
+
+function Get-CodexMissingOptionalPackageName([string]$Text) {
+  if ([string]::IsNullOrWhiteSpace($Text)) { return $null }
+  $m = [regex]::Match($Text, 'Missing optional dependency\s+(@openai/codex-[A-Za-z0-9-]+)')
+  if ($m.Success) { return $m.Groups[1].Value }
+  return $null
+}
+
+function Test-CodexRunnable() {
+  return [bool]((Invoke-CodexVersionProbe).Version)
+}
+
 function Get-LocalCodexVersion() {
   [void](Repair-ToolUserPath 'codex')
-  return Get-LocalCommandVersion @('codex')
+  return (Invoke-CodexVersionProbe).Version
 }
 
 function Get-LocalGeminiVersion() {
@@ -1376,17 +1447,14 @@ function Get-LatestOpenCodeVersion() {
 function Invoke-NpmInstallGlobal([string]$PackageSpec, [string]$RegistryOverride = $null) {
   if ([string]::IsNullOrWhiteSpace($RegistryOverride) -and $null -eq $script:BestNpmMirror) { $script:BestNpmMirror = Get-BestNpmMirror }
   $registry = if ([string]::IsNullOrWhiteSpace($RegistryOverride)) { $script:BestNpmMirror } else { $RegistryOverride }
-  $npmCmd = Get-Command npm.cmd -CommandType Application -ErrorAction SilentlyContinue
-  if (-not $npmCmd) { $npmCmd = Get-Command npm -CommandType Application -ErrorAction SilentlyContinue }
-  if ($npmCmd) {
-    & $npmCmd.Path install -g $PackageSpec --registry $registry
-    if ($LASTEXITCODE -ne 0) { throw "npm install failed with exit code $LASTEXITCODE" }
-    return
-  }
+  $npmPath = Get-NpmCommandPath
+  if (-not $npmPath) { throw "npm not found. Install Node.js first." }
 
-  $npmPs1 = Get-Command npm -CommandType ExternalScript -ErrorAction SilentlyContinue
-  if (-not $npmPs1) { throw "npm not found. Install Node.js first." }
-  & powershell -NoProfile -ExecutionPolicy Bypass -File $npmPs1.Path install -g $PackageSpec --registry $registry
+  if ($npmPath -like '*.ps1') {
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $npmPath install -g $PackageSpec --registry $registry
+  } else {
+    & $npmPath install -g $PackageSpec --registry $registry
+  }
   if ($LASTEXITCODE -ne 0) { throw "npm install failed with exit code $LASTEXITCODE" }
 }
 
@@ -1490,12 +1558,12 @@ function Update-Factory() {
 # Install/update Claude Code via native updater
 function Invoke-ClaudeNativeUpdate() {
   Write-Info "Trying: claude update"
-  $cmd = Get-Command claude -ErrorAction SilentlyContinue
-  if (-not $cmd -or [string]::IsNullOrWhiteSpace($cmd.Source)) {
+  $claudePath = Resolve-ApplicationCommandPath -Name @('claude', 'claude.exe', 'claude.cmd')
+  if ([string]::IsNullOrWhiteSpace($claudePath)) {
     throw 'claude command not found in PATH'
   }
 
-  Invoke-ClaudeNativeUpdateProcess $cmd.Source (Get-ClaudeNativeUpdateTimeoutSeconds)
+  Invoke-ClaudeNativeUpdateProcess $claudePath (Get-ClaudeNativeUpdateTimeoutSeconds)
 }
 
 function Invoke-ClaudeNativeUpdateProcess([string]$ClaudePath, [int]$TimeoutSeconds) {
@@ -1613,26 +1681,60 @@ function Update-Claude() {
   }
 }
 
-# Install/update OpenAI Codex (Windows defaults to npm)
+# Install/update OpenAI Codex (Windows defaults to npm).
+# China mirrors often publish the JS wrapper but omit platform optional
+# packages such as @openai/codex@x.y.z-win32-x64. Mirror-first, then retry
+# the official registry when the install is not runnable.
 function Update-Codex() {
   Write-Info "Updating OpenAI Codex..."
-  try {
-    Write-Info "Trying: npm install"
-    Invoke-NpmInstallGlobal '@openai/codex@latest'
-  } catch {
+  if (-not (Get-NpmCommandPath)) {
     throw "No installer found. Install Node.js (npm) first."
   }
+
+  $official = $script:NpmMirrors['default']
+  $mirror = if ($script:BestNpmMirror) { $script:BestNpmMirror } else { Get-BestNpmMirror }
+
+  Write-Info "Trying: npm install"
+  try {
+    Invoke-NpmInstallGlobal '@openai/codex@latest' $mirror
+  } catch {
+    if ($mirror -eq $official) { throw }
+    Write-Warn "Codex npm install via $mirror failed: $($_.Exception.Message)"
+    Write-Info "Retrying Codex install via official npm registry"
+    Invoke-NpmInstallGlobal '@openai/codex@latest' $official
+  }
+
+  [void](Repair-ToolUserPath 'codex')
+  $probe = Invoke-CodexVersionProbe
+  if ($probe.Version) { return }
+
+  $missing = Get-CodexMissingOptionalPackageName $probe.Output
+  if ($missing -and $mirror -ne $official) {
+    Write-Warn "Codex install via $mirror is missing optional package $missing; retrying official npm registry"
+    Invoke-NpmInstallGlobal '@openai/codex@latest' $official
+    [void](Repair-ToolUserPath 'codex')
+    $probe = Invoke-CodexVersionProbe
+    if ($probe.Version) { return }
+    $missing = Get-CodexMissingOptionalPackageName $probe.Output
+  }
+
+  if ($missing) {
+    throw "Codex installed but is not runnable: missing optional dependency $missing. Try npm install -g @openai/codex@latest --registry https://registry.npmjs.org"
+  }
+  if (-not [string]::IsNullOrWhiteSpace($probe.Output)) {
+    throw "Codex installed but is not runnable: $($probe.Output.Trim())"
+  }
+  throw 'Codex installed but local version could not be verified.'
 }
 
 # Install/update Gemini CLI (prefers npm)
 function Update-Gemini() {
   Write-Info "Updating Gemini CLI..."
-  try {
-    Write-Info "Trying: npm install"
-    Invoke-NpmInstallGlobal '@google/gemini-cli@latest'
-  } catch {
+  if (-not (Get-NpmCommandPath)) {
     throw "No installer found. Install Node.js (npm) first."
   }
+  Write-Info "Trying: npm install"
+  Invoke-NpmInstallGlobal '@google/gemini-cli@latest'
 }
 
 function Get-OpenCodeUserInstallPath() {
@@ -1735,9 +1837,9 @@ function Invoke-OpenCodeVersionProbe() {
 }
 
 function Get-OpenCodeNpmExePath() {
-  $cmd = Get-Command opencode -ErrorAction SilentlyContinue
-  if (-not $cmd -or [string]::IsNullOrWhiteSpace($cmd.Source)) { return $null }
-  $baseDir = Split-Path -Parent $cmd.Source
+  $source = Resolve-ApplicationCommandPath -Name @('opencode', 'opencode.exe', 'opencode.cmd') -CommandType @('Application', 'ExternalScript')
+  if ([string]::IsNullOrWhiteSpace($source)) { return $null }
+  $baseDir = Split-Path -Parent $source
   $glob = Join-Path $baseDir 'node_modules\opencode-ai\node_modules\opencode-*\bin\opencode.exe'
   $hit = Get-ChildItem -Path $glob -ErrorAction SilentlyContinue | Select-Object -First 1
   if ($hit) { return $hit.FullName }
@@ -1752,33 +1854,34 @@ function Get-LocalOpenCodeVersion() {
 
 function Try-FixOpenCodeNpmShim([string]$ExePath) {
   if ([string]::IsNullOrWhiteSpace($ExePath)) { return $false }
-  $cmd = Get-Command opencode -ErrorAction SilentlyContinue
-  if (-not $cmd -or $cmd.CommandType -ne 'ExternalScript') { return $false }
-  if (-not (Test-Path -LiteralPath $cmd.Source)) { return $false }
-  $text = [IO.File]::ReadAllText($cmd.Source)
+  $cmd = Resolve-ApplicationCommand -Name @('opencode') -CommandType @('ExternalScript')
+  if (-not $cmd) { return $false }
+  $source = Get-CommandSourcePath $cmd
+  if ([string]::IsNullOrWhiteSpace($source) -or -not (Test-Path -LiteralPath $source)) { return $false }
+  $text = [IO.File]::ReadAllText($source)
   if (-not $text.Contains('/bin/sh')) { return $false }
-  
+
   # Create backup before modifying
-  $backupPath = "$($cmd.Source).backup"
+  $backupPath = "$source.backup"
   try {
-    Copy-Item -LiteralPath $cmd.Source -Destination $backupPath -Force
+    Copy-Item -LiteralPath $source -Destination $backupPath -Force
     Write-Info 'Created backup for npm shim.'
   } catch {
     Write-Warn "Failed to create backup, aborting shim fix: $($_.Exception.Message)"
     return $false
   }
-  
+
   $repl = '& "' + $ExePath + '" $args'
   $newText = [regex]::Replace($text, '&\s+\"/bin/sh\$exe\"[^\r\n]*', $repl)
   $enc = New-Object System.Text.UTF8Encoding($false)
   try {
-    [IO.File]::WriteAllText($cmd.Source, $newText, $enc)
+    [IO.File]::WriteAllText($source, $newText, $enc)
     Write-Info 'Fixed npm shim.'
     return $true
   } catch {
     # Restore from backup on failure
     Write-Warn "Failed to write shim, restoring backup: $($_.Exception.Message)"
-    try { Copy-Item -LiteralPath $backupPath -Destination $cmd.Source -Force } catch { }
+    try { Copy-Item -LiteralPath $backupPath -Destination $source -Force } catch { }
     return $false
   }
 }
@@ -1870,9 +1973,7 @@ function Get-BashCommandPath() {
     "${env:ProgramFiles(x86)}\Git\usr\bin\bash.exe"
   )
   foreach ($p in $candidates) { if (Test-Path -LiteralPath $p) { return $p } }
-  $cmd = Get-Command bash -ErrorAction SilentlyContinue
-  if ($cmd -and $cmd.Source) { return $cmd.Source }
-  return $null
+  return (Resolve-ApplicationCommandPath -Name @('bash.exe', 'bash'))
 }
 
 function Test-BashUsable([string]$BashPath) {
@@ -1919,12 +2020,21 @@ function Test-OpenCodeAtLeast([string]$TargetVersion) {
 }
 
 function Try-InstallOpenCodeWithScoop() {
-  $cmd = Get-Command scoop -ErrorAction SilentlyContinue
-  if (-not $cmd) { return $false }
-  & scoop install extras/opencode
+  $scoopPath = Resolve-ApplicationCommandPath -Name @('scoop.cmd', 'scoop.ps1', 'scoop') -CommandType @('Application', 'ExternalScript')
+  if (-not $scoopPath) { return $false }
+  if ($scoopPath -like '*.ps1') {
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $scoopPath install extras/opencode
+  } else {
+    & $scoopPath install extras/opencode
+  }
   if ($LASTEXITCODE -eq 0) { return $true }
-  & scoop bucket add extras 2>$null | Out-Null
-  & scoop install extras/opencode
+  if ($scoopPath -like '*.ps1') {
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $scoopPath bucket add extras 2>$null | Out-Null
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $scoopPath install extras/opencode
+  } else {
+    & $scoopPath bucket add extras 2>$null | Out-Null
+    & $scoopPath install extras/opencode
+  }
   if ($LASTEXITCODE -ne 0) {
     Write-Warn "scoop install failed with exit code $LASTEXITCODE"
     return $false
@@ -1933,11 +2043,11 @@ function Try-InstallOpenCodeWithScoop() {
 }
 
 function Try-InstallOpenCodeWithChoco() {
-  $cmd = Get-Command choco -ErrorAction SilentlyContinue
-  if (-not $cmd) { return $false }
-  & choco upgrade opencode -y
+  $chocoPath = Resolve-ApplicationCommandPath -Name @('choco.exe', 'choco')
+  if (-not $chocoPath) { return $false }
+  & $chocoPath upgrade opencode -y
   if ($LASTEXITCODE -eq 0) { return $true }
-  & choco install opencode -y
+  & $chocoPath install opencode -y
   if ($LASTEXITCODE -ne 0) {
     Write-Warn "choco install failed with exit code $LASTEXITCODE"
     return $false
@@ -2097,7 +2207,8 @@ function Report-PostUpdate([string]$Title, [string]$Latest, [scriptblock]$GetLoc
       return
     }
     if ($Title -eq 'OpenAI Codex') {
-      Write-Warn "Tip: try npm install -g @openai/codex@latest"
+      Write-Warn "Tip: try npm install -g @openai/codex@latest --registry https://registry.npmjs.org"
+      Write-Warn "Tip: China mirrors may omit the Windows optional binary package"
       Write-Warn "Tip: verify Node.js version (node -v) meets codex requirements"
     }
     if ($Title -eq 'OpenCode') {

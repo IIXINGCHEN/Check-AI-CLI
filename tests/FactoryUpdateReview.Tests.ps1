@@ -4,6 +4,9 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 . (Join-Path $repoRoot 'scripts\Check-AI-CLI-Versions.ps1')
 
 $script:RealInstallFactoryFromBootstrap = ${function:Install-FactoryFromBootstrap}
+$script:RealInvokeNpmInstallGlobal = ${function:Invoke-NpmInstallGlobal}
+$script:RealGetNpmCommandPath = ${function:Get-NpmCommandPath}
+$script:RealResolveApplicationCommandPath = ${function:Resolve-ApplicationCommandPath}
 
 function Assert-Equal($Actual, $Expected, [string]$Message) {
   if ($Actual -ne $Expected) {
@@ -548,4 +551,153 @@ Run-Test 'Install-FactoryFile does not kill any process when copy succeeds' {
     Remove-Item Function:\Stop-Process -ErrorAction SilentlyContinue
   }
 }
+
+Run-Test 'Resolve-ApplicationCommandPath returns the first on-disk PATH hit for multi-npm installs' {
+  ${function:Resolve-ApplicationCommandPath} = $script:RealResolveApplicationCommandPath
+  Remove-Item Function:\Get-Command -ErrorAction SilentlyContinue
+  $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ([Guid]::NewGuid().ToString('N'))
+  $firstDir = Join-Path $tempRoot 'first'
+  $secondDir = Join-Path $tempRoot 'second'
+  $originalPath = $env:PATH
+  try {
+    New-Item -ItemType Directory -Path $firstDir,$secondDir -Force | Out-Null
+    $firstNpm = Join-Path $firstDir 'npm.cmd'
+    $secondNpm = Join-Path $secondDir 'npm.cmd'
+    Set-Content -LiteralPath $firstNpm -Value "@echo off`r`necho first`r`n" -Encoding ASCII
+    Set-Content -LiteralPath $secondNpm -Value "@echo off`r`necho second`r`n" -Encoding ASCII
+    $env:PATH = "$firstDir;$secondDir;$originalPath"
+
+    $resolved = Resolve-ApplicationCommandPath -Name @('npm.cmd', 'npm')
+
+    Assert-Equal $resolved $firstNpm 'Expected multi-path npm resolution to keep the first PATH entry only.'
+    Assert-True (-not $resolved.Contains(' ')) 'Expected resolved npm path to be a single filesystem path, not a space-joined dual path.'
+  } finally {
+    $env:PATH = $originalPath
+    if (Test-Path -LiteralPath $tempRoot) {
+      Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+  }
+}
+
+Run-Test 'Invoke-NpmInstallGlobal invokes a single npm.cmd when multiple copies exist on PATH' {
+  # Earlier tests install temporary Invoke-NpmInstallGlobal doubles in function
+  # scope and leave them behind. Restore the real implementations first.
+  ${function:Invoke-NpmInstallGlobal} = $script:RealInvokeNpmInstallGlobal
+  ${function:Get-NpmCommandPath} = $script:RealGetNpmCommandPath
+  ${function:Resolve-ApplicationCommandPath} = $script:RealResolveApplicationCommandPath
+  Remove-Item Function:\Get-Command -ErrorAction SilentlyContinue
+
+  $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ([Guid]::NewGuid().ToString('N'))
+  $firstDir = Join-Path $tempRoot 'first'
+  $secondDir = Join-Path $tempRoot 'second'
+  $originalPath = $env:PATH
+  $originalMirror = $script:BestNpmMirror
+  try {
+    New-Item -ItemType Directory -Path $firstDir,$secondDir -Force | Out-Null
+    $firstNpm = Join-Path $firstDir 'npm.cmd'
+    $secondNpm = Join-Path $secondDir 'npm.cmd'
+    $firstLog = Join-Path $firstDir 'invoked.txt'
+    $secondLog = Join-Path $secondDir 'invoked.txt'
+    Set-Content -LiteralPath $firstNpm -Value ("@echo off`r`necho %~f0> `"$firstLog`"`r`necho %*>> `"$firstLog`"`r`nexit /b 0`r`n") -Encoding ASCII
+    Set-Content -LiteralPath $secondNpm -Value ("@echo off`r`necho %~f0> `"$secondLog`"`r`necho %*>> `"$secondLog`"`r`nexit /b 0`r`n") -Encoding ASCII
+    $env:PATH = "$firstDir;$secondDir;$originalPath"
+    $script:BestNpmMirror = 'https://registry.npmjs.org'
+
+    Invoke-NpmInstallGlobal '@openai/codex@latest'
+
+    Assert-True (Test-Path -LiteralPath $firstLog) 'Expected the first PATH npm.cmd to be invoked.'
+    Assert-True (-not (Test-Path -LiteralPath $secondLog)) 'Expected the second PATH npm.cmd to remain unused.'
+    $log = Get-Content -LiteralPath $firstLog -Raw
+    Assert-Contains $log $firstNpm 'Expected npm install to invoke the first PATH npm.cmd.'
+    Assert-Contains $log 'install -g @openai/codex@latest --registry https://registry.npmjs.org' 'Expected npm install arguments to be preserved.'
+  } finally {
+    $env:PATH = $originalPath
+    $script:BestNpmMirror = $originalMirror
+    if (Test-Path -LiteralPath $tempRoot) {
+      Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+  }
+}
+
+Run-Test 'Update-Codex surfaces real npm failures instead of a false missing-installer message' {
+  function Get-NpmCommandPath() { return 'C:\fake\npm.cmd' }
+  function Invoke-NpmInstallGlobal([string]$PackageSpec, [string]$RegistryOverride = $null) {
+    throw 'network unreachable while fetching package metadata'
+  }
+
+  try {
+    Assert-ThrowsContains { Update-Codex } 'network unreachable while fetching package metadata' 'Expected Codex update to preserve the real npm error.'
+  } finally {
+    ${function:Invoke-NpmInstallGlobal} = $script:RealInvokeNpmInstallGlobal
+    ${function:Get-NpmCommandPath} = $script:RealGetNpmCommandPath
+  }
+}
+
+Run-Test 'Update-Codex retries official registry when mirror omits Windows optional package' {
+  $script:BestNpmMirror = 'https://registry.npmmirror.com'
+  $script:NpmInstallRegistries = @()
+  $script:CodexProbeResults = @(
+    @{ Version = $null; Output = 'Error: Missing optional dependency @openai/codex-win32-x64. Reinstall Codex: npm install -g @openai/codex@latest'; Source = 'C:\npm\codex.cmd' },
+    @{ Version = '0.144.3'; Output = 'codex-cli 0.144.3'; Source = 'C:\npm\codex.cmd' }
+  )
+
+  function Get-NpmCommandPath() { return 'C:\fake\npm.cmd' }
+  function Invoke-NpmInstallGlobal([string]$PackageSpec, [string]$RegistryOverride = $null) {
+    Assert-Equal $PackageSpec '@openai/codex@latest' 'Expected Codex update to install @openai/codex@latest.'
+    $script:NpmInstallRegistries += $RegistryOverride
+  }
+  function Repair-ToolUserPath([string]$ToolId) { return $true }
+  function Invoke-CodexVersionProbe() {
+    $next = $script:CodexProbeResults[0]
+    $script:CodexProbeResults = @($script:CodexProbeResults | Select-Object -Skip 1)
+    return $next
+  }
+
+  try {
+    Update-Codex
+  } finally {
+    ${function:Invoke-NpmInstallGlobal} = $script:RealInvokeNpmInstallGlobal
+    ${function:Get-NpmCommandPath} = $script:RealGetNpmCommandPath
+    Remove-Item Function:\Repair-ToolUserPath -ErrorAction SilentlyContinue
+    Remove-Item Function:\Invoke-CodexVersionProbe -ErrorAction SilentlyContinue
+  }
+
+  Assert-equal $script:NpmInstallRegistries.Count 2 'Expected Codex to retry after the mirror omitted the Windows optional package.'
+  Assert-equal $script:NpmInstallRegistries[0] 'https://registry.npmmirror.com' 'Expected the regional mirror to be attempted first.'
+  Assert-equal $script:NpmInstallRegistries[1] 'https://registry.npmjs.org' 'Expected the official registry retry for the Windows optional package.'
+  Assert-True ($script:CapturedWarnings -like '*missing optional package @openai/codex-win32-x64*').Count -ge 1 -or ($script:CapturedWarnings | Where-Object { $_ -like '*missing optional package @openai/codex-win32-x64*' }).Count -ge 1 'Expected a warning about the missing Windows optional package.'
+}
+
+Run-Test 'Get-CodexMissingOptionalPackageName extracts the platform package name' {
+  $name = Get-CodexMissingOptionalPackageName 'Error: Missing optional dependency @openai/codex-win32-x64. Reinstall Codex: npm install -g @openai/codex@latest'
+  Assert-equal $name '@openai/codex-win32-x64' 'Expected Codex optional dependency parser to extract the platform package name.'
+}
+
+Run-Test 'Resolve-ApplicationCommandPath returns a single curl.exe when Git and System32 both provide curl' {
+  ${function:Resolve-ApplicationCommandPath} = $script:RealResolveApplicationCommandPath
+  Remove-Item Function:\Get-Command -ErrorAction SilentlyContinue
+  $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ([Guid]::NewGuid().ToString('N'))
+  $gitDir = Join-Path $tempRoot 'git'
+  $systemDir = Join-Path $tempRoot 'system32'
+  $originalPath = $env:PATH
+  try {
+    New-Item -ItemType Directory -Path $gitDir,$systemDir -Force | Out-Null
+    $gitCurl = Join-Path $gitDir 'curl.exe'
+    $systemCurl = Join-Path $systemDir 'curl.exe'
+    Set-Content -LiteralPath $gitCurl -Value 'git-curl' -Encoding ASCII
+    Set-Content -LiteralPath $systemCurl -Value 'system-curl' -Encoding ASCII
+    $env:PATH = "$gitDir;$systemDir;$originalPath"
+
+    $resolved = Resolve-ApplicationCommandPath -Name @('curl.exe')
+
+    Assert-Equal $resolved $gitCurl 'Expected curl resolution to keep the first PATH entry only.'
+    Assert-True (-not $resolved.Contains(' ')) 'Expected resolved curl path to be a single filesystem path.'
+  } finally {
+    $env:PATH = $originalPath
+    if (Test-Path -LiteralPath $tempRoot) {
+      Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+  }
+}
+
 Write-Host '[PASS] All Factory review regression tests passed.' -ForegroundColor Green

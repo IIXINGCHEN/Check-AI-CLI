@@ -1,16 +1,34 @@
+param(
+  # Explicit machine-wide install: Program Files + Machine PATH.
+  # Never the default. If the current process is not elevated, local install.ps1
+  # may re-launch itself once via UAC (-Verb RunAs). irm|iex mode will not
+  # auto-elevate; it prints an admin command instead.
+  [switch]$Machine,
+
+  # Explicit current-user install (default). Useful to force user scope even in
+  # an already-elevated shell.
+  [switch]$CurrentUser
+)
+
 $ErrorActionPreference = 'Stop'
 
 # PowerShell 5.1 on older Windows may not negotiate TLS 1.2 by default.
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 
 # This script supports "irm ... | iex" one-liner install/update for this repo's files
+# Defaults (safe):
+# - Install dir: %LOCALAPPDATA%\Programs\Tools\Check-AI-CLI
+# - PATH scope: CurrentUser
+# - No automatic admin elevation
+# Machine-wide install is opt-in only: -Machine or CHECK_AI_CLI_PATH_SCOPE=Machine
 # Env vars:
 # - CHECK_AI_CLI_REF: pin tag/commit/main; default latest stable release, else latest main commit, fallback main
 # - CHECK_AI_CLI_RAW_BASE: raw base URL (mirror)
-# - CHECK_AI_CLI_INSTALL_DIR: install directory (default Program Files)
-# - CHECK_AI_CLI_PATH_SCOPE: CurrentUser or Machine (default Machine)
+# - CHECK_AI_CLI_INSTALL_DIR: install directory override
+# - CHECK_AI_CLI_PATH_SCOPE: CurrentUser or Machine
 # - CHECK_AI_CLI_RUN: set to 1 to run after install
 # - CHECK_AI_CLI_EXPECTED_MANIFEST_SHA256: optional out-of-band manifest pin
+# - CHECK_AI_CLI_ELEVATION_DONE: internal re-entry marker after UAC
 
 function Write-Info([string]$Message) { Write-Host "[INFO] $Message" -ForegroundColor Cyan }
 function Write-Success([string]$Message) { Write-Host "[SUCCESS] $Message" -ForegroundColor Green }
@@ -135,23 +153,65 @@ function Get-BaseUrl() {
   return (Get-GitHubRawBase (Get-ResolvedRef))
 }
 
-function Get-InstallDir() {
-  $envDir = $env:CHECK_AI_CLI_INSTALL_DIR
-  if (-not [string]::IsNullOrWhiteSpace($envDir)) { return $envDir }
-  if (Test-IsAdmin) { return 'C:\Program Files\Tools\Check-AI-CLI' }
+function Get-CurrentUserInstallDir() {
   $localAppData = $env:LOCALAPPDATA
-  if ([string]::IsNullOrWhiteSpace($localAppData)) { return (Join-Path $env:USERPROFILE 'AppData\Local\Programs\Tools\Check-AI-CLI') }
+  if ([string]::IsNullOrWhiteSpace($localAppData)) {
+    return (Join-Path $env:USERPROFILE 'AppData\Local\Programs\Tools\Check-AI-CLI')
+  }
   return (Join-Path $localAppData 'Programs\Tools\Check-AI-CLI')
 }
 
+function Get-MachineInstallDir() {
+  return (Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'Tools\Check-AI-CLI')
+}
+
+function Test-MachineInstallRequested() {
+  # Explicit -CurrentUser always wins over ambient admin privileges.
+  if ($CurrentUser) { return $false }
+  if ($Machine) { return $true }
+
+  $scope = $env:CHECK_AI_CLI_PATH_SCOPE
+  if (-not [string]::IsNullOrWhiteSpace($scope) -and $scope.Trim() -eq 'Machine') { return $true }
+
+  $installScope = $env:CHECK_AI_CLI_INSTALL_SCOPE
+  if (-not [string]::IsNullOrWhiteSpace($installScope) -and $installScope.Trim() -eq 'Machine') { return $true }
+
+  # Explicit Program Files install dir counts as machine-wide intent.
+  $envDir = $env:CHECK_AI_CLI_INSTALL_DIR
+  if (-not [string]::IsNullOrWhiteSpace($envDir) -and (Test-IsUnderProgramFiles $envDir)) { return $true }
+
+  return $false
+}
+
+function Get-InstallDir() {
+  $envDir = $env:CHECK_AI_CLI_INSTALL_DIR
+  if (-not [string]::IsNullOrWhiteSpace($envDir)) { return $envDir }
+
+  # Safe default: CurrentUser even when the shell is already elevated.
+  # Machine-wide Program Files install is opt-in only (-Machine / env scope).
+  if (Test-MachineInstallRequested) { return (Get-MachineInstallDir) }
+  return (Get-CurrentUserInstallDir)
+}
+
 function Get-PathScope() {
+  # Explicit switches win over ambient env/admin state.
+  if ($CurrentUser) { return 'CurrentUser' }
+  if ($Machine) { return 'Machine' }
+
   $s = $env:CHECK_AI_CLI_PATH_SCOPE
-  if ([string]::IsNullOrWhiteSpace($s)) { if (Test-IsAdmin) { return 'Machine' } ; return 'CurrentUser' }
-  $t = $s.Trim()
-  if ($t -ne 'Machine' -and $t -ne 'CurrentUser') {
-    throw 'CHECK_AI_CLI_PATH_SCOPE must be Machine or CurrentUser.'
+  if (-not [string]::IsNullOrWhiteSpace($s)) {
+    $t = $s.Trim()
+    if ($t -ne 'Machine' -and $t -ne 'CurrentUser') {
+      throw 'CHECK_AI_CLI_PATH_SCOPE must be Machine or CurrentUser.'
+    }
+    return $t
   }
-  return $t
+
+  if (Test-MachineInstallRequested) { return 'Machine' }
+
+  $installDir = Get-InstallDir
+  if (Test-IsUnderProgramFiles $installDir) { return 'Machine' }
+  return 'CurrentUser'
 }
 
 function Get-RunFlag() {
@@ -177,6 +237,85 @@ function Test-IsUnderProgramFiles([string]$Path) {
 function Require-Admin([string]$Reason) {
   if (Test-IsAdmin) { return }
   throw "Administrator required: $Reason"
+}
+
+function Test-NeedsAdminForInstall([string]$Dir, [string]$Scope) {
+  if ($Scope -eq 'Machine') { return $true }
+  if (Test-IsUnderProgramFiles $Dir) { return $true }
+  return $false
+}
+
+function Test-ElevationAlreadyAttempted() {
+  $v = $env:CHECK_AI_CLI_ELEVATION_DONE
+  if ([string]::IsNullOrWhiteSpace($v)) { return $false }
+  return $v.Trim() -eq '1'
+}
+
+function Get-ElevationPreservedEnvNames() {
+  return @(
+    'CHECK_AI_CLI_REF',
+    'CHECK_AI_CLI_RAW_BASE',
+    'CHECK_AI_CLI_INSTALL_DIR',
+    'CHECK_AI_CLI_PATH_SCOPE',
+    'CHECK_AI_CLI_INSTALL_SCOPE',
+    'CHECK_AI_CLI_RUN',
+    'CHECK_AI_CLI_EXPECTED_MANIFEST_SHA256',
+    'CHECK_AI_CLI_ALLOW_UNTRUSTED_MIRROR',
+    'HTTP_PROXY',
+    'HTTPS_PROXY',
+    'ALL_PROXY',
+    'NO_PROXY'
+  )
+}
+
+function Get-ElevatedInstallCommand([string]$ScriptPath) {
+  $lines = New-Object System.Collections.Generic.List[string]
+  $lines.Add("`$ErrorActionPreference = 'Stop'")
+  $lines.Add("`$env:CHECK_AI_CLI_ELEVATION_DONE = '1'")
+
+  # Force machine scope in the elevated re-entry even if the caller only used -Machine.
+  if ([string]::IsNullOrWhiteSpace($env:CHECK_AI_CLI_PATH_SCOPE)) {
+    $lines.Add("`$env:CHECK_AI_CLI_PATH_SCOPE = 'Machine'")
+  }
+
+  foreach ($name in (Get-ElevationPreservedEnvNames)) {
+    $value = [Environment]::GetEnvironmentVariable($name, 'Process')
+    if ([string]::IsNullOrWhiteSpace($value)) { continue }
+    $escaped = $value.Replace("'", "''")
+    $lines.Add("`$env:$name = '$escaped'")
+  }
+
+  $scriptEscaped = $ScriptPath.Replace("'", "''")
+  $lines.Add("& '$scriptEscaped' -Machine")
+  $lines.Add('exit $LASTEXITCODE')
+  return ($lines -join '; ')
+}
+
+function Request-ElevatedInstall([string]$Reason) {
+  if (Test-ElevationAlreadyAttempted) {
+    throw "Administrator required after elevation re-entry: $Reason"
+  }
+
+  # irm|iex has no durable script path. Refuse silent elevation there so users
+  # consciously start an elevated shell instead of approving a temp payload.
+  if ([string]::IsNullOrWhiteSpace($PSScriptRoot)) {
+    throw "Administrator required: $Reason. Re-run in elevated PowerShell with -Machine, or run a local install.ps1 -Machine from a cloned/extracted payload."
+  }
+
+  $scriptPath = Join-Path $PSScriptRoot 'install.ps1'
+  if (-not (Test-Path -LiteralPath $scriptPath)) {
+    throw "Administrator required: $Reason. install.ps1 not found for elevation: $scriptPath"
+  }
+
+  Write-Warn "Administrator privileges required: $Reason"
+  Write-Info 'Requesting elevation via UAC for machine-wide install only...'
+  Write-Info 'Default CurrentUser installs never auto-elevate.'
+
+  $command = Get-ElevatedInstallCommand $scriptPath
+  $hostExe = if ($PSVersionTable.PSVersion.Major -ge 6) { 'pwsh' } else { 'powershell' }
+  $proc = Start-Process -FilePath $hostExe -Verb RunAs -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', $command) -Wait -PassThru
+  if ($null -eq $proc.ExitCode) { exit 1 }
+  exit $proc.ExitCode
 }
 
 function Ensure-Directory([string]$Path) {
@@ -552,10 +691,6 @@ function Add-ToPath([string]$Dir, [string]$Scope) {
   $env:Path = $newPath
 }
 
-function Get-MachineInstallDir() {
-  return (Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'Tools\Check-AI-CLI')
-}
-
 function Get-InstallCommandCandidates() {
   return @('check-ai-cli.ps1', 'check-ai-cli.cmd', 'check-ai-cli')
 }
@@ -575,9 +710,12 @@ function Warn-ShadowedCurrentUserInstall([string]$Dir, [string]$Scope) {
   if ((Normalize-Dir $machineDir).ToLowerInvariant() -eq (Normalize-Dir $Dir).ToLowerInvariant()) { return }
   if (-not (Test-InstallHasCommand $machineDir)) { return }
   $cmdPath = Join-Path $Dir 'bin\check-ai-cli.cmd'
+  $uninstallCmd = 'powershell -NoProfile -ExecutionPolicy Bypass -File .\uninstall.ps1 -ProgramFiles'
   Write-Warn "Detected another Check-AI-CLI install at: $machineDir"
-  Write-Warn 'Both installation directories are active; the entrypoint selects the newer installed copy by file timestamp.'
-  Write-Warn "Recovery: run $cmdPath directly to use this CurrentUser install, or reinstall the preferred scope to refresh its copy."
+  Write-Warn 'New PowerShell sessions may still launch the older Program Files copy before this CurrentUser install.'
+  Write-Warn "Recovery option 1: run $cmdPath directly"
+  Write-Warn 'Recovery option 2: rerun install.ps1 as Administrator to update the machine-wide copy'
+  Write-Warn "Recovery option 3: in elevated PowerShell, uninstall only the Program Files copy with: $uninstallCmd"
 }
 
 function Print-NextSteps([string]$Dir) {
@@ -668,22 +806,41 @@ function Get-SkipMain() {
 
 function Print-AdminHint() {
   Write-Host ""
-  Write-Host "Run PowerShell as Administrator, then rerun:"
+  Write-Host "Safe default (no admin): CurrentUser install"
+  Write-Host "  powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1"
+  Write-Host ""
+  Write-Host "Machine-wide install (Program Files + Machine PATH):"
+  Write-Host "  # local payload / clone"
+  Write-Host "  powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Machine"
+  Write-Host "  # already elevated shell + remote one-liner"
+  Write-Host "  `$env:CHECK_AI_CLI_PATH_SCOPE = 'Machine'"
   Write-Host "  irm https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main/install.ps1 | iex"
   Write-Host ""
-  Write-Host "Or install to CurrentUser without admin:"
-  Write-Host "  `$env:CHECK_AI_CLI_PATH_SCOPE = 'CurrentUser'"
-  Write-Host "  `$env:CHECK_AI_CLI_INSTALL_DIR = (Join-Path `$env:LOCALAPPDATA 'Programs\\Tools\\Check-AI-CLI')"
-  Write-Host "  irm https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main/install.ps1 | iex"
+  Write-Host "Uninstall machine-wide copy only:"
+  Write-Host "  powershell -NoProfile -ExecutionPolicy Bypass -File .\uninstall.ps1 -ProgramFiles"
   Write-Host ""
 }
 
 function Invoke-InstallerMain() {
+  if ($Machine -and $CurrentUser) {
+    throw 'Specify only one of -Machine or -CurrentUser.'
+  }
+
   $installDir = Get-InstallDir
   $pathScope = Get-PathScope
   $runAfter = Get-RunFlag
 
+  Write-Info "Install mode: $(if (Test-MachineInstallRequested) { 'Machine' } else { 'CurrentUser' })"
+  Write-Info "Install directory: $installDir"
+  Write-Info "PATH scope: $pathScope"
+
   try {
+    if ((Test-NeedsAdminForInstall $installDir $pathScope) -and -not (Test-IsAdmin)) {
+      # Only machine-wide installs may prompt for elevation. CurrentUser never does.
+      Request-ElevatedInstall "writing to '$installDir' and/or updating $pathScope PATH"
+      return
+    }
+
     if (Test-IsUnderProgramFiles $installDir) { Require-Admin "writing to Program Files: $installDir" }
     if ($pathScope -eq 'Machine') { Require-Admin "updating Machine PATH" }
 

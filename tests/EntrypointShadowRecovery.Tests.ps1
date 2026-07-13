@@ -27,50 +27,93 @@ function Invoke-PwshSnippet([string]$Script) {
   return (($output | Out-String).TrimEnd())
 }
 
-Run-Test 'bin/check-ai-cli.ps1 forwards Program Files launch to a newer CurrentUser install' {
+function New-ShadowFixture {
+  $root = Join-Path ([IO.Path]::GetTempPath()) ("check-ai-cli-shadow-" + [Guid]::NewGuid().ToString('N'))
+  $pfRoot = Join-Path $root 'ProgramFiles\Tools\Check-AI-CLI'
+  $userRoot = Join-Path $root 'LocalAppData\Programs\Tools\Check-AI-CLI'
+  $localAppData = Join-Path $root 'LocalAppData'
+
+  foreach ($dir in @(
+    (Join-Path $pfRoot 'bin'),
+    (Join-Path $pfRoot 'scripts'),
+    (Join-Path $userRoot 'bin'),
+    (Join-Path $userRoot 'scripts')
+  )) {
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+  }
+
+  Copy-Item -LiteralPath (Join-Path $repoRoot 'bin\check-ai-cli.ps1') -Destination (Join-Path $pfRoot 'bin\check-ai-cli.ps1') -Force
+  Set-Content -LiteralPath (Join-Path $userRoot 'bin\check-ai-cli.ps1') -Value "# user entrypoint fixture`r`n" -Encoding ASCII
+  Set-Content -LiteralPath (Join-Path $pfRoot 'scripts\Check-AI-CLI-Versions.ps1') -Value "# pf main`r`n" -Encoding ASCII
+  Set-Content -LiteralPath (Join-Path $userRoot 'scripts\Check-AI-CLI-Versions.ps1') -Value "# user main`r`n" -Encoding ASCII
+
+  return @{
+    Root = $root
+    ProgramFilesRoot = $pfRoot
+    UserRoot = $userRoot
+    LocalAppData = $localAppData
+    PfMain = (Join-Path $pfRoot 'scripts\Check-AI-CLI-Versions.ps1')
+    UserMain = (Join-Path $userRoot 'scripts\Check-AI-CLI-Versions.ps1')
+    UserEntry = (Join-Path $userRoot 'bin\check-ai-cli.ps1')
+  }
+}
+
+function Invoke-ShadowEntrypoint([hashtable]$Fixture) {
   $script = @"
 `$env:CHECK_AI_CLI_TEST_MODE = '1'
-`$env:CHECK_AI_CLI_TEST_INSTALL_ROOT = 'C:\Program Files\Tools\Check-AI-CLI'
-`$env:LOCALAPPDATA = 'C:\Users\Tester\AppData\Local'
-function Test-Path {
-  param([string]`$Path, [string]`$LiteralPath)
-  `$target = if (`$PSBoundParameters.ContainsKey('LiteralPath')) { `$LiteralPath } else { `$Path }
-  return `$target -eq 'C:\Users\Tester\AppData\Local\Programs\Tools\Check-AI-CLI\bin\check-ai-cli.ps1'
-}
-function Get-Item {
-  param([string]`$LiteralPath)
-  [pscustomobject]@{ LastWriteTimeUtc = if (`$LiteralPath -like '*AppData*') { [datetime]'2026-07-13T00:00:00Z' } else { [datetime]'2026-07-12T00:00:00Z' } }
-}
-. '$repoRoot\bin\check-ai-cli.ps1'
+`$env:CHECK_AI_CLI_TEST_INSTALL_ROOT = '$($Fixture.ProgramFilesRoot.Replace("'", "''"))'
+`$env:LOCALAPPDATA = '$($Fixture.LocalAppData.Replace("'", "''"))'
+. '$($Fixture.ProgramFilesRoot.Replace("'", "''"))\bin\check-ai-cli.ps1'
 '{0}|{1}' -f `$script:ShadowRecoveryAction, `$script:ShadowRecoveryTarget
 "@
-
-  $result = Invoke-PwshSnippet $script
-
-  Assert-Equal $result 'forward|C:\Users\Tester\AppData\Local\Programs\Tools\Check-AI-CLI\bin\check-ai-cli.ps1' 'Expected Program Files launch to forward to the CurrentUser entrypoint when available.'
+  return (Invoke-PwshSnippet $script)
 }
 
-Run-Test 'bin/check-ai-cli.ps1 keeps Program Files launch when CurrentUser install is older' {
-  $script = @"
-`$env:CHECK_AI_CLI_TEST_MODE = '1'
-`$env:CHECK_AI_CLI_TEST_INSTALL_ROOT = 'C:\Program Files\Tools\Check-AI-CLI'
-`$env:LOCALAPPDATA = 'C:\Users\Tester\AppData\Local'
-function Test-Path {
-  param([string]`$Path, [string]`$LiteralPath)
-  `$target = if (`$PSBoundParameters.ContainsKey('LiteralPath')) { `$LiteralPath } else { `$Path }
-  return `$target -eq 'C:\Users\Tester\AppData\Local\Programs\Tools\Check-AI-CLI\bin\check-ai-cli.ps1'
-}
-function Get-Item {
-  param([string]`$LiteralPath)
-  [pscustomobject]@{ LastWriteTimeUtc = if (`$LiteralPath -like '*AppData*') { [datetime]'2026-06-30T00:00:00Z' } else { [datetime]'2026-07-12T00:00:00Z' } }
-}
-. '$repoRoot\bin\check-ai-cli.ps1'
-'{0}|{1}' -f `$script:ShadowRecoveryAction, `$script:ShadowRecoveryTarget
-"@
+Run-Test 'bin/check-ai-cli.ps1 forwards Program Files launch to a fresher CurrentUser install' {
+  $fixture = New-ShadowFixture
+  try {
+    $older = (Get-Date).ToUniversalTime().AddDays(-2)
+    $newer = (Get-Date).ToUniversalTime().AddDays(-1)
+    [IO.File]::SetLastWriteTimeUtc($fixture.PfMain, $older)
+    [IO.File]::SetLastWriteTimeUtc($fixture.UserMain, $newer)
 
-  $result = Invoke-PwshSnippet $script
+    $result = Invoke-ShadowEntrypoint $fixture
 
-  Assert-Equal $result 'local|C:\Program Files\Tools\Check-AI-CLI\scripts\Check-AI-CLI-Versions.ps1' 'Expected a stale CurrentUser install to be ignored in favor of the newer Program Files install.'
+    Assert-Equal $result ("forward|" + $fixture.UserEntry) 'Expected Program Files launch to forward when the CurrentUser main script is newer or equal.'
+  } finally {
+    if (Test-Path -LiteralPath $fixture.Root) {
+      Remove-Item -LiteralPath $fixture.Root -Recurse -Force -ErrorAction SilentlyContinue
+    }
+  }
+}
+
+Run-Test 'bin/check-ai-cli.ps1 keeps Program Files when CurrentUser install is stale' {
+  $fixture = New-ShadowFixture
+  try {
+    $older = (Get-Date).ToUniversalTime().AddDays(-3)
+    $newer = (Get-Date).ToUniversalTime().AddDays(-1)
+    [IO.File]::SetLastWriteTimeUtc($fixture.UserMain, $older)
+    [IO.File]::SetLastWriteTimeUtc($fixture.PfMain, $newer)
+
+    $result = Invoke-ShadowEntrypoint $fixture
+
+    Assert-Equal $result ("keep-program-files|" + $fixture.PfMain) 'Expected a stale CurrentUser install not to shadow a newer Program Files payload.'
+  } finally {
+    if (Test-Path -LiteralPath $fixture.Root) {
+      Remove-Item -LiteralPath $fixture.Root -Recurse -Force -ErrorAction SilentlyContinue
+    }
+  }
+}
+
+Run-Test 'bin/check-ai-cli.cmd no longer hard-forwards to CurrentUser before PowerShell freshness checks' {
+  $cmdPath = Join-Path $repoRoot 'bin\check-ai-cli.cmd'
+  $text = Get-Content -LiteralPath $cmdPath -Raw
+  if ($text -match 'USER_ENTRY=') {
+    throw 'Expected CMD entrypoint to stop hard-forwarding to CurrentUser before the PowerShell freshness check.'
+  }
+  if ($text -notmatch 'check-ai-cli\.ps1') {
+    throw 'Expected CMD entrypoint to hand off to the sibling PowerShell entrypoint.'
+  }
 }
 
 Write-Host '[PASS] All entrypoint shadow recovery regression tests passed.' -ForegroundColor Green
