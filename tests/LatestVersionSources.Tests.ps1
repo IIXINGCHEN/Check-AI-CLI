@@ -281,6 +281,11 @@ Run-Test 'Update-Claude falls back to npm when native and official install paths
   function Repair-ToolUserPath([string]$ToolId) { return $true }
   function Get-LatestClaudeVersion() { return '2.1.119' }
   function Get-ClaudeBootstrapStableVersion() { return '2.1.119' }
+  # Isolate from host Claude installs: CI runners and developer machines may
+  # already have a different local version. Without this stub, Update-Claude
+  # treats the mocked npm path as incomplete and throws after fallback.
+  $script:LocalClaudeVersion = $null
+  function Get-LocalClaudeVersion() { return $script:LocalClaudeVersion }
 
   $script:NpmInstallCalls = 0
 
@@ -294,11 +299,12 @@ Run-Test 'Update-Claude falls back to npm when native and official install paths
 
   function Update-ClaudeViaNpm() {
     $script:NpmInstallCalls += 1
+    $script:LocalClaudeVersion = '2.1.119'
   }
 
   Update-Claude
 
-  Assert-Equal $script:NpmInstallCalls 1 'Expected Claude update to try npm after native and official install paths fail.'
+  Assert-equal $script:NpmInstallCalls 1 'Expected Claude update to try npm after native and official install paths fail.'
   Assert-True ($script:CapturedWarnings -contains 'official Claude install script failed: install script failed: ECONNREFUSED') 'Expected official install script failure detail to be logged before npm fallback.'
 }
 
