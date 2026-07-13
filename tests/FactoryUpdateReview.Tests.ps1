@@ -673,6 +673,76 @@ Run-Test 'Get-CodexMissingOptionalPackageName extracts the platform package name
   Assert-equal $name '@openai/codex-win32-x64' 'Expected Codex optional dependency parser to extract the platform package name.'
 }
 
+Run-Test 'Get-CodexOptionalPackageSpec reads npm alias from package.json optionalDependencies' {
+  $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ([Guid]::NewGuid().ToString('N'))
+  $pkgRoot = Join-Path $tempRoot 'node_modules\@openai\codex'
+  New-Item -ItemType Directory -Path $pkgRoot -Force | Out-Null
+  try {
+    $json = @'
+{
+  "name": "@openai/codex",
+  "version": "0.144.3",
+  "optionalDependencies": {
+    "@openai/codex-win32-x64": "npm:@openai/codex@0.144.3-win32-x64"
+  }
+}
+'@
+    Set-Content -LiteralPath (Join-Path $pkgRoot 'package.json') -Value $json -Encoding UTF8
+    function Get-CodexInstalledPackageRoot() { return $pkgRoot }
+
+    $spec = Get-CodexOptionalPackageSpec '@openai/codex-win32-x64'
+    Assert-equal $spec '@openai/codex@0.144.3-win32-x64' 'Expected optional package alias to strip the npm: prefix.'
+  } finally {
+    Remove-Item Function:\Get-CodexInstalledPackageRoot -ErrorAction SilentlyContinue
+    if (Test-Path -LiteralPath $tempRoot) {
+      Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+  }
+}
+
+Run-Test 'Update-Codex installs exact optional package when official reinstall still lacks platform binary' {
+  $script:BestNpmMirror = 'https://registry.npmmirror.com'
+  $script:NpmInstallCalls = @()
+  $script:CodexProbeResults = @(
+    @{ Version = $null; Output = 'Error: Missing optional dependency @openai/codex-win32-x64.'; Source = 'codex.cmd' },
+    @{ Version = $null; Output = 'Error: Missing optional dependency @openai/codex-win32-x64.'; Source = 'codex.cmd' },
+    @{ Version = '0.144.3'; Output = 'codex-cli 0.144.3'; Source = 'codex.cmd' }
+  )
+
+  function Get-NpmCommandPath() { return 'npm.cmd' }
+  function Invoke-NpmInstallGlobal([string]$PackageSpec, [string]$RegistryOverride = $null) {
+    $script:NpmInstallCalls += @{ Spec = $PackageSpec; Registry = $RegistryOverride }
+  }
+  function Repair-ToolUserPath([string]$ToolId) { return $true }
+  function Invoke-CodexVersionProbe() {
+    $next = $script:CodexProbeResults[0]
+    $script:CodexProbeResults = @($script:CodexProbeResults | Select-Object -Skip 1)
+    return $next
+  }
+  function Get-CodexOptionalPackageSpec([string]$OptionalPackageName) {
+    Assert-Equal $OptionalPackageName '@openai/codex-win32-x64' 'Expected optional package recovery to target the missing Windows package.'
+    return '@openai/codex@0.144.3-win32-x64'
+  }
+
+  try {
+    Update-Codex
+  } finally {
+    ${function:Invoke-NpmInstallGlobal} = $script:RealInvokeNpmInstallGlobal
+    ${function:Get-NpmCommandPath} = $script:RealGetNpmCommandPath
+    Remove-Item Function:\Repair-ToolUserPath -ErrorAction SilentlyContinue
+    Remove-Item Function:\Invoke-CodexVersionProbe -ErrorAction SilentlyContinue
+    Remove-Item Function:\Get-CodexOptionalPackageSpec -ErrorAction SilentlyContinue
+  }
+
+  Assert-equal $script:NpmInstallCalls.Count 3 'Expected mirror install, official reinstall, then exact optional package install.'
+  Assert-equal $script:NpmInstallCalls[0].Spec '@openai/codex@latest' 'Expected first install to be @openai/codex@latest.'
+  Assert-equal $script:NpmInstallCalls[0].Registry 'https://registry.npmmirror.com' 'Expected first install on the mirror.'
+  Assert-equal $script:NpmInstallCalls[1].Registry 'https://registry.npmjs.org' 'Expected second install on official registry.'
+  Assert-equal $script:NpmInstallCalls[2].Spec '@openai/codex@0.144.3-win32-x64' 'Expected third install to target the exact optional package.'
+  Assert-equal $script:NpmInstallCalls[2].Registry 'https://registry.npmjs.org' 'Expected optional package install on official registry.'
+}
+
+
 Run-Test 'Resolve-ApplicationCommandPath returns a single curl.exe when Git and System32 both provide curl' {
   ${function:Resolve-ApplicationCommandPath} = $script:RealResolveApplicationCommandPath
   Remove-Item Function:\Get-Command -ErrorAction SilentlyContinue

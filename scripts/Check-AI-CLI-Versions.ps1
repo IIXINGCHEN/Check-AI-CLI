@@ -1288,6 +1288,36 @@ function Get-CodexMissingOptionalPackageName([string]$Text) {
   return $null
 }
 
+function Get-CodexInstalledPackageRoot() {
+  $npmBin = Get-NpmGlobalBinDir
+  if (-not $npmBin) { return $null }
+  $pkg = Join-Path $npmBin 'node_modules\@openai\codex'
+  if (Test-Path -LiteralPath (Join-Path $pkg 'package.json')) { return $pkg }
+  return $null
+}
+
+function Get-CodexOptionalPackageSpec([string]$OptionalPackageName) {
+  if ([string]::IsNullOrWhiteSpace($OptionalPackageName)) { return $null }
+  $root = Get-CodexInstalledPackageRoot
+  if (-not $root) { return $null }
+  try {
+    $pkgJson = Get-Content -LiteralPath (Join-Path $root 'package.json') -Raw -ErrorAction Stop | ConvertFrom-Json
+    $optional = $pkgJson.optionalDependencies
+    if (-not $optional) { return $null }
+    $prop = $optional.PSObject.Properties[$OptionalPackageName]
+    if (-not $prop) { return $null }
+    $spec = [string]$prop.Value
+    if ([string]::IsNullOrWhiteSpace($spec)) { return $null }
+    # optionalDependencies may be "npm:@openai/codex@0.144.3-win32-x64" or a bare version.
+    if ($spec.StartsWith('npm:', [StringComparison]::OrdinalIgnoreCase)) {
+      return $spec.Substring(4)
+    }
+    return ($OptionalPackageName + '@' + $spec)
+  } catch {
+    return $null
+  }
+}
+
 function Test-CodexRunnable() {
   return [bool]((Invoke-CodexVersionProbe).Version)
 }
@@ -1716,6 +1746,24 @@ function Update-Codex() {
     $probe = Invoke-CodexVersionProbe
     if ($probe.Version) { return }
     $missing = Get-CodexMissingOptionalPackageName $probe.Output
+  }
+
+  # Last resort: install the platform optional package by the exact alias from
+  # package.json (e.g. @openai/codex@0.144.3-win32-x64) on the official registry.
+  if ($missing) {
+    $optionalSpec = Get-CodexOptionalPackageSpec $missing
+    if ($optionalSpec) {
+      Write-Warn "Trying official optional package install: $optionalSpec"
+      try {
+        Invoke-NpmInstallGlobal $optionalSpec $official
+        [void](Repair-ToolUserPath 'codex')
+        $probe = Invoke-CodexVersionProbe
+        if ($probe.Version) { return }
+        $missing = Get-CodexMissingOptionalPackageName $probe.Output
+      } catch {
+        Write-Warn "Optional package install failed: $($_.Exception.Message)"
+      }
+    }
   }
 
   if ($missing) {

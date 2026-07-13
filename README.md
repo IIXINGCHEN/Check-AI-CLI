@@ -84,6 +84,15 @@ $env:CHECK_AI_CLI_PATH_SCOPE = 'Machine'
 irm https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main/install.ps1 | iex
 ```
 
+安装目标矩阵:
+
+| 意图 | 设置 | 结果 |
+|------|------|------|
+| 默认 | 无参数 | CurrentUser 目录 + CurrentUser PATH |
+| 全机 | `-Machine` 或 `CHECK_AI_CLI_PATH_SCOPE=Machine` | Program Files + Machine PATH |
+| 自定义用户目录 | `CHECK_AI_CLI_INSTALL_DIR=<user path>` | 该目录 + CurrentUser PATH |
+| 禁止混用 | Program Files 目录 + `PATH_SCOPE=CurrentUser` | **报错拒绝** |
+
 ### Windows (卸载, 需要输入 `DELETE` 确认)
 ```powershell
 # 卸载旧的 Program Files / Machine 安装 (需要管理员 PowerShell)

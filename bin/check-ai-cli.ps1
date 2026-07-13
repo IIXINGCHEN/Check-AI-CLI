@@ -51,20 +51,41 @@ function Get-InstallMainScriptPath([string]$InstallRoot) {
   return (Join-Path $InstallRoot 'scripts\Check-AI-CLI-Versions.ps1')
 }
 
-# Prefer a CurrentUser install only when its main script is at least as new as
-# the Program Files payload. Blind forwarding lets a stale user copy permanently
-# shadow a newer machine-wide install (e.g. missing curl fallback / npm path fix).
+function Get-FileSha256Hex([string]$Path) {
+  try {
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try {
+      $bytes = [IO.File]::ReadAllBytes($Path)
+      return ([BitConverter]::ToString($sha.ComputeHash($bytes))).Replace('-', '').ToLowerInvariant()
+    } finally {
+      $sha.Dispose()
+    }
+  } catch {
+    return $null
+  }
+}
+
+# Prefer a CurrentUser install only when its main script is strictly newer than
+# the Program Files payload. Equal mtimes, identical content, or IO errors fail
+# closed toward Program Files so a stale user copy cannot shadow a fixed PF install.
 function Test-ShouldPreferUserInstall([string]$ProgramFilesRoot, [string]$UserRoot) {
   $userMain = Get-InstallMainScriptPath $UserRoot
   $pfMain = Get-InstallMainScriptPath $ProgramFilesRoot
   if (-not (Test-Path -LiteralPath $userMain)) { return $false }
   if (-not (Test-Path -LiteralPath $pfMain)) { return $true }
+
+  $userHash = Get-FileSha256Hex $userMain
+  $pfHash = Get-FileSha256Hex $pfMain
+  if ($userHash -and $pfHash -and ($userHash -eq $pfHash)) {
+    return $false
+  }
+
   try {
     $userTime = [IO.File]::GetLastWriteTimeUtc($userMain)
     $pfTime = [IO.File]::GetLastWriteTimeUtc($pfMain)
-    return $userTime -ge $pfTime
+    return $userTime -gt $pfTime
   } catch {
-    return $true
+    return $false
   }
 }
 

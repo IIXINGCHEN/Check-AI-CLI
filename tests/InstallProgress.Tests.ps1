@@ -287,21 +287,61 @@ function Test-IsAdmin() { return `$false }
   Assert-equal $result ("dir=$pfDir|scope=Machine|machine=True|needsAdmin=True") 'Expected Machine scope to select Program Files and require admin.'
 }
 
-Run-Test 'Request-ElevatedInstall includes local-only UAC elevation and -Machine guidance' {
-  $script = @"
-`$env:CHECK_AI_CLI_SKIP_MAIN = '1'
-. '$repoRoot\install.ps1'
-`$text = (Get-Content -LiteralPath (Join-Path '$repoRoot' 'install.ps1') -Raw)
-if (`$text -notmatch 'function Request-ElevatedInstall') { throw 'missing Request-ElevatedInstall' }
-if (`$text -notmatch 'PSScriptRoot') { throw 'missing PSScriptRoot guard' }
-if (`$text -notmatch '-Machine') { throw 'missing -Machine guidance' }
-if (`$text -notmatch 'RunAs') { throw 'missing RunAs elevation path' }
-if (`$text -notmatch 'CHECK_AI_CLI_ELEVATION_DONE') { throw 'missing elevation re-entry marker' }
-'ok'
-"@
+Run-Test 'Request-ElevatedInstall uses temp -File bootstrap instead of -Command join' {
+  $text = Get-Content -LiteralPath (Join-Path $repoRoot 'install.ps1') -Raw
+  Assert-True ($text.Contains('function Request-ElevatedInstall')) 'Expected Request-ElevatedInstall to exist.'
+  Assert-True ($text.Contains('function New-ElevatedInstallBootstrap')) 'Expected New-ElevatedInstallBootstrap to exist.'
+  Assert-True ($text.Contains('PSScriptRoot')) 'Expected PSScriptRoot guard for irm|iex refusal.'
+  Assert-True ($text.Contains('-Machine')) 'Expected -Machine guidance/re-entry.'
+  Assert-True ($text.Contains('RunAs')) 'Expected UAC RunAs elevation.'
+  Assert-True ($text.Contains('CHECK_AI_CLI_ELEVATION_DONE')) 'Expected elevation re-entry marker.'
+  Assert-True ($text.Contains("'-File', `$bootstrap") -or $text.Contains("'-File', $bootstrap")) 'Expected -File bootstrap elevation path.'
+  Assert-True ($text.Contains('New-ElevatedInstallBootstrap') -and $text.Contains('-File')) 'Expected elevation to use bootstrap file launch.'
+  Assert-True (-not $text.Contains("'-Command', `$command") -and -not $text.Contains("'-Command', $command")) 'Expected legacy -Command elevation join to be removed.'
+}
 
-  $result = Invoke-PwshSnippet $script
-  Assert-equal $result 'ok' 'Expected install.ps1 to include safe local-only UAC elevation and -Machine guidance.'
+Run-Test 'New-ElevatedInstallBootstrap preserves env values containing semicolons as single assignments' {
+  $env:CHECK_AI_CLI_SKIP_MAIN = '1'
+  . (Join-Path $repoRoot 'install.ps1')
+  $originalProxy = $env:HTTP_PROXY
+  $originalHttps = $env:HTTPS_PROXY
+  $bootstrap = $null
+  try {
+    $env:HTTP_PROXY = 'http://127.0.0.1:7890;http://backup:7890'
+    $env:HTTPS_PROXY = 'http://127.0.0.1:7890'
+    $bootstrap = New-ElevatedInstallBootstrap (Join-Path $repoRoot 'install.ps1')
+    $text = Get-Content -LiteralPath $bootstrap -Raw
+    Assert-True ($text.Contains("HTTP_PROXY = 'http://127.0.0.1:7890;http://backup:7890'")) 'Expected semicolon-bearing proxy to stay inside one quoted assignment.'
+    Assert-True ($text -match '-Machine') 'Expected bootstrap to invoke install.ps1 -Machine.'
+  } finally {
+    if ($null -eq $originalProxy) { Remove-Item Env:HTTP_PROXY -ErrorAction SilentlyContinue } else { $env:HTTP_PROXY = $originalProxy }
+    if ($null -eq $originalHttps) { Remove-Item Env:HTTPS_PROXY -ErrorAction SilentlyContinue } else { $env:HTTPS_PROXY = $originalHttps }
+    if ($bootstrap -and (Test-Path -LiteralPath $bootstrap)) { Remove-Item -LiteralPath $bootstrap -Force -ErrorAction SilentlyContinue }
+  }
+}
+
+Run-Test 'Program Files INSTALL_DIR rejects PATH_SCOPE=CurrentUser mix' {
+  $env:CHECK_AI_CLI_SKIP_MAIN = '1'
+  $originalDir = $env:CHECK_AI_CLI_INSTALL_DIR
+  $originalScope = $env:CHECK_AI_CLI_PATH_SCOPE
+  try {
+    . (Join-Path $repoRoot 'install.ps1')
+    $env:CHECK_AI_CLI_INSTALL_DIR = (Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'Tools\Check-AI-CLI')
+    $env:CHECK_AI_CLI_PATH_SCOPE = 'CurrentUser'
+    $threw = $false
+    $message = ''
+    try {
+      [void](Get-PathScope)
+    } catch {
+      $threw = $true
+      $message = $_.Exception.Message
+    }
+    Assert-True $threw 'Expected mixed PF install dir + CurrentUser PATH scope to throw.'
+    Assert-True ($message -like '*Cannot combine*Program Files*CurrentUser*') 'Expected mixed intent rejection message.'
+  } finally {
+    if ($null -eq $originalDir) { Remove-Item Env:CHECK_AI_CLI_INSTALL_DIR -ErrorAction SilentlyContinue } else { $env:CHECK_AI_CLI_INSTALL_DIR = $originalDir }
+    if ($null -eq $originalScope) { Remove-Item Env:CHECK_AI_CLI_PATH_SCOPE -ErrorAction SilentlyContinue } else { $env:CHECK_AI_CLI_PATH_SCOPE = $originalScope }
+  }
 }
 
 Run-Test 'Warn-ShadowedCurrentUserInstall stays quiet when no machine-wide install exists' {

@@ -194,6 +194,20 @@ function Get-InstallDir() {
 }
 
 function Get-PathScope() {
+  $installDir = Get-InstallDir
+  # Program Files payload always owns Machine PATH. Reject mixed intent where
+  # files go under PF but PATH_SCOPE is CurrentUser.
+  if (Test-IsUnderProgramFiles $installDir) {
+    if ($CurrentUser) {
+      throw 'Cannot combine a Program Files install directory with -CurrentUser. Use -Machine or a CurrentUser install directory.'
+    }
+    $s = $env:CHECK_AI_CLI_PATH_SCOPE
+    if (-not [string]::IsNullOrWhiteSpace($s) -and $s.Trim() -eq 'CurrentUser') {
+      throw 'Cannot combine CHECK_AI_CLI_INSTALL_DIR under Program Files with CHECK_AI_CLI_PATH_SCOPE=CurrentUser. Use Machine scope or a user install directory.'
+    }
+    return 'Machine'
+  }
+
   # Explicit switches win over ambient env/admin state.
   if ($CurrentUser) { return 'CurrentUser' }
   if ($Machine) { return 'Machine' }
@@ -208,9 +222,6 @@ function Get-PathScope() {
   }
 
   if (Test-MachineInstallRequested) { return 'Machine' }
-
-  $installDir = Get-InstallDir
-  if (Test-IsUnderProgramFiles $installDir) { return 'Machine' }
   return 'CurrentUser'
 }
 
@@ -268,7 +279,17 @@ function Get-ElevationPreservedEnvNames() {
   )
 }
 
-function Get-ElevatedInstallCommand([string]$ScriptPath) {
+function Test-SafeElevationEnvValue([string]$Value) {
+  if ([string]::IsNullOrWhiteSpace($Value)) { return $false }
+  # Reject values that would break a single-quoted PowerShell assignment across lines.
+  if ($Value.Contains([char]10) -or $Value.Contains([char]13)) { return $false }
+  return $true
+}
+
+# Build a temp -File bootstrap instead of a single -Command string. Joining
+# env assignments with ';' breaks when proxy/base values contain ';'.
+function New-ElevatedInstallBootstrap([string]$ScriptPath) {
+  $bootstrap = Join-Path ([IO.Path]::GetTempPath()) ("check-ai-cli-elevate-" + [Guid]::NewGuid().ToString('N') + '.ps1')
   $lines = New-Object System.Collections.Generic.List[string]
   $lines.Add("`$ErrorActionPreference = 'Stop'")
   $lines.Add("`$env:CHECK_AI_CLI_ELEVATION_DONE = '1'")
@@ -280,7 +301,7 @@ function Get-ElevatedInstallCommand([string]$ScriptPath) {
 
   foreach ($name in (Get-ElevationPreservedEnvNames)) {
     $value = [Environment]::GetEnvironmentVariable($name, 'Process')
-    if ([string]::IsNullOrWhiteSpace($value)) { continue }
+    if (-not (Test-SafeElevationEnvValue $value)) { continue }
     $escaped = $value.Replace("'", "''")
     $lines.Add("`$env:$name = '$escaped'")
   }
@@ -288,7 +309,10 @@ function Get-ElevatedInstallCommand([string]$ScriptPath) {
   $scriptEscaped = $ScriptPath.Replace("'", "''")
   $lines.Add("& '$scriptEscaped' -Machine")
   $lines.Add('exit $LASTEXITCODE')
-  return ($lines -join '; ')
+
+  $enc = New-Object System.Text.UTF8Encoding $false
+  [IO.File]::WriteAllText($bootstrap, (($lines -join "`r`n") + "`r`n"), $enc)
+  return $bootstrap
 }
 
 function Request-ElevatedInstall([string]$Reason) {
@@ -311,11 +335,17 @@ function Request-ElevatedInstall([string]$Reason) {
   Write-Info 'Requesting elevation via UAC for machine-wide install only...'
   Write-Info 'Default CurrentUser installs never auto-elevate.'
 
-  $command = Get-ElevatedInstallCommand $scriptPath
-  $hostExe = if ($PSVersionTable.PSVersion.Major -ge 6) { 'pwsh' } else { 'powershell' }
-  $proc = Start-Process -FilePath $hostExe -Verb RunAs -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', $command) -Wait -PassThru
-  if ($null -eq $proc.ExitCode) { exit 1 }
-  exit $proc.ExitCode
+  $bootstrap = New-ElevatedInstallBootstrap $scriptPath
+  try {
+    $hostExe = if ($PSVersionTable.PSVersion.Major -ge 6) { 'pwsh' } else { 'powershell' }
+    $proc = Start-Process -FilePath $hostExe -Verb RunAs -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $bootstrap) -Wait -PassThru
+    if ($null -eq $proc.ExitCode) { exit 1 }
+    exit $proc.ExitCode
+  } finally {
+    if (Test-Path -LiteralPath $bootstrap) {
+      Remove-Item -LiteralPath $bootstrap -Force -ErrorAction SilentlyContinue
+    }
+  }
 }
 
 function Ensure-Directory([string]$Path) {

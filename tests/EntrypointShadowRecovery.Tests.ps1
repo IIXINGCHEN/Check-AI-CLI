@@ -79,7 +79,7 @@ Run-Test 'bin/check-ai-cli.ps1 forwards Program Files launch to a fresher Curren
 
     $result = Invoke-ShadowEntrypoint $fixture
 
-    Assert-Equal $result ("forward|" + $fixture.UserEntry) 'Expected Program Files launch to forward when the CurrentUser main script is newer or equal.'
+    Assert-Equal $result ("forward|" + $fixture.UserEntry) 'Expected Program Files launch to forward when the CurrentUser main script is strictly newer.'
   } finally {
     if (Test-Path -LiteralPath $fixture.Root) {
       Remove-Item -LiteralPath $fixture.Root -Recurse -Force -ErrorAction SilentlyContinue
@@ -98,6 +98,47 @@ Run-Test 'bin/check-ai-cli.ps1 keeps Program Files when CurrentUser install is s
     $result = Invoke-ShadowEntrypoint $fixture
 
     Assert-Equal $result ("keep-program-files|" + $fixture.PfMain) 'Expected a stale CurrentUser install not to shadow a newer Program Files payload.'
+  } finally {
+    if (Test-Path -LiteralPath $fixture.Root) {
+      Remove-Item -LiteralPath $fixture.Root -Recurse -Force -ErrorAction SilentlyContinue
+    }
+  }
+}
+
+Run-Test 'bin/check-ai-cli.ps1 keeps Program Files when main-script mtimes are equal' {
+  $fixture = New-ShadowFixture
+  try {
+    # Different content but identical timestamps must fail closed toward PF.
+    Set-Content -LiteralPath $fixture.PfMain -Value "# pf main equal-mtime`r`n" -Encoding ASCII
+    Set-Content -LiteralPath $fixture.UserMain -Value "# user main equal-mtime different body`r`n" -Encoding ASCII
+    $same = (Get-Date).ToUniversalTime().AddHours(-3)
+    [IO.File]::SetLastWriteTimeUtc($fixture.PfMain, $same)
+    [IO.File]::SetLastWriteTimeUtc($fixture.UserMain, $same)
+
+    $result = Invoke-ShadowEntrypoint $fixture
+
+    Assert-Equal $result ("keep-program-files|" + $fixture.PfMain) 'Expected equal mtimes to keep Program Files instead of forwarding to CurrentUser.'
+  } finally {
+    if (Test-Path -LiteralPath $fixture.Root) {
+      Remove-Item -LiteralPath $fixture.Root -Recurse -Force -ErrorAction SilentlyContinue
+    }
+  }
+}
+
+Run-Test 'bin/check-ai-cli.ps1 keeps Program Files when main scripts have identical content' {
+  $fixture = New-ShadowFixture
+  try {
+    $body = "# same payload`r`n"
+    Set-Content -LiteralPath $fixture.PfMain -Value $body -Encoding ASCII
+    Set-Content -LiteralPath $fixture.UserMain -Value $body -Encoding ASCII
+    $older = (Get-Date).ToUniversalTime().AddDays(-2)
+    $newer = (Get-Date).ToUniversalTime().AddDays(-1)
+    [IO.File]::SetLastWriteTimeUtc($fixture.PfMain, $older)
+    [IO.File]::SetLastWriteTimeUtc($fixture.UserMain, $newer)
+
+    $result = Invoke-ShadowEntrypoint $fixture
+
+    Assert-equal $result ("keep-program-files|" + $fixture.PfMain) 'Expected identical main-script content to keep Program Files even if user mtime is newer.'
   } finally {
     if (Test-Path -LiteralPath $fixture.Root) {
       Remove-Item -LiteralPath $fixture.Root -Recurse -Force -ErrorAction SilentlyContinue
