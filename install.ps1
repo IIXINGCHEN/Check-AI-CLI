@@ -72,7 +72,7 @@ function Get-LatestStableRef() {
   try {
     $json = Invoke-RestMethod -Uri (Get-LatestReleaseApiUrl) -Headers (Get-GitHubApiHeaders) -ErrorAction Stop
     $tag = [string]$json.tag_name
-    if ([string]::IsNullOrWhiteSpace($tag)) { return $null }
+    if (-not (Test-IsReleaseTag $tag)) { return $null }
     return $tag.Trim()
   } catch {
     return $null

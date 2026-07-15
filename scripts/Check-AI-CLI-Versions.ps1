@@ -347,8 +347,19 @@ function Get-FactoryBootstrapInfo() {
   $baseUrlMatch = [regex]::Match($text, '\$baseUrl\s*=\s*"([^"]+)"')
   if (-not $baseUrlMatch.Success) { throw 'Failed to parse Factory base URL from installer script.' }
   $baseUrl = $baseUrlMatch.Groups[1].Value.Trim()
-  if ([string]::IsNullOrWhiteSpace($baseUrl)) { throw 'Factory base URL is empty in installer script.' }
+  if (-not (Test-FactoryDownloadBaseUrl $baseUrl)) { throw "Factory base URL is not trusted: $baseUrl" }
   return @{ Version = $versionMatch.Groups[1].Value; BaseUrl = $baseUrl }
+}
+
+function Test-FactoryDownloadBaseUrl([string]$BaseUrl) {
+  if ([string]::IsNullOrWhiteSpace($BaseUrl)) { return $false }
+  try {
+    $uri = [Uri]$BaseUrl.TrimEnd('/')
+    if ($uri.Scheme -ne 'https' -or $uri.UserInfo -or $uri.Query -or $uri.Fragment -or $uri.Port -ne 443) { return $false }
+    return $uri.Host -in @('app.factory.ai', 'downloads.factory.ai')
+  } catch {
+    return $false
+  }
 }
 
 function Get-EffectiveWindowsArchitecture() {
@@ -2238,10 +2249,11 @@ function Handle-UpdateFlow([string]$Latest, [string]$Local, [scriptblock]$DoUpda
 function Report-PostUpdate([string]$Title, [string]$Latest, [scriptblock]$GetLocal) {
   Write-Info "Re-checking local version..."
   $newLocal = Get-AndPrintLocal $GetLocal
-  if (-not $newLocal) { Write-Warn "Update may not have installed correctly." ; return }
+  if (-not $newLocal) { $script:UpdateFailed = $true; Write-Warn "Update may not have installed correctly." ; return }
   if (-not $Latest) { return }
   $cmp = Compare-Version $newLocal $Latest
   if ($cmp -eq -1) {
+    $script:UpdateFailed = $true
     Write-Warn "Update may have failed (still older than latest)."
     if ($Title -eq 'Factory CLI (Droid)') {
       Write-Warn "Tip: try npm install -g droid@latest"

@@ -150,6 +150,10 @@ resolve_base() {
 clamp_retry
 BASE=""
 INSTALL_DIR="${CHECK_AI_CLI_INSTALL_DIR:-.}"
+SCRIPT_ROOT=""
+if [ -f "${BASH_SOURCE[0]:-}" ]; then
+  SCRIPT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+fi
 
 log_info() { printf "[INFO] %s\n" "$*" >&2; }
 log_ok() { printf "[SUCCESS] %s\n" "$*" >&2; }
@@ -493,8 +497,32 @@ skip_main() {
   [ "${CHECK_AI_CLI_SKIP_MAIN:-0}" = "1" ]
 }
 
+get_local_payload_root() {
+  [ -n "$SCRIPT_ROOT" ] || return 1
+  [ -d "$SCRIPT_ROOT/.git" ] && return 1
+  [ -f "$SCRIPT_ROOT/checksums.sha256" ] || return 1
+  [ -f "$SCRIPT_ROOT/distribution-files.txt" ] || return 1
+  printf '%s\n' "$SCRIPT_ROOT"
+}
+
+install_local_payload() {
+  local root="$1"
+  require_sha256_tool || return 1
+  validate_manifest "$root/checksums.sha256" || return 1
+  verify_all "$root" || return 1
+  INSTALL_DIR="$(resolve_install_dir "$INSTALL_DIR")" || return 1
+  write_install_marker "$INSTALL_DIR"
+  deploy_all "$root" "$INSTALL_DIR" || return 1
+  print_next_steps "$INSTALL_DIR"
+}
+
 main() {
-  local stage
+  local stage local_root
+  local_root="$(get_local_payload_root || true)"
+  if [ -n "$local_root" ]; then
+    install_local_payload "$local_root" || { log_err "Local payload verification or deployment failed."; exit 1; }
+    return 0
+  fi
   BASE="$(resolve_base)"
   stage="$(mktemp -d 2>/dev/null || mktemp -d -t check-ai-cli)"
   trap "rm -rf \"$stage\" >/dev/null 2>&1 || true" EXIT

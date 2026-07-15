@@ -406,6 +406,32 @@ get_latest_factory() {
   extract_semver "$(echo "$text" | grep -Eo '\$version[[:space:]]*=[[:space:]]*"[^"]+"' | head -n 1)"
 }
 
+is_factory_download_base_url() {
+  case "${1:-}" in
+    *'?'*|*'#'*) return 1 ;;
+  esac
+  case "${1:-}" in
+    https://app.factory.ai|https://app.factory.ai/*|https://downloads.factory.ai|https://downloads.factory.ai/*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+get_factory_windows_arch() {
+  local proc_arch ps avx2
+  proc_arch="${PROCESSOR_ARCHITECTURE:-$(uname -m 2>/dev/null)}"
+  case "$proc_arch" in
+    *ARM64*|*arm64*|*aarch64*) printf '%s\n' 'arm64'; return 0 ;;
+  esac
+  for ps in powershell.exe powershell; do
+    if command_exists "$ps"; then
+      avx2="$($ps -NoProfile -NonInteractive -Command "[void](Add-Type -MemberDefinition '[DllImport(\"kernel32.dll\")] public static extern bool IsProcessorFeaturePresent(int ProcessorFeature);' -Name Kernel32Probe -Namespace Win32 -PassThru); [Win32.Kernel32Probe]::IsProcessorFeaturePresent(40)" 2>/dev/null || true)"
+      if [ "$avx2" = 'True' ]; then printf '%s\n' 'x64'; else printf '%s\n' 'x64-baseline'; fi
+      return 0
+    fi
+  done
+  printf '%s\n' 'x64'
+}
+
 get_npm_latest_version() {
   local package_name="$1" text
   text="$(fetch_text "https://registry.npmjs.org/$package_name/latest" || true)"
@@ -574,15 +600,11 @@ install_factory_binary_windows() {
   base_url="$(echo "$text" | grep -Eo '\$baseUrl[[:space:]]*=[[:space:]]*"[^"]+"' | head -n 1 | sed -E 's/.*"([^"]+)".*/\1/')"
   [ -n "$version" ] && [ -n "$base_url" ] || { log_warn "Failed to parse Factory bootstrap metadata."; return 1; }
   base_url="${base_url%/}"
+  is_factory_download_base_url "$base_url" || { log_warn "Factory download base URL is not trusted: $base_url"; return 1; }
 
   # Architecture detection mirrors the PowerShell Get-FactoryArchitectures logic.
   # ARM64 must use native arm64 assets; x64 remains the default for Windows shells.
-  local proc_arch
-  proc_arch="${PROCESSOR_ARCHITECTURE:-$(uname -m 2>/dev/null)}"
-  case "$proc_arch" in
-    *ARM64*|*arm64*|*aarch64*) arch="arm64" ;;
-    *) arch="x64" ;;
-  esac
+  arch="$(get_factory_windows_arch)"
 
   binary_name="droid.exe"
   rg_binary_name="rg.exe"
@@ -890,10 +912,15 @@ print_versions() {
 }
 
 handle_update_flow() {
-  local latest="$1" localv="$2" update_fn="$3"
+  local latest="$1" localv="$2" update_fn="$3" local_fn="$4" new_local cmp
   if [ -z "$localv" ]; then
     [ -n "$latest" ] || log_warn "Latest version unknown. Installing anyway."
-    if confirm_yes "Install now? (Y/N): "; then "$update_fn"; return $?; fi
+    if confirm_yes "Install now? (Y/N): "; then
+      "$update_fn" || return $?
+      new_local="$($local_fn || true)"
+      [ -n "$new_local" ] || { log_err "Update completed but local version could not be verified."; return 1; }
+      return 0
+    fi
     return 0
   fi
   [ -n "$latest" ] || { log_warn "Latest version unknown. Skipping update check."; return 0; }
@@ -901,7 +928,14 @@ handle_update_flow() {
   cmp="$(compare_semver "$localv" "$latest" || true)"
   [ "$cmp" = "0" ] && log_ok "Already up to date." && return 0
   [ "$cmp" = "1" ] && log_warn "Local version is newer than latest source." && return 0
-  if [ "$cmp" = "-1" ] && confirm_yes "Update now? (Y/N): "; then "$update_fn"; return $?; fi
+  if [ "$cmp" = "-1" ] && confirm_yes "Update now? (Y/N): "; then
+    "$update_fn" || return $?
+    new_local="$($local_fn || true)"
+    [ -n "$new_local" ] || { log_err "Update completed but local version could not be verified."; return 1; }
+    cmp="$(compare_semver "$new_local" "$latest" || true)"
+    [ "$cmp" = "0" ] || [ "$cmp" = "1" ] || { log_err "Update completed but local version is still older than target v$latest."; return 1; }
+    return 0
+  fi
   return 0
 }
 
@@ -913,7 +947,7 @@ check_tool() {
   latest="$("$latest_fn" || true)"
   localv="$("$local_fn" || true)"
   print_versions "$latest" "$localv"
-  handle_update_flow "$latest" "$localv" "$update_fn"
+  handle_update_flow "$latest" "$localv" "$update_fn" "$local_fn"
 }
 
 show_banner() {
