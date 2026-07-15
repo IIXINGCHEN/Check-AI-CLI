@@ -521,6 +521,7 @@ function Get-LocalPayloadRoot() {
   # normal remote installer path is used.
   if ([string]::IsNullOrWhiteSpace($PSScriptRoot)) { return $null }
   $root = $PSScriptRoot
+  if (Test-Path -LiteralPath (Join-Path $root '.git')) { return $null }
   $manifest = Join-Path $root (Get-ManifestRemotePath)
   $distribution = Join-Path $root (Get-DistributionListRemotePath)
   if (-not (Test-Path -LiteralPath $manifest)) { return $null }

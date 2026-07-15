@@ -1,7 +1,7 @@
 # SHA256 checksums for Check-AI-CLI
 # Format: <sha256>  <relative-path>
 91891a4711f4e4ebea3f676b1eed5c1b903ac46bddce25e22817df06615cbf34  distribution-files.txt
-a167325f2c07beaeaf01f0efc71710bcf0b69e691682ab8f893bf5d927a8d95d  install.ps1
+3fdd0ab91109974764c8df6d81985d47046436d55de267e90e3abe5e7a105dc9  install.ps1
 cf52b8535adb34ea134eeaff340795d8ce16c9cb0f1cd95ff58d391ded11e979  install.sh
 86ef69889437c72082fc8d3e62d42e085995baacaa87530842d2745758723b41  uninstall.ps1
 9e1cf556126f902dfba66bd93bd929c54cfb6ae5844b527872f3bff2a5519911  uninstall.sh
