@@ -124,7 +124,7 @@ test_install_factory_aborts_on_checksum_mismatch() {
     # fetch_text returns fake bootstrap metadata, then a wrong checksum.
     fetch_text() {
       case "$1" in
-        *"/cli/windows") printf '$version = "9.9.9"\n$baseUrl = "https://downloads.test"\n' ;;
+        *"/cli/windows") printf '$version = "9.9.9"\n$baseUrl = "https://downloads.factory.ai"\n' ;;
         *.sha256) printf 'deadbeef0000000000000000000000000000000000000000000000000000ffff' ;;
         *) return 1 ;;
       esac
@@ -173,7 +173,7 @@ test_install_factory_uses_home_when_userprofile_unset() {
     command_exists() { return 0; }
     fetch_text() {
       case "$1" in
-        *"/cli/windows") printf '$version = "9.9.9"\n$baseUrl = "https://downloads.test"\n' ;;
+        *"/cli/windows") printf '$version = "9.9.9"\n$baseUrl = "https://downloads.factory.ai"\n' ;;
         *.sha256) printf 'aaaa' ;;
         *) return 1 ;;
       esac
@@ -211,7 +211,7 @@ test_install_factory_skips_unverified_ripgrep() {
     command_exists() { return 0; }
     fetch_text() {
       case "$1" in
-        *"/cli/windows") printf '$version = "9.9.9"\n$baseUrl = "https://downloads.test"\n' ;;
+        *"/cli/windows") printf '$version = "9.9.9"\n$baseUrl = "https://downloads.factory.ai"\n' ;;
         *"droid.exe.sha256") printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' ;;
         *"rg.exe.sha256") printf 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' ;;
         *) return 1 ;;

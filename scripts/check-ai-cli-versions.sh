@@ -912,7 +912,7 @@ print_versions() {
 }
 
 handle_update_flow() {
-  local latest="$1" localv="$2" update_fn="$3" local_fn="$4" new_local cmp
+  local latest="$1" localv="$2" update_fn="$3" local_fn="${4:-}" new_local cmp
   if [ -z "$localv" ]; then
     [ -n "$latest" ] || log_warn "Latest version unknown. Installing anyway."
     if confirm_yes "Install now? (Y/N): "; then
