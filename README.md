@@ -1,761 +1,298 @@
-# AI CLI 工具版本检查器
+# Check-AI-CLI
 
-一键检查和更新五大 AI 编程助手的完整解决方案！
+跨平台检查并更新常用 AI 编程 CLI：Factory CLI、Claude Code、OpenAI Codex、Gemini CLI 和 OpenCode。
 
-## 🎯 支持的工具
+项目负责版本发现、PATH 修复、安装/更新回退和结果复核，不收集用户数据。
 
-| 工具 | 描述 | 官网 |
-|------|------|------|
-| **Factory CLI (Droid)** | Factory.ai 的 AI 开发代理 | https://factory.ai |
-| **Claude Code** | Anthropic 的终端 AI 编程工具 | https://code.claude.com |
-| **OpenAI Codex** | OpenAI 的轻量级编程代理 | https://developers.openai.com/codex |
-| **Gemini CLI** | Google 的 Gemini CLI 工具 | https://github.com/google-gemini/gemini-cli |
-| **OpenCode (opencode)** | OpenCode 的 AI 编程助手 CLI 工具 | https://opencode.ai |
+## 快速开始
 
-## 📦 项目结构
+### Windows：远程安装
 
-| 目录/文件 | 职责 |
-|-----------|------|
-| `scripts/Check-AI-CLI-Versions.ps1` | Windows 主脚本 (PowerShell) |
-| `scripts/check-ai-cli-versions.sh` | macOS/Linux 主脚本 (Bash) |
-| `bin/check-ai-cli.cmd` / `.ps1` | PATH 命令入口 (转发到 scripts/) |
-| `install.ps1` / `install.sh` | 一键安装器 (支持 PATH) |
-| `uninstall.ps1` / `uninstall.sh` | 卸载器 (需要确认 DELETE) |
-| `checksums.sha256` | 下载文件校验 (安装时自动验证) |
-| `distribution-files.txt` | 安装/发布文件清单的唯一来源 |
-| `tools/` | 发布和维护辅助脚本 |
-| `tests/` | 回归测试 |
-| `.github/` | CI 与自动校验工作流 |
+默认安装到 `%LOCALAPPDATA%\Programs\Tools\Check-AI-CLI`，并写入当前用户 PATH。默认不会因为当前 PowerShell 已提权而安装到 Program Files。
 
-**兼容入口** (根目录 legacy wrapper, 仅做转发):
-- `Check-AI-CLI-Versions.ps1` → `scripts/Check-AI-CLI-Versions.ps1`
-- `Check-FactoryCLI-Version.ps1` → `scripts/Check-AI-CLI-Versions.ps1 -FactoryOnly`
-- `check-ai-cli-versions.sh` → `scripts/check-ai-cli-versions.sh`
-
-
-## 🚀 快速使用
-
-### Windows
 ```powershell
-# 方法 1: 直接运行
-.\Check-AI-CLI-Versions.ps1
-
-# 方法 2: 绕过执行策略
-powershell -ExecutionPolicy Bypass -File ".\Check-AI-CLI-Versions.ps1"
-
-# 方法 3: 从任意位置运行
-powershell -ExecutionPolicy Bypass -File "C:\path\to\Check-AI-CLI-Versions.ps1"
-
-# 自动模式: 未安装自动安装, 非最新自动更新
-$env:CHECK_AI_CLI_AUTO = '1'
-.\Check-AI-CLI-Versions.ps1 -Auto
-
-# 仅检查 Factory CLI
-.\Check-FactoryCLI-Version.ps1
-
-```
-
-### Windows (无需 clone, 一行命令安装到默认目录并加入 PATH)
-```powershell
-# 推荐: self-healing raw bootstrap
-# 安全默认: 始终安装到 %LOCALAPPDATA%\Programs\Tools\Check-AI-CLI, 写入 CurrentUser PATH
-# 不会因为当前窗口是管理员就自动装到 Program Files
-irm https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main/install.ps1 | iex
-
-# 兼容入口: raw main bootstrap
-# 若未显式设置 CHECK_AI_CLI_REF / CHECK_AI_CLI_RAW_BASE, bootstrap 会优先解析 latest release tag, 其次解析 latest main commit SHA
-irm https://github.com/IIXINGCHEN/Check-AI-CLI/raw/main/install.ps1 | iex
-```
-
-### Windows (安装到自定义目录, 不需要管理员权限)
-```powershell
-$env:CHECK_AI_CLI_INSTALL_DIR = (Get-Location).Path
-$env:CHECK_AI_CLI_PATH_SCOPE = 'CurrentUser'
 irm https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main/install.ps1 | iex
 ```
 
-### Windows (可选全机安装, 仅显式 -Machine)
+固定到不可变 commit：
+
 ```powershell
-# 本地仓库/解压包: 需要时才请求 UAC, 绝不是无参数默认行为
+$env:CHECK_AI_CLI_REF = '63ba8d5467b6fa2a2be42450d16adc8ae1769e5e'
+irm https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main/install.ps1 | iex
+```
+
+安装完成后重新打开 PowerShell，然后运行：
+
+```powershell
+check-ai-cli
+```
+
+### Windows：本地 ZIP 或源码
+
+从 Release ZIP 解压后运行 `install.ps1`。安装器会优先验证 ZIP 内的清单和载荷；Git checkout 不会被误认为 Release ZIP，而会使用 immutable 远程来源。
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+全机安装必须显式指定 `-Machine`，需要管理员权限：
+
+```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Machine
-
-# 远程 one-liner 不会自动弹 UAC; 请先开管理员 PowerShell:
-$env:CHECK_AI_CLI_PATH_SCOPE = 'Machine'
-irm https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main/install.ps1 | iex
 ```
 
-安装目标矩阵:
+### macOS / Linux：远程安装
 
-| 意图 | 设置 | 结果 |
-|------|------|------|
-| 默认 | 无参数 | CurrentUser 目录 + CurrentUser PATH |
-| 全机 | `-Machine` 或 `CHECK_AI_CLI_PATH_SCOPE=Machine` | Program Files + Machine PATH |
-| 自定义用户目录 | `CHECK_AI_CLI_INSTALL_DIR=<user path>` | 该目录 + CurrentUser PATH |
-| 禁止混用 | Program Files 目录 + `PATH_SCOPE=CurrentUser` | **报错拒绝** |
+默认安装到当前目录，并将 `bin/` 加入当前 Shell 的 profile。
 
-### Windows (卸载, 需要输入 `DELETE` 确认)
-```powershell
-# 卸载旧的 Program Files / Machine 安装 (需要管理员 PowerShell)
-# 不会删除 %LOCALAPPDATA%\Programs\Tools\Check-AI-CLI 的用户安装
-powershell -NoProfile -ExecutionPolicy Bypass -File .\uninstall.ps1 -ProgramFiles
-
-# 卸载当前用户安装 (非管理员即可)
-powershell -NoProfile -ExecutionPolicy Bypass -File .\uninstall.ps1
-
-# 兼容环境变量写法
-$env:CHECK_AI_CLI_UNINSTALL_PROGRAM_FILES = '1'
-powershell -NoProfile -ExecutionPolicy Bypass -File .\uninstall.ps1
-```
-
-### 安全与稳定(推荐设置)
-
-#### 推荐: 使用代理加速, 不改下载源
-```powershell
-$env:HTTP_PROXY  = 'http://127.0.0.1:7890'
-$env:HTTPS_PROXY = 'http://127.0.0.1:7890'
-irm https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main/install.ps1 | iex
-```
-
-#### 推荐: 固定版本(避免默认解析继续前进)
-```powershell
-$env:CHECK_AI_CLI_REF = 'v1.2.3'
-irm https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main/install.ps1 | iex
-```
-
-#### 开发/排障: 强制使用 main
-```powershell
-$env:CHECK_AI_CLI_REF = 'main'
-irm https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main/install.ps1 | iex
-```
-
-#### 不推荐: 使用第三方镜像(必须显式允许)
-```powershell
-$env:CHECK_AI_CLI_RAW_BASE = 'YOUR_MIRROR_RAW_BASE'
-$env:CHECK_AI_CLI_ALLOW_UNTRUSTED_MIRROR = '1'
-irm https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main/install.ps1 | iex
-```
-
-### macOS / Linux
-```bash
-# 方法 1: 添加执行权限后运行
-chmod +x check-ai-cli-versions.sh
-./check-ai-cli-versions.sh
-
-# 自动模式: 未安装自动安装, 非最新自动更新
-CHECK_AI_CLI_AUTO=1 ./check-ai-cli-versions.sh --yes
-
-# 方法 2: 使用 bash 直接运行
-bash check-ai-cli-versions.sh
-
-# 方法 3: 从任意位置运行
-bash /path/to/check-ai-cli-versions.sh
-```
-
-### macOS / Linux (无需 clone, 一行命令安装到当前目录)
 ```bash
 curl -fsSL https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main/install.sh | bash
+```
 
-# 备用写法 (同样是 raw 内容)
-curl -fsSL https://github.com/IIXINGCHEN/Check-AI-CLI/raw/main/install.sh | bash
+固定版本：
 
-# 安装完成后, 直接执行
-./bin/check-ai-cli
+```bash
+CHECK_AI_CLI_REF='63ba8d5467b6fa2a2be42450d16adc8ae1769e5e' \
+  curl -fsSL https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main/install.sh | bash
+```
 
-# 卸载(需要输入 DELETE 确认)
+### 卸载
+
+卸载器只删除带有有效 `.check-ai-cli-installed` 标记的目录，并要求输入 `DELETE`。
+
+```powershell
+.\uninstall.ps1
+```
+
+```bash
 ./uninstall.sh
 ```
 
-### macOS / Linux (安全稳定推荐设置)
+Windows Program Files 安装：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\uninstall.ps1 -ProgramFiles
+```
+
+## 检查与更新
+
+直接运行主脚本：
+
+```powershell
+.\Check-AI-CLI-Versions.ps1
+```
+
 ```bash
-# 推荐: 用代理加速, 不改下载源
-export HTTP_PROXY="http://127.0.0.1:7890"
-export HTTPS_PROXY="http://127.0.0.1:7890"
-curl -fsSL https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main/install.sh | bash
-
-# 固定版本
-export CHECK_AI_CLI_REF="v1.2.3"
-curl -fsSL https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main/install.sh | bash
-
-# 开发/排障: 强制使用 main
-export CHECK_AI_CLI_REF="main"
-curl -fsSL https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main/install.sh | bash
+bash ./check-ai-cli-versions.sh
 ```
 
-## 发布流程(自动生成 checksums.sha256)
+菜单支持单个工具、全部检查、全部检查并更新，以及退出。自动模式不会询问确认：
 
 ```powershell
-# 1) 修改代码后先 add
-git add -A
-
-# 2) 自动生成/更新 checksums.sha256
-.\tools\Update-Checksums.ps1
-
-# 3) 提交
-git add checksums.sha256
-git commit -m "Update checksums"
+.\Check-AI-CLI-Versions.ps1 -Auto
 ```
 
-### 常用环境变量
-
-| 变量 | 用途 | 示例 |
-|------|------|------|
-| `HTTP_PROXY` / `HTTPS_PROXY` | 代理加速 | `http://127.0.0.1:7890` |
-| `CHECK_AI_CLI_SHOW_PROGRESS` | checker 下载/更新时显示字节进度条（安装器默认显示原生进度） | `1` |
-| `CHECK_AI_CLI_REF` | 固定安装版本 (tag/commit/main) | `v1.2.3` |
-| `CHECK_AI_CLI_INSTALL_DIR` | 自定义安装目录 | 绝对路径 |
-| `CHECK_AI_CLI_OPENCODE_VERSION` | 覆盖 OpenCode 目标版本 | `1.4.3` |
-
-安装器（install.ps1 / install.sh）默认显示原生下载进度，无需设置。`CHECK_AI_CLI_SHOW_PROGRESS=1` 仅作用于 checker，为其下载/更新阶段输出字节进度条:
-
-```text
-############### 50.0%
+```bash
+CHECK_AI_CLI_AUTO=1 ./check-ai-cli-versions.sh --yes
 ```
 
-### 核心依赖检查
+只检查 Factory CLI：
 
-#### Windows
-- Invoke-WebRequest
-
-#### macOS / Linux
-- curl 或 wget
-- sha256sum 或 shasum
-
-
-
-## 📖 功能特性
-
-### ✅ 自动版本检测
-- 从官方源获取最新稳定版本
-- 自动检测本地已安装版本
-- 智能版本比较算法
-
-### 🔄 多数据源支持
-- **Factory CLI**: 官方安装脚本
-- **Claude Code**: GCS stable channel + GitHub releases + npm 备用
-- **OpenAI Codex**: GitHub Releases API + npm 备用
-- **Gemini CLI**: npm registry
-- **OpenCode**: GitHub Releases API (anomalyco/opencode) + opencode.ai/install 备用 (可用 CHECK_AI_CLI_OPENCODE_VERSION 覆盖)
-
-### 🎨 交互式界面
-- 彩色输出, 清晰易读
-- 交互式菜单选择 (5 个工具 + 全部检查/更新/退出)
-- 下载进度条 (`[###############...............] 50%`)
-
-### 🛠️ 一键安装/更新
-- 自动选择最佳安装方式
-- macOS 优先使用 Homebrew
-- 提供多种备用安装方案
-- 更新后自动重检版本, 失败时给出针对性修复建议
-
-## 📊 使用示例
-
-### 场景 1: 检查所有工具
-```
-$ check-ai-cli
-
-===============================================
- AI CLI Version Checker
- Factory CLI (Droid) | Claude Code | OpenAI Codex | Gemini CLI | OpenCode
-===============================================
-
-Select tools to check:
-  [1] Factory CLI (Droid)
-  [2] Claude Code
-  [3] OpenAI Codex
-  [4] Gemini CLI
-  [5] OpenCode
-  [A] Check all (default)
-  [U] Check all and Update all (auto-yes)
-  [Q] Quit
-Enter choice (1-5/A/U/Q): A
-
-Factory CLI (Droid)
-===================
-[INFO] Fetching latest version...
-[SUCCESS] Latest version: v0.99.0
-[SUCCESS] Local version: v0.93.0
-
-[INFO] Updating Factory CLI (Droid)...
-[INFO] Trying: official bootstrap
-[INFO] Downloading Factory CLI v0.99.0 for Windows-x64
-[##############################....] 93%
-[SUCCESS] Factory CLI v0.99.0 installed successfully.
-
-Claude Code
-===========
-[INFO] Fetching latest version...
-[SUCCESS] Latest version: v2.1.91
-[SUCCESS] Local version: v2.1.91
-[SUCCESS] Already up to date.
-```
-
-### 场景 2: 仅检查单个工具
-```
-Enter choice (1-5/A/U/Q): 2
-
-Claude Code
-===========
-[INFO] Fetching latest version...
-[SUCCESS] Latest version: v2.1.91
-[SUCCESS] Local version: v2.1.91
-[SUCCESS] Already up to date.
-```
-
-## 🔧 系统要求
-
-### Windows
-- Windows 10/11 (64-bit)
-- PowerShell 5.1 或更高版本
-- 网络连接
-
-### macOS
-- macOS 10.15 (Catalina) 或更高版本
-- Bash 3.2 或更高版本
-- 可选: Homebrew（推荐）
-
-### Linux
-- 任何现代 Linux 发行版
-- Bash 4.0 或更高版本
-- curl 或 wget
-
-## 📚 各工具安装方式
-
-### Factory CLI (Droid)
-
-#### Windows
 ```powershell
-# Factory 的 Windows bootstrap 现在会先提供版本/下载元数据,
-# 再由本项目脚本在本地下载并校验官方二进制, 不再直接执行远端 bootstrap 内容
 .\Check-FactoryCLI-Version.ps1
 ```
 
-#### macOS / Linux
-```bash
-# Recommended
-curl -fsSL https://app.factory.ai/cli | sh
+更新完成后脚本会重新读取本地版本；无法验证新版本时返回失败状态。
 
-# Fallback
-curl -fsSL https://app.factory.ai/cli/install.sh | bash
-```
+## 支持工具与版本来源
 
-### Claude Code
+| 工具 | 版本发现 | Windows 更新 | macOS / Linux 更新 |
+|---|---|---|---|
+| Factory CLI | 官方 bootstrap 元数据 | 官方二进制 + SHA256；失败后 npm/官方安装器 | 官方安装脚本；失败后 npm |
+| Claude Code | GCS stable + npm；不可用时 GitHub Release | `claude update`、官方脚本、npm | `claude update`、官方脚本、npm |
+| OpenAI Codex | npm；失败时 GitHub Release | npm，并检查 Windows optional package | npm 或 Homebrew |
+| Gemini CLI | npm；失败时 GitHub Release | npm | npm 或 Homebrew |
+| OpenCode | GitHub Release；失败时 npm，可用环境变量覆盖 | self-upgrade、Scoop、Chocolatey、npm、官方脚本 | 官方脚本、self-upgrade、Homebrew、npm |
 
-#### Windows
-```powershell
-irm https://claude.ai/install.ps1 | iex
-```
+Factory Windows bootstrap 只提供版本和下载元数据，项目不会直接执行该 bootstrap。派生下载地址必须是受信任的 Factory HTTPS 域名，二进制和 ripgrep 均需通过 SHA256 校验。
 
-提示: Windows 下如果已经安装了 Claude Code, 本项目脚本现在会优先尝试 `claude update` 做原生更新; 原生更新失败或版本仍旧偏旧时, 会依次回退到官方 `install.ps1` 和 npm 包安装路径。若更新后版本仍旧偏旧, 推荐按以下顺序排查:
+## 安全模型
 
-```powershell
-claude update
-claude --version
+- 远程安装默认解析稳定 Release tag；失败时解析 `main` 的 40 位 commit SHA，不使用可变 `main` 作为最终下载 ref。
+- `checksums.sha256` 来自同一 immutable ref，并逐个校验分发载荷。
+- 可设置 `CHECK_AI_CLI_EXPECTED_MANIFEST_SHA256`，对清单本身增加独立摘要锚定。
+- 安装器拒绝路径穿越、绝对路径、重复清单项、非法 SHA256 和空清单。
+- 自动模式默认跳过远程脚本执行；只有显式设置 `CHECK_AI_CLI_ALLOW_REMOTE_SCRIPT=1` 才允许该回退路径。
+- 第三方镜像默认拒绝。显式设置 `CHECK_AI_CLI_ALLOW_UNTRUSTED_MIRROR=1` 后才会使用，并显示安全警告。
+- HTTPS 保护传输，但不能替代 checksum、immutable ref 和独立摘要锚定。
 
-# 如仍异常, 再执行官方安装脚本重装
-irm https://claude.ai/install.ps1 | iex
-claude --version
-
-# 如 downloads.claude.ai 连通性异常, 使用 npm 官方包备用
-npm install -g @anthropic-ai/claude-code@latest
-claude --version
-```
-
-#### macOS
-```bash
-# 方法 1: Homebrew (推荐)
-brew install --cask claude-code
-
-# 方法 2: 官方脚本
-curl -fsSL https://claude.ai/install.sh | bash
-
-# 方法 3: npm
-npm install -g @anthropic-ai/claude-code
-```
-
-#### Linux
-```bash
-# 方法 1: 官方脚本
-curl -fsSL https://claude.ai/install.sh | bash
-
-# 方法 2: npm
-npm install -g @anthropic-ai/claude-code
-```
-
-### OpenAI Codex
-
-#### Windows
-```powershell
-npm install -g @openai/codex@latest
-```
-
-#### macOS
-```bash
-# 方法 1: Homebrew (推荐)
-brew install --cask codex
-
-# 方法 2: npm
-npm install -g @openai/codex@latest
-```
-
-#### Linux
-```bash
-npm install -g @openai/codex@latest
-```
-
-### Gemini CLI
-
-#### Windows
-```powershell
-npm install -g @google/gemini-cli
-```
-
-#### macOS
-```bash
-# 方法 1: Homebrew (推荐)
-brew install gemini-cli
-
-# 方法 2: npm
-npm install -g @google/gemini-cli
-```
-
-#### Linux
-```bash
-npm install -g @google/gemini-cli
-```
-
-### OpenCode (opencode)
-
-自动从 GitHub (anomalyco/opencode) 获取最新版本。可通过环境变量 CHECK_AI_CLI_OPENCODE_VERSION 覆盖为指定版本。
-
-#### Windows
-```bash
-# 方法 0: Git Bash + curl (推荐, 与 macOS/Linux 一致)
-curl -fsSL https://opencode.ai/install | bash -s -- --version 1.1.21
-```
+固定版本并固定清单摘要：
 
 ```powershell
-# 方法 1: Scoop
-scoop install extras/opencode
-
-# 方法 2: Chocolatey
-choco install opencode -y
-
-# 方法 3: npm (fallback)
-npm install -g opencode-ai@latest
+$env:CHECK_AI_CLI_REF = 'v1.3.0'
+$env:CHECK_AI_CLI_EXPECTED_MANIFEST_SHA256 = '<64 位 SHA256>'
+.\install.ps1
 ```
 
-提示: 脚本现在会优先自动修复 `OpenCode` 的 PATH 冲突, 会把 `~/.opencode/bin` 或对应用户安装目录提升到 PATH 前面, 并刷新当前会话。若 PowerShell 仍命中旧的 `%APPDATA%\\npm\\opencode.ps1`, 先重开终端再检查:
+## 配置
+
+| 变量 | 作用 | 示例 |
+|---|---|---|
+| `CHECK_AI_CLI_AUTO` | 自动安装/更新，不询问确认 | `1` |
+| `CHECK_AI_CLI_SHOW_PROGRESS` | 显示 checker 的字节进度 | `1` |
+| `CHECK_AI_CLI_QUIET_PROGRESS` | 抑制 checker 进度 | `1` |
+| `CHECK_AI_CLI_REGION` | 覆盖网络区域判断 | `China` / `Global` |
+| `CHECK_AI_CLI_ALLOW_REMOTE_SCRIPT` | 自动模式允许远程脚本回退 | `1` |
+| `CHECK_AI_CLI_RETRY` | 下载重试次数，范围 1-10 | `3` |
+| `CHECK_AI_CLI_CLAUDE_UPDATE_TIMEOUT_SECONDS` | Claude 原生更新超时 | `300` |
+| `CHECK_AI_CLI_OPENCODE_VERSION` | 覆盖 OpenCode 目标版本 | `1.4.3` |
+| `CHECK_AI_CLI_OPENCODE_UPGRADE_TIMEOUT_SECONDS` | OpenCode 更新超时 | `300` |
+| `CHECK_AI_CLI_REF` | tag、40 位 commit SHA 或 `main` | `v1.3.0` |
+| `CHECK_AI_CLI_RAW_BASE` | 自定义原始文件源 | `https://mirror.example/repo` |
+| `CHECK_AI_CLI_ALLOW_UNTRUSTED_MIRROR` | 允许非官方原始文件源 | `1` |
+| `CHECK_AI_CLI_INSTALL_DIR` | 安装目录 | `E:\Tools\Check-AI-CLI` |
+| `CHECK_AI_CLI_PATH_SCOPE` | PATH 范围 | `CurrentUser` / `Machine` |
+| `CHECK_AI_CLI_INSTALL_SCOPE` | PATH scope 兼容别名 | `Machine` |
+| `CHECK_AI_CLI_RUN` | 安装完成后启动 checker | `1` |
+| `CHECK_AI_CLI_UNINSTALL_PROGRAM_FILES` | 卸载 Program Files 安装 | `1` |
+
+`CHECK_AI_CLI_ELEVATION_DONE`、`CHECK_AI_CLI_SKIP_MAIN` 等变量由内部重入和测试流程使用，不建议手动设置。
+
+## 依赖
+
+### Windows
+
+- Windows 10/11。
+- PowerShell 5.1 或更高版本。
+- `Invoke-WebRequest`、`Get-FileHash` 或 checker 使用的 `certutil.exe`。
+- 更新对应工具时可能需要 Node.js/npm、Git Bash、Scoop 或 Chocolatey。
+
+### macOS / Linux
+
+- Bash 3.2 或更高版本。
+- `curl` 或 `wget`。
+- `sha256sum` 或 `shasum`。
+- 更新对应工具时可能需要 Node.js/npm、Homebrew 或 Git Bash。
+
+## 项目结构
+
+| 路径 | 作用 |
+|---|---|
+| `scripts/` | Windows 与 POSIX 主逻辑 |
+| `bin/` | PATH 入口 |
+| `install.ps1` / `install.sh` | 安装器 |
+| `uninstall.ps1` / `uninstall.sh` | 安全卸载器 |
+| `distribution-files.txt` | 分发载荷的唯一清单来源 |
+| `checksums.sha256` | 清单载荷的 SHA256 摘要 |
+| `tools/` | checksum、发布和维护工具 |
+| `tests/` | PowerShell 与 Shell 回归测试 |
+| `.github/workflows/` | 测试、checksum、发布和 CDN 工作流 |
+
+兼容入口：
+
+- `Check-AI-CLI-Versions.ps1` 转发到 Windows 主脚本。
+- `Check-FactoryCLI-Version.ps1` 转发到 Windows 主脚本的 `-FactoryOnly` 模式。
+- `check-ai-cli-versions.sh` 转发到 POSIX 主脚本。
+
+## 开发与验证
+
+运行全部可用回归测试：
 
 ```powershell
-Get-Command opencode
-opencode --version
+.\run-all-tests.ps1
 ```
 
-如果当前会话仍被旧 shim 缓存, 再使用以下临时兜底:
+```bash
+bash ./run-all-tests.sh
+```
+
+基础静态检查：
+
+```bash
+bash -n install.sh uninstall.sh scripts/check-ai-cli-versions.sh
+```
+
+验证 checksum：
 
 ```powershell
-$exe = Join-Path $env:USERPROFILE ".opencode\\bin\\opencode.exe"
-Set-Alias opencode $exe
-opencode --version
+.\tools\Update-Checksums.ps1 -Check
 ```
 
-#### macOS / Linux
-```bash
-# 默认: 官方安装脚本 (curl / wget)
-curl -fsSL https://opencode.ai/install | bash
+修改分发载荷后，必须重新生成并提交 `checksums.sha256`：
 
-# 可选: Homebrew
-brew install anomalyco/tap/opencode
-
-# 可选: npm (fallback)
-npm install -g opencode-ai@latest
-```
-
-## 🛠️ 故障排除
-
-### 问题：PowerShell 执行策略错误
-
-**错误信息**:
-```
-无法加载文件，因为在此系统上禁止运行脚本
-```
-
-**解决方案**:
 ```powershell
-# 临时允许（仅当前会话）
-Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process
-
-# 永久允许（当前用户）
-Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+git add distribution-files.txt install.ps1 install.sh uninstall.ps1 uninstall.sh bin scripts tools/PSModulePath.ps1
+.\tools\Update-Checksums.ps1
+git add checksums.sha256
 ```
 
-### 问题：Bash 权限被拒绝
+## 发布
 
-**错误信息**:
-```
-Permission denied
-```
-
-**解决方案**:
-```bash
-# 添加执行权限
-chmod +x check-ai-cli-versions.sh
-
-# 或使用 bash 显式运行
-bash check-ai-cli-versions.sh
-```
-
-### 问题：缺少 sha256sum/shasum (校验工具)
-
-**错误信息**:
-```
-sha256 tool not found
-```
-
-**原因**:
-- `install.sh` 会对下载文件做 SHA256 校验, 没有 `sha256sum` 或 `shasum` 会直接失败, 这是为了安全稳定.
-
-**解决方案**:
-```bash
-# macOS (Homebrew)
-brew install coreutils
-
-# Debian/Ubuntu
-sudo apt-get update && sudo apt-get install -y coreutils
-
-# Fedora/RHEL
-sudo dnf install -y coreutils
-
-# CentOS/RHEL (旧版)
-sudo yum install -y coreutils
-
-# Alpine
-sudo apk add coreutils
-
-# Arch
-sudo pacman -S coreutils
-```
-
-## Self Check (Offline)
-
-### PowerShell
-```powershell
-powershell -NoProfile -Command "[ScriptBlock]::Create((Get-Content -Raw .\\Check-AI-CLI-Versions.ps1)) | Out-Null; 'OK'"
-```
-
-### Bash
-```bash
-bash -n ./check-ai-cli-versions.sh
-```
-
-### 问题：无法连接到服务器
-
-**解决方案**:
-1. 检查网络连接
-2. 确认防火墙设置
-3. 尝试使用 VPN
-4. 检查 DNS 设置
-
-### 问题：npm 命令不存在
-
-**解决方案**:
-
-**Windows**:
-1. 访问 https://nodejs.org
-2. 下载并安装 Node.js LTS 版本
-3. 重启 PowerShell
-
-**macOS**:
-```bash
-# 使用 Homebrew
-brew install node
-```
-
-**Linux**:
-```bash
-# Ubuntu/Debian
-sudo apt update && sudo apt install nodejs npm
-
-# CentOS/RHEL
-sudo yum install nodejs npm
-
-# Fedora
-sudo dnf install nodejs npm
-
-# Arch Linux
-sudo pacman -S nodejs npm
-```
-
-### 问题：Windows 下 Claude Code 更新后仍显示旧版本
-
-**原因**: Claude Code 在 Windows 下可能同时存在原生安装和 npm 全局安装。脚本会比较 stable channel 和官方 npm 包两个可安装来源, 并优先把版本更高的 Claude 命令路径放到 PATH 前面。若仍显示旧版本, 通常是当前终端会话还缓存了旧命令路径。
-
-**解决方案**:
-```powershell
-# 确认当前版本是否为 stable channel 最新
-claude update
-claude --version
-
-# 如需确认命令位置
-where.exe claude
-
-# 如果 claude update/install.ps1 都无法访问下载主机
-npm install -g @anthropic-ai/claude-code@latest
-```
-
-### 问题：OpenAI Codex 安装后 `codex --version` 报错
-
-**现象**:
-```
-Error: Missing optional dependency @openai/codex-win32-x64
-```
-
-**原因**: npm 上的 `@openai/codex` 平台包 (如 `win32-x64`) 可能未同步发布。
-
-**解决方案**:
-```powershell
-# 回退到已知可用的版本
-npm install -g @openai/codex@0.119.0
-codex --version
-```
-
-## 🔐 安全说明
-
-本脚本：
-- ✅ 仅从官方源获取数据
-- ✅ 使用 HTTPS 加密连接
-- ✅ 验证下载文件的校验和（checksums.sha256）
-- ✅ 不收集或发送任何用户数据
-- ✅ 开源透明，可审查代码
-
-## 📋 版本数据源
-
-| 工具 | 主要数据源 | 备用数据源 |
-|------|----------|-----------|
-| Factory CLI | app.factory.ai/cli/install.sh | app.factory.ai/cli/windows |
-| Claude Code | GCS claude-code-releases/stable + registry.npmjs.org | github.com/anthropics/claude-code/releases/latest |
-| OpenAI Codex | github.com/openai/codex/releases/latest | registry.npmjs.org/@openai/codex |
-| Gemini CLI | github.com/google-gemini/gemini-cli/releases/latest | registry.npmjs.org/@google/gemini-cli |
-| OpenCode | github.com/anomalyco/opencode/releases/latest | registry.npmjs.org/opencode-ai |
-
-- `Claude Code`: 优先比较 GCS stable channel 和官方 npm 包两个可安装来源, 选择较高版本作为 `latest`; 两者都不可用时才回退到 GitHub releases, 避免 staged rollout 导致假阳性 “update available”。
-- `Codex`、`Gemini CLI`、`OpenCode`: 优先使用官方仓库 release 作为 `latest` 来源, 只有仓库源不可用时才回退到其他官方发布源。
-- `OpenCode`: 仓库源不可用时回退到官方 npm 包; 若官方来源都失败则显示 `unknown`。可通过 `CHECK_AI_CLI_OPENCODE_VERSION` 覆盖。
-- 五个工具在检查前和更新后都会自动尝试修复 PATH/环境变量冲突, 以减少”已安装但命令未识别”问题。
-
-## 🚢 自动发布 GitHub Releases
-
-推送符合 `vX.Y.Z` 格式的 tag 后, GitHub Actions 会自动创建 GitHub Release。
-
-### 发布方式
+推送包含在 `main` 中的 `vX.Y.Z` tag 会触发 Release 工作流：
 
 ```bash
 git tag v1.3.0
 git push origin v1.3.0
 ```
 
-### 自动校验
+发布前会检查 tag 格式、tag commit 是否在 `main`、checksum 是否一致，以及同名 Release 是否存在。
 
-- tag 必须匹配 `vX.Y.Z`
-- tag 对应提交必须已经包含在 `main` 上
-- `checksums.sha256` 必须与仓库当前内容一致
-- 同名 Release 已存在时会直接失败, 不自动覆盖
+Release 资产由 `distribution-files.txt` 派生，包含 checksum、安装/卸载器、PATH 入口和主脚本。
 
-### 自动上传的 Release 附件
+## 常见问题
 
-- `checksums.sha256`
-- `distribution-files.txt`
-- `install.ps1`
-- `install.sh`
-- `uninstall.ps1`
-- `uninstall.sh`
-- `bin/check-ai-cli`
-- `bin/check-ai-cli.cmd`
-- `bin/check-ai-cli.ps1`
-- `scripts/Check-AI-CLI-Versions.ps1`
-- `scripts/check-ai-cli-versions.sh`
+### PowerShell 禁止执行脚本
 
-Release 页面会包含一段固定说明, 并附加 GitHub 自动生成的 Release Notes。
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+```
 
-## 🎯 高级用法
+或直接使用：
 
-### 自动化定期检查 (Linux/macOS)
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\Check-AI-CLI-Versions.ps1
+```
 
-使用 cron 每天自动检查版本：
+### Bash 权限不足
 
 ```bash
-# 编辑 crontab
-crontab -e
-
-# 添加以下行（每天早上 9 点运行）
-0 9 * * * ~/check-ai-cli-versions.sh >> ~/ai-cli-check.log 2>&1
+chmod +x ./check-ai-cli-versions.sh ./bin/check-ai-cli
+bash ./check-ai-cli-versions.sh
 ```
 
-### 自动化定期检查 (Windows)
+### checksum 工具缺失
 
-使用任务计划程序：
+macOS 可安装 `coreutils`，Linux 使用发行版包管理器安装 `coreutils`。安装器缺少 SHA256 工具时会失败关闭，不会跳过校验。
+
+### Windows 下仍命中旧版本
+
+查看实际命令来源并重新打开终端：
 
 ```powershell
-# 创建每日检查任务
-$action = New-ScheduledTaskAction -Execute "powershell.exe" `
-    -Argument "-ExecutionPolicy Bypass -File C:\path\to\Check-AI-CLI-Versions.ps1"
-
-$trigger = New-ScheduledTaskTrigger -Daily -At 9am
-
-Register-ScheduledTask -Action $action -Trigger $trigger `
-    -TaskName "AI CLI Version Check" -Description "每日检查 AI CLI 工具版本"
+where.exe claude
+where.exe codex
+where.exe opencode
+claude --version
+codex --version
+opencode --version
 ```
 
-## 🔗 相关链接
+如果同时存在 Program Files 和 CurrentUser 安装，直接运行目标安装目录下的 `bin/check-ai-cli.cmd`，或按提示清理旧安装。
 
-- [Factory CLI 官方文档](https://docs.factory.ai)
-- [Claude Code 官方文档](https://code.claude.com/docs)
-- [OpenAI Codex 官方文档](https://developers.openai.com/codex)
-- [OpenCode 官方文档](https://opencode.ai/docs/cli)
-- [Factory CLI GitHub](https://github.com/Factory-AI/factory)
-- [Claude Code GitHub](https://github.com/anthropics/claude-code)
-- [OpenAI Codex GitHub](https://github.com/openai/codex)
-- [OpenCode GitHub](https://github.com/anomalyco/opencode)
+### Codex 缺少 Windows optional package
 
-## 📞 支持
-
-如果遇到问题：
-
-1. 查看上方的故障排除部分
-2. 检查官方文档
-3. 在 GitHub 上提交 issue
-4. 加入各工具的官方 Discord 社区
-
----
-
-**提示**: 建议定期运行此脚本以保持工具最新，获得最佳性能和新功能！
-
-## 📝 更新日志
-
-### 2025-12-12
-- ✅ 初始版本发布
-- ✅ 支持 Factory CLI、Claude Code、OpenAI Codex、Gemini CLI、OpenCode
-- ✅ 跨平台支持 (Windows/macOS/Linux)
-- ✅ 多数据源备用方案
-- ✅ 交互式安装界面
-
-
-## Automatic checksum lifecycle
-
-`checksums.sha256` is generated from the canonical `distribution-files.txt` list.
-Do not edit the manifest manually and do not regenerate it from files after a
-verification failure.
-
-- Pull requests run `Update-Checksums.ps1 -Check` and fail when the manifest is stale.
-- Pushes to `main` that change release payload files regenerate and commit the manifest automatically.
-- Tagged releases refuse to publish unless the committed manifest is current.
-- Online installs resolve `main` to a 40-character commit SHA before downloading the manifest and payload, preventing a mutable-branch time-of-check/time-of-use mismatch.
-- Set `CHECK_AI_CLI_EXPECTED_MANIFEST_SHA256` to a trusted 64-character digest when an out-of-band manifest pin is available.
-
-Example pinned install:
+优先使用官方 npm registry：
 
 ```powershell
-$env:CHECK_AI_CLI_REF = 'v1.2.3'
-$env:CHECK_AI_CLI_EXPECTED_MANIFEST_SHA256 = '<trusted sha256 of checksums.sha256>'
-.\install.ps1
+npm install -g @openai/codex@latest --registry https://registry.npmjs.org
+codex --version
 ```
+
+## 相关链接
+
+- [Factory CLI 文档](https://docs.factory.ai)
+- [Claude Code 文档](https://code.claude.com/docs)
+- [OpenAI Codex 文档](https://developers.openai.com/codex)
+- [Gemini CLI 仓库](https://github.com/google-gemini/gemini-cli)
+- [OpenCode 文档](https://opencode.ai/docs/cli)
+- [GitHub Actions](https://github.com/IIXINGCHEN/Check-AI-CLI/actions)
