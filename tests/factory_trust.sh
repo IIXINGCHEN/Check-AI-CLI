@@ -23,4 +23,7 @@ assert_false is_factory_download_base_url 'https://user:pass@downloads.factory.a
 assert_false is_factory_download_base_url 'https://downloads.factory.ai?redirect=evil'
 assert_false is_factory_download_base_url 'https://downloads.factory.ai/releases?redirect=evil'
 
+target="$(select_release_target 'Fixture' 'official' '1.2.0' 'npm' '1.1.0')"
+[ "$target" = '1.2.0' ] || { printf '[FAIL] Release target policy selected %s.\n' "$target" >&2; exit 1; }
+
 printf '[PASS] Factory download URL trust checks passed.\n'

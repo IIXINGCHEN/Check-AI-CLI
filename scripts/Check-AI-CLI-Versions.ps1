@@ -284,18 +284,24 @@ function Get-CurlApplication() {
   return (Resolve-ApplicationCommand -Name @('curl.exe'))
 }
 
-function Invoke-CurlDownload([string]$Url, [string]$OutFile) {
+function Get-CurlDownloadArguments([string]$Url, [string]$OutFile, [bool]$BypassProxy = $false) {
+  $args = @(
+    '--fail', '--location', '--silent', '--show-error', '--http1.1', '--tlsv1.2', '--continue-at', '-',
+    '--retry', '3', '--retry-all-errors', '--connect-timeout', '30',
+    '--max-time', '300', '--output', $OutFile, $Url
+  )
+  if ($BypassProxy) { $args = @('--noproxy', '*') + $args }
+  return $args
+}
+
+function Invoke-CurlDownload([string]$Url, [string]$OutFile, [bool]$BypassProxy = $false) {
   $curlPath = Resolve-ApplicationCommandPath -Name @('curl.exe')
   if (-not $curlPath) { throw 'curl.exe is unavailable' }
 
   # Windows ships curl.exe. It uses HTTP(S)_PROXY inherited from network
   # detection and is a deliberately independent transport when HttpClient/IWR
   # is truncated by a local proxy. HTTP/1.1 avoids common proxy HTTP/2 EOFs.
-  $curlArgs = @(
-    '--fail', '--location', '--silent', '--show-error', '--http1.1',
-    '--retry', '2', '--retry-all-errors', '--connect-timeout', '30',
-    '--max-time', '300', '--output', $OutFile, $Url
-  )
+  $curlArgs = Get-CurlDownloadArguments $Url $OutFile $BypassProxy
   & $curlPath @curlArgs
   if ($LASTEXITCODE -ne 0) { throw "curl.exe failed with exit code $LASTEXITCODE" }
 }
@@ -329,8 +335,17 @@ function Download-FileWithRetry([string]$Url, [string]$OutFile, [string]$Label) 
         return
       } catch {
         $curlError = $_.Exception.Message
-        if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
-        throw "Failed to download ${Label}: $webError; curl.exe fallback failed: $curlError"
+        Write-Warn "${Label} proxy download failed; retrying curl directly without the detected proxy"
+        try {
+          Invoke-CurlDownload $Url $tmp $true
+          if (-not (Test-NonEmptyFile $tmp)) { throw 'Downloaded file is empty.' }
+          Move-Item -LiteralPath $tmp -Destination $OutFile -Force
+          return
+        } catch {
+          $directError = $_.Exception.Message
+          if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
+          throw "Failed to download ${Label}: $webError; curl.exe proxy fallback failed: $curlError; direct fallback failed: $directError"
+        }
       }
     }
   }
@@ -842,7 +857,7 @@ function Set-EffectiveProxyEnvironment($Proxy) {
   if ($Proxy.IsHttpProxy) {
     $env:HTTP_PROXY  = $url; $env:http_proxy  = $url
     $env:HTTPS_PROXY = $url; $env:https_proxy = $url
-    $env:ALL_PROXY   = $url; $env:all_proxy   = $url
+    $env:ALL_PROXY   = $null; $env:all_proxy   = $null
     $script:EffectiveProxyUrl = $url
   } else {
     # SOCKS-only: curl and socks-capable Node can use ALL_PROXY, but PowerShell
@@ -1204,6 +1219,26 @@ function Test-CommandSourceInDir([string]$Source, [string]$Dir) {
   } catch { return $false }
 }
 
+function Get-InstalledToolCandidate([string]$ToolId, [string[]]$CommandNames) {
+  $best = $null
+  foreach ($dir in @(Get-PreferredToolPathDirs $ToolId)) {
+    $oldPath = $env:PATH
+    try {
+      $env:PATH = Prepend-PathEntry $env:PATH $dir
+      foreach ($name in $CommandNames) {
+        $info = Get-CommandVersionInfo $name
+        if (-not $info.Version -or -not (Test-CommandSourceInDir $info.Source $dir)) { continue }
+        $kind = if ($info.Source -match '\.(exe)$') { 'native' } elseif ($info.Source -match '\.(cmd|ps1)$') { 'shim' } else { 'alias' }
+        $candidate = @{ Tool = $ToolId; Dir = $dir; Path = $info.Source; Version = $info.Version; Source = $info.Source; Kind = $kind }
+        if (-not $best -or (Compare-Version $best.Version $candidate.Version) -eq -1) { $best = $candidate }
+      }
+    } finally {
+      $env:PATH = $oldPath
+    }
+  }
+  return $best
+}
+
 function Get-ClaudeVersionCandidate([string]$Dir) {
   $oldPath = $env:PATH
   try {
@@ -1221,15 +1256,7 @@ function Get-ClaudeVersionCandidate([string]$Dir) {
 }
 
 function Get-BestClaudeVersionCandidate() {
-  $best = $null
-  foreach ($dir in @(Get-PreferredToolPathDirs 'claude')) {
-    $candidate = Get-ClaudeVersionCandidate $dir
-    if (-not $candidate) { continue }
-    if (-not $best -or (Compare-Version $best.Version $candidate.Version) -eq -1) {
-      $best = $candidate
-    }
-  }
-  return $best
+  return Get-InstalledToolCandidate 'claude' @('claude', 'claude-code')
 }
 
 function Get-FactoryVersionCandidate([string]$Dir) {
@@ -1249,15 +1276,7 @@ function Get-FactoryVersionCandidate([string]$Dir) {
 }
 
 function Get-BestFactoryVersionCandidate() {
-  $best = $null
-  foreach ($dir in @(Get-PreferredToolPathDirs 'factory')) {
-    $candidate = Get-FactoryVersionCandidate $dir
-    if (-not $candidate) { continue }
-    if (-not $best -or (Compare-Version $best.Version $candidate.Version) -eq -1) {
-      $best = $candidate
-    }
-  }
-  return $best
+  return Get-InstalledToolCandidate 'factory' @('droid', 'factory')
 }
 
 function Get-LocalClaudeVersion() {
@@ -1339,6 +1358,11 @@ function Get-LocalCodexVersion() {
 }
 
 function Get-LocalGeminiVersion() {
+  $candidate = Get-InstalledToolCandidate 'gemini' @('gemini')
+  if ($candidate) {
+    Ensure-UserPathPrefers $candidate.Dir
+    return $candidate.Version
+  }
   [void](Repair-ToolUserPath 'gemini')
   return Get-LocalCommandVersion @('gemini')
 }
@@ -1383,17 +1407,10 @@ function Get-LatestFactoryVersion() {
   $script:LatestFactoryOfficialVersion = $official
   $script:LatestFactoryNpmVersion = $npm
 
-  if ($official -and $npm) {
-    $cmp = Compare-Version $official $npm
-    if ($cmp -ne 0) {
-      $selected = if ($cmp -eq 1) { $official } else { $npm }
-      Write-Info "Factory CLI latest version sources differ: official=v$official, npm=v$npm. Using v$selected."
-      return $selected
-    }
-    return $official
-  }
-  if ($official) { return $official }
-  return $npm
+  return Select-ReleaseTarget 'Factory CLI' @(
+    @{ Label = 'official'; Version = $official }
+    @{ Label = 'npm'; Version = $npm }
+  )
 }
 
 function Get-NpmLatestVersion([string]$PackageName) {
@@ -1424,10 +1441,23 @@ function Select-HigherVersion([string]$First, [string]$Second) {
   return $First
 }
 
+function Select-ReleaseTarget([string]$ToolName, [hashtable[]]$Sources) {
+  $selected = $null
+  foreach ($source in $Sources) {
+    if (-not $source.Version) { continue }
+    if (-not $selected -or (Compare-Version $selected.Version $source.Version) -eq -1) { $selected = $source }
+  }
+  if (-not $selected) { return $null }
+  $available = @($Sources | Where-Object { $_.Version } | ForEach-Object { "$($_.Label)=v$($_.Version)" })
+  if ($available.Count -gt 1) { Write-Info "$ToolName latest sources: $($available -join ', '). Using v$($selected.Version)." }
+  return $selected.Version
+}
+
 function Resolve-VersionConflict([string]$ToolName, [string]$PrimaryLabel, [string]$Primary, [string]$SecondaryLabel, [string]$Secondary) {
-  $selected = Select-HigherVersion $Primary $Secondary
-  if ($Primary -and $Secondary -and $Primary -ne $Secondary) { Write-Info "$ToolName latest version sources differ: $PrimaryLabel=v$Primary, $SecondaryLabel=v$Secondary. Using v$selected." }
-  return $selected
+  return Select-ReleaseTarget $ToolName @(
+    @{ Label = $PrimaryLabel; Version = $Primary }
+    @{ Label = $SecondaryLabel; Version = $Secondary }
+  )
 }
 
 function Get-LatestClaudeVersion() {
@@ -2279,12 +2309,28 @@ function Report-PostUpdate([string]$Title, [string]$Latest, [scriptblock]$GetLoc
   }
 }
 
+function Invoke-ToolLifecycle([hashtable]$Adapter) {
+  Write-ToolHeader $Adapter.Title
+  $latest = Get-AndPrintLatest $Adapter.GetLatest
+  $local = Get-AndPrintLocal $Adapter.GetLocal
+  $didUpdate = Handle-UpdateFlow $latest $local $Adapter.Update
+  if ($didUpdate) { Report-PostUpdate $Adapter.Title $latest $Adapter.GetLocal }
+  return @{
+    Title = $Adapter.Title
+    Latest = $latest
+    Local = $local
+    Updated = $didUpdate
+    Failed = $script:UpdateFailed
+  }
+}
+
 function Check-OneTool([string]$Title, [scriptblock]$GetLatest, [scriptblock]$GetLocal, [scriptblock]$DoUpdate) {
-  Write-ToolHeader $Title
-  $latest = Get-AndPrintLatest $GetLatest
-  $local = Get-AndPrintLocal $GetLocal
-  $didUpdate = Handle-UpdateFlow $latest $local $DoUpdate
-  if ($didUpdate) { Report-PostUpdate $Title $latest $GetLocal }
+  [void](Invoke-ToolLifecycle @{
+    Title = $Title
+    GetLatest = $GetLatest
+    GetLocal = $GetLocal
+    Update = $DoUpdate
+  })
 }
 
 function Show-Banner() {

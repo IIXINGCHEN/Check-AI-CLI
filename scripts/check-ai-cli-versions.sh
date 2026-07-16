@@ -278,6 +278,30 @@ get_local_version() {
   extract_semver "$("$name" --version 2>/dev/null | tr '\n' ' ')"
 }
 
+resolve_installed_tool() {
+  local tool="$1"; shift
+  local best_version="" best_path="" best_kind="" dir name path version kind
+  while IFS= read -r dir; do
+    [ -n "$dir" ] || continue
+    for name in "$@"; do
+      path="$(PATH="$dir:$PATH" command -v "$name" 2>/dev/null || true)"
+      [ -n "$path" ] || continue
+      version="$(PATH="$dir:$PATH" get_local_version "$name" || true)"
+      [ -n "$version" ] || continue
+      case "$path" in
+        *.exe) kind="native" ;;
+        *.cmd|*.ps1) kind="shim" ;;
+        *) kind="alias" ;;
+      esac
+      if [ -z "$best_version" ] || [ "$(compare_semver "$best_version" "$version" || true)" = "-1" ]; then
+        best_version="$version"; best_path="$path"; best_kind="$kind"
+      fi
+    done
+  done < <(get_tool_candidate_dirs "$tool")
+  [ -n "$best_version" ] || return 1
+  printf '%s|%s|%s\n' "$best_version" "$best_path" "$best_kind"
+}
+
 normalize_dir() {
   local dir="${1:-}"
   [ -n "$dir" ] || return 1
@@ -394,10 +418,10 @@ repair_tool_path() {
   return 0
 }
 
-get_local_factory() { repair_tool_path factory >/dev/null 2>&1 || true; get_local_version droid || get_local_version factory || true; }
-get_local_claude() { repair_tool_path claude >/dev/null 2>&1 || true; get_local_version claude || get_local_version claude-code || true; }
+get_local_factory() { repair_tool_path factory >/dev/null 2>&1 || true; local c; c="$(resolve_installed_tool factory droid factory || true)"; printf '%s\n' "${c%%|*}"; }
+get_local_claude() { repair_tool_path claude >/dev/null 2>&1 || true; local c; c="$(resolve_installed_tool claude claude claude-code || true)"; printf '%s\n' "${c%%|*}"; }
 get_local_codex() { repair_tool_path codex >/dev/null 2>&1 || true; get_local_version codex || true; }
-get_local_gemini() { repair_tool_path gemini >/dev/null 2>&1 || true; get_local_version gemini || true; }
+get_local_gemini() { repair_tool_path gemini >/dev/null 2>&1 || true; local c; c="$(resolve_installed_tool gemini gemini || true)"; printf '%s\n' "${c%%|*}"; }
 get_local_opencode() { repair_tool_path opencode >/dev/null 2>&1 || true; get_local_version opencode || true; }
 
 get_latest_factory() {
@@ -465,12 +489,16 @@ resolve_version_conflict() {
   printf '%s\n' "$selected"
 }
 
+select_release_target() {
+  resolve_version_conflict "$@"
+}
+
 get_latest_claude() {
   local repo stable npm installable
   repo="$(get_claude_repo_latest_version)"
   stable="$(get_claude_bootstrap_stable_version)"
   npm="$(get_npm_latest_version '@anthropic-ai/claude-code')"
-  installable="$(resolve_version_conflict 'Claude Code' 'stable' "$stable" 'npm' "$npm")"
+  installable="$(select_release_target 'Claude Code' 'stable' "$stable" 'npm' "$npm")"
   [ -n "$installable" ] && printf '%s\n' "$installable" && return
   printf '%s\n' "$repo"
 }
@@ -939,7 +967,7 @@ handle_update_flow() {
   return 0
 }
 
-check_tool() {
+run_tool_lifecycle() {
   local title="$1" latest_fn="$2" local_fn="$3" update_fn="$4"
   print_tool_header "$title"
   log_info "Fetching latest version..."
@@ -948,6 +976,10 @@ check_tool() {
   localv="$("$local_fn" || true)"
   print_versions "$latest" "$localv"
   handle_update_flow "$latest" "$localv" "$update_fn" "$local_fn"
+}
+
+check_tool() {
+  run_tool_lifecycle "$@"
 }
 
 show_banner() {
