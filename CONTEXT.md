@@ -5,35 +5,39 @@ This context defines the language for discovering, updating, and verifying local
 ## Tools and releases
 
 **AI CLI Tool**:
-An externally installed command-line tool tracked by this project, such as Factory CLI, Claude Code, OpenAI Codex, Gemini CLI, or OpenCode.
-_Avoid_: application, package
+An externally installed command-line tool tracked by this project: Claude Code, OpenAI Codex, Gemini CLI, Grok Build, or OpenCode.
+_Avoid_: Factory CLI, Droid, application, package manager product
+
+**Npm Package Spec**:
+The only install unit for an AI CLI Tool, always of the form `name@latest` (for example `@anthropic-ai/claude-code@latest`).
+_Avoid_: bootstrap script, native updater, brew formula
 
 **Release Target**:
-The version a tool should reach, selected from the trusted release sources available for that tool and platform.
-_Avoid_: desired version, latest string
+The semver from the npm registry `latest` dist-tag for the tool package, resolved with the same registry policy used for install.
+_Avoid_: GitHub release-only target, GCS stable channel as install target
 
 **Release Source**:
-A trusted channel that supplies a tool version or installation payload, such as an official bootstrap, package registry, or native package manager.
-_Avoid_: mirror, feed
+npm registry only (regional mirror and/or `https://registry.npmjs.org`).
+_Avoid_: mirror as a non-npm HTTP file host, remote install script, scoop/choco/brew
 
 **Installed Candidate**:
-A locally discoverable executable and its parsed version, together with the source kind and path used to identify it.
-_Avoid_: local tool, binary candidate
+A locally discoverable executable (prefer npm global bin) and its parsed version.
+_Avoid_: standalone install preferred over npm when both exist
 
 ## Checking and updating
 
 **Update Lifecycle**:
-The sequence that discovers a release target, reads an installed candidate, compares versions, performs an update, and verifies the resulting installed candidate.
-_Avoid_: update flow, check flow
+Discover npm latest → read installed candidate → compare → `npm install -g` → repair PATH preference for npm global bin → re-read version.
+_Avoid_: multi-channel fallback graphs
 
 **Network Route**:
-The selected path for a request or download, including a proxy route or a direct route.
-_Avoid_: connection mode, transport mode
+Proxy route or direct route used for registry HTTP and for child `npm` processes.
+_Avoid_: transport mode as a product feature
 
-**Verified Payload**:
-An installation file accepted only after its source is trusted and its checksum matches the expected release metadata.
-_Avoid_: downloaded file, installer file
+**Verified Payload** (Check-AI-CLI self-install only):
+An installation file for this repository accepted after trusted source + checksum match.
+_Avoid_: applying the same term to third-party npm packages
 
 **Update Result**:
-The observable outcome of an update attempt, including success or failure, the resulting installed candidate, and relevant release-source diagnostics.
-_Avoid_: status string, update message
+Observable outcome of an npm update attempt, including success/failure and post-install version.
+_Avoid_: success when local version cannot be verified
