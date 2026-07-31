@@ -50,28 +50,29 @@ function Get-BlobSha([string]$Path) {
   return $sha.Trim()
 }
 
-function Write-BlobToFile([string]$Sha, [string]$OutFile) {
-  $outDir = Split-Path -Parent $OutFile
-  if ($outDir -and -not (Test-Path -LiteralPath $outDir)) { New-Item -ItemType Directory -Path $outDir | Out-Null }
-  $cmd = "git cat-file -p $Sha > `"$OutFile`""
-  cmd /c $cmd | Out-Null
-}
-
 function Get-Sha256FromIndex([string]$Path) {
+  # Hash the staged blob bytes from git stdout directly: release.yml runs -Check on
+  # ubuntu-latest, so Windows-only helpers (cmd /c redirection, certutil) must not be used.
   $sha = Get-BlobSha $Path
-  $tmp = Join-Path ([IO.Path]::GetTempPath()) ("check-ai-cli-" + [Guid]::NewGuid().ToString('N') + ".tmp")
+  $psi = New-Object System.Diagnostics.ProcessStartInfo
+  $psi.FileName = 'git'
+  $psi.Arguments = "cat-file blob $sha"
+  $psi.WorkingDirectory = (Get-Location).ProviderPath
+  $psi.RedirectStandardOutput = $true
+  $psi.UseShellExecute = $false
+  $proc = [System.Diagnostics.Process]::Start($psi)
   try {
-    Write-BlobToFile $sha $tmp
-    $getFileHash = Get-Command Get-FileHash -ErrorAction SilentlyContinue
-    if ($getFileHash) {
-      return (Get-FileHash -Algorithm SHA256 -LiteralPath $tmp).Hash.ToLowerInvariant()
+    $hasher = [System.Security.Cryptography.SHA256]::Create()
+    try {
+      $hashBytes = $hasher.ComputeHash($proc.StandardOutput.BaseStream)
+    } finally {
+      $hasher.Dispose()
     }
-    $out = certutil -hashfile $tmp SHA256
-    $hash = ($out | Select-Object -Skip 1 -First 1) -replace '\s',''
-    if ([string]::IsNullOrWhiteSpace($hash)) { throw "Failed to hash: $Path" }
-    return $hash.ToLowerInvariant()
+    $proc.WaitForExit()
+    if ($proc.ExitCode -ne 0) { throw "git cat-file failed for: $Path" }
+    return ([BitConverter]::ToString($hashBytes) -replace '-', '').ToLowerInvariant()
   } finally {
-    Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+    $proc.Dispose()
   }
 }
 

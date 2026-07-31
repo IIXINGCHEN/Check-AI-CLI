@@ -325,26 +325,27 @@ npm_registry_latest_url() {
 }
 
 get_npm_latest_version() {
-  local package="$1" reg url text ver
+  local package="$1" reg url text ver official
   select_best_npm_mirror
-  for reg in "$NPM_BEST_MIRROR" "$(official_registry)"; do
+  official="$(official_registry)"
+  # npmjs.org is authoritative for dist-tags. Mirrors are fallback metadata
+  # only; stale mirror data must never suppress a real update.
+  for reg in "$official" "$NPM_BEST_MIRROR"; do
     [ -n "$reg" ] || continue
-    if [ "$reg" = "$NPM_BEST_MIRROR" ] || [ "$reg" != "$NPM_BEST_MIRROR" ]; then
-      :
-    fi
     url="$(npm_registry_latest_url "$reg" "$package")"
     text="$(fetch_text "$url" || true)"
     if [ -n "$text" ]; then
       ver="$(printf '%s' "$text" | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)"
       ver="$(extract_semver "$ver")"
       if [ -n "$ver" ]; then
+        if [ "$reg" != "$official" ]; then
+          log_warn "Official npm registry unavailable; using fallback metadata from $reg"
+        fi
         printf '%s' "$ver"
         return 0
       fi
     fi
-    # avoid duplicate official fetch when same
-    if [ "$reg" = "$(official_registry)" ]; then break; fi
-    if [ "$NPM_BEST_MIRROR" = "$(official_registry)" ]; then break; fi
+    [ "$NPM_BEST_MIRROR" = "$official" ] && break
   done
   return 1
 }
@@ -358,7 +359,7 @@ npm_install_global() {
 
 update_tool_via_npm() {
   local def="$1"
-  local title package spec cmds target reg installed=0 last_err="" localv cmp
+  local title package spec cmds target install_spec reg installed=0 last_err="" localv cmp command_path
   title="$(tool_field "$def" 2)"
   package="$(tool_field "$def" 3)"
   spec="$(tool_field "$def" 4)"
@@ -367,12 +368,28 @@ update_tool_via_npm() {
   log_info "Updating $title..."
   require_npm || return 1
 
+  localv="$(get_local_tool_version "$def" || true)"
+  if [ -n "$localv" ] && ! npm list -g --depth=0 "$package" >/dev/null 2>&1; then
+    command_path=""
+    IFS=',' read -r -a command_arr <<< "$cmds"
+    for command_name in "${command_arr[@]}"; do
+      if command_exists "$command_name"; then command_path="$(command -v "$command_name")"; break; fi
+    done
+    log_err "$title is installed outside npm at ${command_path:-unknown path}. Automatic npm update was blocked to avoid a conflicting installation."
+    return 1
+  fi
+
   target="$(get_npm_latest_version "$package" || true)"
+  install_spec="$spec"
+  if [ -n "$target" ]; then
+    # Pin the authoritative version so a stale mirror fails and falls back.
+    install_spec="${package}@${target}"
+  fi
   select_best_npm_mirror
 
   for reg in "$NPM_BEST_MIRROR" "$(official_registry)"; do
     log_info "Trying: npm install ($reg)"
-    if npm_install_global "$spec" "$reg"; then
+    if npm_install_global "$install_spec" "$reg"; then
       installed=1
       break
     else
@@ -384,7 +401,7 @@ update_tool_via_npm() {
   done
 
   if [ "$installed" -ne 1 ]; then
-    log_err "npm install failed for $spec. $last_err"
+    log_err "npm install failed for $install_spec. $last_err"
     return 1
   fi
 
@@ -394,7 +411,7 @@ update_tool_via_npm() {
     # optional/native binary missing: force official retry once
     if [ "$NPM_BEST_MIRROR" != "$(official_registry)" ]; then
       log_warn "Installed package not runnable; retrying official npm registry"
-      npm_install_global "$spec" "$(official_registry)" || true
+      npm_install_global "$install_spec" "$(official_registry)" || true
       repair_tool_path >/dev/null 2>&1 || true
       localv="$(get_local_tool_version "$def" || true)"
     fi

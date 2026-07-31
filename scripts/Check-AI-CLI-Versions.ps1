@@ -559,11 +559,16 @@ function Get-InstalledToolCandidate([string]$ToolId, [string[]]$CommandNames) {
     foreach ($name in $CommandNames) {
       $info = Get-CommandVersionInfo $name
       if ($info.Source) {
+        $sourceDir = Normalize-Dir (Split-Path -Parent $info.Source)
+        $kind = 'external'
+        if ($npmBin -and $sourceDir -and $sourceDir.Equals((Normalize-Dir $npmBin), [StringComparison]::OrdinalIgnoreCase)) {
+          $kind = 'npm'
+        }
         return @{
           Version = $info.Version
           Path = $info.Source
           Source = $info.Source
-          Kind = 'npm'
+          Kind = $kind
           Command = $name
         }
       }
@@ -600,20 +605,37 @@ function Invoke-NpmInstallGlobal([string]$PackageSpec, [string]$RegistryOverride
   if ($LASTEXITCODE -ne 0) { throw "npm install failed with exit code $LASTEXITCODE" }
 }
 
+function Get-NpmVersionFromRegistry([string]$PackageName, [string]$Registry) {
+  $base = $Registry.TrimEnd('/')
+  $encoded = ($PackageName -replace '/', '%2F')
+  # scoped packages: registry.npmjs.org/@scope%2Fname/latest
+  $url = "$base/$PackageName/latest"
+  if ($PackageName.StartsWith('@')) {
+    $url = "$base/$encoded/latest"
+  }
+  $json = Get-Json $url
+  if (-not $json -or -not $json.version) { return $null }
+  return (Get-SemVer ([string]$json.version))
+}
+
 function Get-NpmLatestVersion([string]$PackageName, [string]$Registry = $null) {
-  $registries = if ($Registry) { @($Registry) } else { Get-RegistryCandidates }
-  foreach ($reg in $registries) {
-    $base = $reg.TrimEnd('/')
-    $encoded = ($PackageName -replace '/', '%2F')
-    # scoped packages: registry.npmjs.org/@scope%2Fname/latest
-    $url = "$base/$PackageName/latest"
-    if ($PackageName.StartsWith('@')) {
-      $url = "$base/$encoded/latest"
-    }
-    $json = Get-Json $url
-    if ($json -and $json.version) {
-      $ver = Get-SemVer ([string]$json.version)
-      if ($ver) { return $ver }
+  # An explicit registry is used exactly as requested (mainly diagnostics/tests).
+  if (-not [string]::IsNullOrWhiteSpace($Registry)) {
+    return (Get-NpmVersionFromRegistry $PackageName $Registry)
+  }
+
+  # npmjs.org is the authority for dist-tags. Mirrors accelerate installation,
+  # but stale mirror metadata must never suppress a real update.
+  $official = Get-OfficialNpmRegistry
+  $version = Get-NpmVersionFromRegistry $PackageName $official
+  if ($version) { return $version }
+
+  foreach ($reg in (Get-RegistryCandidates)) {
+    if ($reg.TrimEnd('/') -eq $official.TrimEnd('/')) { continue }
+    $version = Get-NpmVersionFromRegistry $PackageName $reg
+    if ($version) {
+      Write-Warn "Official npm registry unavailable; using fallback metadata from $reg"
+      return $version
     }
   }
   return $null
@@ -660,7 +682,18 @@ function Update-ToolViaNpm([hashtable]$Tool) {
     throw 'No installer found. Install Node.js (npm) first. This checker only supports: npm i -g <package>@latest'
   }
 
+  $candidate = Get-InstalledToolCandidate $Tool.Id $Tool.Commands
+  if ($candidate.Source -and $candidate.Kind -ne 'npm') {
+    throw "$($Tool.Title) is installed outside npm at $($candidate.Source). Automatic npm update was blocked to avoid a conflicting installation."
+  }
+
   $target = Get-LatestToolVersion $Tool
+  $installSpec = $Tool.Spec
+  if ($target) {
+    # Pin the authoritative version. A stale mirror must fail and fall back to
+    # npmjs.org instead of silently installing its older local "latest" tag.
+    $installSpec = "$($Tool.Package)@$target"
+  }
   $official = Get-OfficialNpmRegistry
   $registries = Get-RegistryCandidates
 
@@ -669,7 +702,7 @@ function Update-ToolViaNpm([hashtable]$Tool) {
   foreach ($reg in $registries) {
     try {
       Write-Info "Trying: npm install ($reg)"
-      Invoke-NpmInstallGlobal $Tool.Spec $reg
+      Invoke-NpmInstallGlobal $installSpec $reg
       $installed = $true
       break
     } catch {
@@ -678,7 +711,7 @@ function Update-ToolViaNpm([hashtable]$Tool) {
     }
   }
   if (-not $installed) {
-    throw "npm install failed for $($Tool.Spec). Last error: $lastError"
+    throw "npm install failed for $installSpec. Last error: $lastError"
   }
 
   [void](Repair-ToolUserPath $Tool.Id)
@@ -745,23 +778,27 @@ function Get-AndPrintLocal([scriptblock]$GetLocal) {
 }
 
 function Try-Update([scriptblock]$DoUpdate) {
-  try { & $DoUpdate } catch {
+  try {
+    & $DoUpdate
+    return $true
+  } catch {
     $script:UpdateFailed = $true
     Write-Fail $_.Exception.Message
+    return $false
   }
 }
 
 function Handle-UpdateFlow([string]$Latest, [string]$Local, [scriptblock]$DoUpdate) {
   if (-not $Local) {
     if (-not $Latest) { Write-Warn 'Latest version unknown. Installing anyway.' }
-    if (Confirm-Yes 'Install now? (Y/N): ') { Try-Update $DoUpdate; return $true }
+    if (Confirm-Yes 'Install now? (Y/N): ') { return (Try-Update $DoUpdate) }
     return $false
   }
   if (-not $Latest) { Write-Warn 'Latest version unknown. Skipping update check.'; return $false }
   $cmp = Compare-Version $Local $Latest
   if ($cmp -eq 0) { Write-Success 'Already up to date.'; return $false }
   if ($cmp -eq 1) { Write-Warn 'Local version is newer than latest source.'; return $false }
-  if ($cmp -eq -1 -and (Confirm-Yes 'Update now? (Y/N): ')) { Try-Update $DoUpdate; return $true }
+  if ($cmp -eq -1 -and (Confirm-Yes 'Update now? (Y/N): ')) { return (Try-Update $DoUpdate) }
   return $false
 }
 
@@ -801,9 +838,12 @@ function Invoke-ToolLifecycle([hashtable]$Adapter) {
 function Check-OneTool([hashtable]$Tool) {
   [void](Invoke-ToolLifecycle @{
     Title = $Tool.Title
-    GetLatest = { Get-LatestToolVersion $Tool }.GetNewClosure()
-    GetLocal = { Get-LocalToolVersion $Tool }.GetNewClosure()
-    Update = { Update-ToolViaNpm $Tool }.GetNewClosure()
+    # Keep these scriptblocks in the caller's runspace. GetNewClosure() creates a
+    # dynamic module, which hides script-scoped helper functions on Windows
+    # PowerShell 5.1 and causes Get-LatestToolVersion to be unresolved.
+    GetLatest = { Get-LatestToolVersion $Tool }
+    GetLocal = { Get-LocalToolVersion $Tool }
+    Update = { Update-ToolViaNpm $Tool }
   })
 }
 

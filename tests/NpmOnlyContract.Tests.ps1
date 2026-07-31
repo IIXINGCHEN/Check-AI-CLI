@@ -105,6 +105,46 @@ Run-Test 'Lifecycle adapter verifies post-update version' {
   Assert-True ($state.Version -eq '1.1.0') 'Expected version bump'
 }
 
+Run-Test 'Failed update does not trigger a misleading post-update check' {
+  $oldAuto = $script:AutoMode
+  $oldFailed = $script:UpdateFailed
+  $script:AutoMode = $true
+  $script:UpdateFailed = $false
+  $state = @{ Reads = 0; Updates = 0 }
+  try {
+    $result = Invoke-ToolLifecycle @{
+      Title = 'Blocked Fixture'
+      GetLatest = { '1.1.0' }
+      GetLocal = { $state.Reads++; '1.0.0' }
+      Update = { $state.Updates++; throw 'blocked fixture update' }
+    }
+    Assert-True ($result.Updated -eq $false) 'Failed update must not be reported as updated'
+    Assert-True ($state.Updates -eq 1) 'Expected one blocked update attempt'
+    Assert-True ($state.Reads -eq 1) 'Failed update must not trigger a post-update local-version read'
+    Assert-True ($script:UpdateFailed -eq $true) 'Expected failed-update status'
+  } finally {
+    $script:AutoMode = $oldAuto
+    $script:UpdateFailed = $oldFailed
+  }
+}
+
+Run-Test 'Official npm metadata is authoritative and external installs are blocked' {
+  $text = [IO.File]::ReadAllText($main)
+  Assert-True ($text.Contains('$version = Get-NpmVersionFromRegistry $PackageName $official')) 'Expected official npm metadata lookup first'
+  Assert-True ($text.Contains('stale mirror metadata must never suppress a real update')) 'Expected mirror freshness safety invariant'
+  Assert-True ($text.Contains('$installSpec = "$($Tool.Package)@$target"')) 'Expected authoritative target version pin during install'
+  Assert-True ($text.Contains("$kind = 'external'")) 'Expected non-npm command classification'
+  Assert-True ($text.Contains('Automatic npm update was blocked to avoid a conflicting installation.')) 'Expected fail-closed mixed-install guard'
+}
+
+Run-Test 'Production lifecycle adapters stay in the script runspace' {
+  $text = [IO.File]::ReadAllText($main)
+  Assert-False ($text.Contains('}.GetNewClosure()')) 'GetNewClosure isolates script helper functions in a dynamic module on Windows PowerShell 5.1'
+  Assert-True ($text.Contains('GetLatest = { Get-LatestToolVersion $Tool }')) 'Expected direct latest-version adapter'
+  Assert-True ($text.Contains('GetLocal = { Get-LocalToolVersion $Tool }')) 'Expected direct local-version adapter'
+  Assert-True ($text.Contains('Update = { Update-ToolViaNpm $Tool }')) 'Expected direct npm-update adapter'
+}
+
 Run-Test 'Factory wrapper exits unsupported' {
   $wrapper = Join-Path $repoRoot 'Check-FactoryCLI-Version.ps1'
   $p = Start-Process -FilePath (Get-Command powershell.exe).Source -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',$wrapper) -Wait -PassThru -NoNewWindow

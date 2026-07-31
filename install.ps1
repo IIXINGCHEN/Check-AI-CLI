@@ -22,7 +22,7 @@ $ErrorActionPreference = 'Stop'
 # - No automatic admin elevation
 # Machine-wide install is opt-in only: -Machine or CHECK_AI_CLI_PATH_SCOPE=Machine
 # Env vars:
-# - CHECK_AI_CLI_REF: pin tag/commit/main; default latest stable release, else latest main commit, fallback main
+# - CHECK_AI_CLI_REF: pin tag/commit/main; default latest stable release, else latest main commit; fails closed (no mutable main fallback)
 # - CHECK_AI_CLI_RAW_BASE: raw base URL (mirror)
 # - CHECK_AI_CLI_INSTALL_DIR: install directory override
 # - CHECK_AI_CLI_PATH_SCOPE: CurrentUser or Machine

@@ -3,7 +3,7 @@ set -euo pipefail
 
 # This script supports "curl | bash" to install/update this repo's files
 # Env vars:
-# - CHECK_AI_CLI_REF: pin tag/commit/main; unset => latest stable release, else latest main commit, fallback main
+# - CHECK_AI_CLI_REF: pin tag/commit/main; unset => latest stable release, else latest main commit; fails closed (no mutable main fallback)
 # - CHECK_AI_CLI_RAW_BASE: raw base URL (mirror). Default trusts GitHub official raw only
 # - CHECK_AI_CLI_ALLOW_UNTRUSTED_MIRROR: set to 1 to allow untrusted mirrors
 # - CHECK_AI_CLI_INSTALL_DIR: install directory, default current dir
