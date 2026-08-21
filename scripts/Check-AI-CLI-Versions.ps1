@@ -421,7 +421,8 @@ function Compare-Version([string]$Current, [string]$Latest) {
   if (-not $curTag -and $latTag) { return 1 }
   if ($curTag -and $latTag) {
     if ($curTag -eq $latTag) { return 0 }
-    return ([string]::CompareOrdinal($curTag, $latTag) -lt 0 ? -1 : 1)
+    if ([string]::CompareOrdinal($curTag, $latTag) -lt 0) { return -1 }
+    return 1
   }
   return 0
 }
