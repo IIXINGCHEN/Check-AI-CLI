@@ -396,6 +396,11 @@ function Get-VersionParts([string]$Version) {
   return @([int]$p[0], [int]$p[1], [int]$p[2])
 }
 
+function Test-IsPrereleaseVersion([string]$Text) {
+  if ([string]::IsNullOrWhiteSpace($Text)) { return $false }
+  return [regex]::IsMatch($Text, '(?<![0-9.])([0-9]+\.[0-9]+\.[0-9]+)-[0-9A-Za-z.-]+')
+}
+
 function Compare-Version([string]$Current, [string]$Latest) {
   $a = Get-VersionParts $Current
   $b = Get-VersionParts $Latest
@@ -404,6 +409,10 @@ function Compare-Version([string]$Current, [string]$Latest) {
     if ($a[$i] -lt $b[$i]) { return -1 }
     if ($a[$i] -gt $b[$i]) { return 1 }
   }
+  $curPre = Test-IsPrereleaseVersion $Current
+  $latPre = Test-IsPrereleaseVersion $Latest
+  if ($curPre -and -not $latPre) { return -1 }
+  if (-not $curPre -and $latPre) { return 1 }
   return 0
 }
 
@@ -684,7 +693,7 @@ function Update-ToolViaNpm([hashtable]$Tool) {
 
   $candidate = Get-InstalledToolCandidate $Tool.Id $Tool.Commands
   if ($candidate.Source -and $candidate.Kind -ne 'npm') {
-    throw "$($Tool.Title) is installed outside npm at $($candidate.Source). Automatic npm update was blocked to avoid a conflicting installation."
+    throw "$($Tool.Title) is installed outside npm at $($candidate.Source). Automatic npm update was blocked to avoid a conflicting installation. To manage via this tool, remove the external binary and run: npm install -g $($Tool.Spec)"
   }
 
   $target = Get-LatestToolVersion $Tool

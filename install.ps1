@@ -307,7 +307,11 @@ function New-ElevatedInstallBootstrap([string]$ScriptPath) {
   }
 
   $scriptEscaped = $ScriptPath.Replace("'", "''")
-  $lines.Add("& '$scriptEscaped' -Machine")
+  $lines.Add('try {')
+  $lines.Add("  & '$scriptEscaped' -Machine")
+  $lines.Add('} finally {')
+  $lines.Add('  Remove-Item -LiteralPath $MyInvocation.MyCommand.Path -Force -ErrorAction SilentlyContinue')
+  $lines.Add('}')
   $lines.Add('exit $LASTEXITCODE')
 
   $enc = New-Object System.Text.UTF8Encoding $false

@@ -38,28 +38,31 @@ function Get-LocalFileHash([string]$RelativePath) {
   return (Get-FileHash -LiteralPath $localPath -Algorithm SHA256).Hash.ToLowerInvariant()
 }
 
-function Get-RemoteFileHash([string]$Url) {
-  $stream = $null
-  try {
-    $headers = @{
-      'Cache-Control' = 'no-cache, no-store, must-revalidate'
-      'Pragma' = 'no-cache'
-      'User-Agent' = 'check-ai-cli-cache-purger'
+function Get-RemoteFileHash([string]$Url, [int]$MaxRetries = 3) {
+  for ($attempt = 1; $attempt -le $MaxRetries; $attempt++) {
+    $stream = $null
+    try {
+      $headers = @{
+        'Cache-Control' = 'no-cache, no-store, must-revalidate'
+        'Pragma' = 'no-cache'
+        'User-Agent' = 'check-ai-cli-cache-purger'
+      }
+      $content = (Invoke-WebRequest -Uri $Url -Headers $headers -UseBasicParsing -TimeoutSec 15 -ErrorAction Stop).Content
+      if ($content -is [byte[]]) {
+        $stream = [System.IO.MemoryStream]::new($content)
+      } else {
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($content)
+        $stream = [System.IO.MemoryStream]::new($bytes)
+      }
+      $hash = Get-FileHash -InputStream $stream -Algorithm SHA256
+      return $hash.Hash.ToLowerInvariant()
+    } catch {
+      if ($attempt -lt $MaxRetries) { Start-Sleep -Milliseconds (500 * $attempt) }
+    } finally {
+      if ($stream) { $stream.Dispose() }
     }
-    $content = (Invoke-WebRequest -Uri $Url -Headers $headers -UseBasicParsing -TimeoutSec 15 -ErrorAction Stop).Content
-    if ($content -is [byte[]]) {
-      $stream = [System.IO.MemoryStream]::new($content)
-    } else {
-      $bytes = [System.Text.Encoding]::UTF8.GetBytes($content)
-      $stream = [System.IO.MemoryStream]::new($bytes)
-    }
-    $hash = Get-FileHash -InputStream $stream -Algorithm SHA256
-    return $hash.Hash.ToLowerInvariant()
-  } catch {
-    return $null
-  } finally {
-    if ($stream) { $stream.Dispose() }
   }
+  return $null
 }
 
 function Invoke-PurgeGitHubRaw([string]$RelativePath) {

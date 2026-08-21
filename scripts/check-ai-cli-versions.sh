@@ -179,6 +179,10 @@ extract_semver() {
   echo "$*" | grep -Eo '(^|[^0-9.])([0-9]+\.[0-9]+\.[0-9]+)([^0-9.]|$)' | head -n 1 | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1
 }
 
+is_prerelease() {
+  echo "$*" | grep -Eq '(^|[^0-9.])[0-9]+\.[0-9]+\.[0-9]+-[0-9A-Za-z.-]+'
+}
+
 compare_semver() {
   local a b a1 a2 a3 b1 b2 b3
   a="$(extract_semver "$1")"
@@ -190,6 +194,8 @@ compare_semver() {
   if [ "$a1" -ne "$b1" ]; then [ "$a1" -lt "$b1" ] && echo -1 || echo 1; return 0; fi
   if [ "$a2" -ne "$b2" ]; then [ "$a2" -lt "$b2" ] && echo -1 || echo 1; return 0; fi
   if [ "$a3" -ne "$b3" ]; then [ "$a3" -lt "$b3" ] && echo -1 || echo 1; return 0; fi
+  if is_prerelease "$1" && ! is_prerelease "$2"; then echo -1; return 0; fi
+  if ! is_prerelease "$1" && is_prerelease "$2"; then echo 1; return 0; fi
   echo 0
 }
 
@@ -375,7 +381,7 @@ update_tool_via_npm() {
     for command_name in "${command_arr[@]}"; do
       if command_exists "$command_name"; then command_path="$(command -v "$command_name")"; break; fi
     done
-    log_err "$title is installed outside npm at ${command_path:-unknown path}. Automatic npm update was blocked to avoid a conflicting installation."
+    log_err "$title is installed outside npm at ${command_path:-unknown path}. Automatic npm update was blocked to avoid a conflicting installation. To manage via this tool, remove the external binary and run: npm install -g $spec"
     return 1
   fi
 

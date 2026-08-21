@@ -72,7 +72,7 @@ get_local_hash() {
 get_remote_hash() {
   local url="$1" tmp hash
   tmp="$(mktemp)" || return 1
-  if ! curl -fsSL -H "Cache-Control: no-cache" -H "Pragma: no-cache" "$url" -o "$tmp" 2>/dev/null; then
+  if ! curl -fsSL --retry 3 --retry-delay 1 -H "Cache-Control: no-cache" -H "Pragma: no-cache" "$url" -o "$tmp" 2>/dev/null; then
     rm -f -- "$tmp"
     return 1
   fi
