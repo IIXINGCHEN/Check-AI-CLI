@@ -59,6 +59,7 @@ assert_equal "$(compare_semver 1.2.3 1.2.4)" "-1" 'semver older'
 assert_equal "$(compare_semver 2.0.0 1.9.9)" "1" 'semver newer'
 assert_equal "$(compare_semver 1.2.3-beta.1 1.2.3)" "-1" 'prerelease older than release'
 assert_equal "$(compare_semver 1.2.3 1.2.3-beta.1)" "1" 'release newer than prerelease'
+assert_equal "$(compare_semver 1.2.3-beta.1 1.2.3-beta.2)" "-1" 'beta.1 older than beta.2'
 assert_equal "$(extract_semver 'v1.4.5 (build)')" "1.4.5" 'extract semver'
 
 # tool defs count

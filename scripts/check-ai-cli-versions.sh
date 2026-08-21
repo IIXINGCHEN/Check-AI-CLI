@@ -179,12 +179,16 @@ extract_semver() {
   echo "$*" | grep -Eo '(^|[^0-9.])([0-9]+\.[0-9]+\.[0-9]+)([^0-9.]|$)' | head -n 1 | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1
 }
 
+extract_prerelease_tag() {
+  echo "$*" | grep -Eo '(^|[^0-9.])[0-9]+\.[0-9]+\.[0-9]+-[0-9A-Za-z.-]+' | head -n 1 | sed -E 's/.*[0-9]+\.[0-9]+\.[0-9]+-//'
+}
+
 is_prerelease() {
-  echo "$*" | grep -Eq '(^|[^0-9.])[0-9]+\.[0-9]+\.[0-9]+-[0-9A-Za-z.-]+'
+  [ -n "$(extract_prerelease_tag "$*")" ]
 }
 
 compare_semver() {
-  local a b a1 a2 a3 b1 b2 b3
+  local a b a1 a2 a3 b1 b2 b3 tag_a tag_b
   a="$(extract_semver "$1")"
   b="$(extract_semver "$2")"
   [ -n "$a" ] || return 1
@@ -194,8 +198,15 @@ compare_semver() {
   if [ "$a1" -ne "$b1" ]; then [ "$a1" -lt "$b1" ] && echo -1 || echo 1; return 0; fi
   if [ "$a2" -ne "$b2" ]; then [ "$a2" -lt "$b2" ] && echo -1 || echo 1; return 0; fi
   if [ "$a3" -ne "$b3" ]; then [ "$a3" -lt "$b3" ] && echo -1 || echo 1; return 0; fi
-  if is_prerelease "$1" && ! is_prerelease "$2"; then echo -1; return 0; fi
-  if ! is_prerelease "$1" && is_prerelease "$2"; then echo 1; return 0; fi
+  tag_a="$(extract_prerelease_tag "$1")"
+  tag_b="$(extract_prerelease_tag "$2")"
+  if [ -n "$tag_a" ] && [ -z "$tag_b" ]; then echo -1; return 0; fi
+  if [ -z "$tag_a" ] && [ -n "$tag_b" ]; then echo 1; return 0; fi
+  if [ -n "$tag_a" ] && [ -n "$tag_b" ]; then
+    if [ "$tag_a" = "$tag_b" ]; then echo 0; return 0; fi
+    if [ "$tag_a" \< "$tag_b" ]; then echo -1; else echo 1; fi
+    return 0
+  fi
   echo 0
 }
 

@@ -38,6 +38,14 @@ function Get-LocalFileHash([string]$RelativePath) {
   return (Get-FileHash -LiteralPath $localPath -Algorithm SHA256).Hash.ToLowerInvariant()
 }
 
+function New-ContentMemoryStream($Content) {
+  if ($Content -is [byte[]]) {
+    return [System.IO.MemoryStream]::new($Content)
+  }
+  $bytes = [System.Text.Encoding]::UTF8.GetBytes([string]$Content)
+  return [System.IO.MemoryStream]::new($bytes)
+}
+
 function Get-RemoteFileHash([string]$Url, [int]$MaxRetries = 3) {
   for ($attempt = 1; $attempt -le $MaxRetries; $attempt++) {
     $stream = $null
@@ -48,12 +56,7 @@ function Get-RemoteFileHash([string]$Url, [int]$MaxRetries = 3) {
         'User-Agent' = 'check-ai-cli-cache-purger'
       }
       $content = (Invoke-WebRequest -Uri $Url -Headers $headers -UseBasicParsing -TimeoutSec 15 -ErrorAction Stop).Content
-      if ($content -is [byte[]]) {
-        $stream = [System.IO.MemoryStream]::new($content)
-      } else {
-        $bytes = [System.Text.Encoding]::UTF8.GetBytes($content)
-        $stream = [System.IO.MemoryStream]::new($bytes)
-      }
+      $stream = New-ContentMemoryStream $content
       $hash = Get-FileHash -InputStream $stream -Algorithm SHA256
       return $hash.Hash.ToLowerInvariant()
     } catch {

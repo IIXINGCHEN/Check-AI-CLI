@@ -73,6 +73,7 @@ Run-Test 'SemVer compare basic ordering' {
   Assert-True ((Compare-Version '2.0.0' '1.9.9') -eq 1) 'newer'
   Assert-True ((Compare-Version '1.2.3-beta.1' '1.2.3') -eq -1) 'prerelease older than release'
   Assert-True ((Compare-Version '1.2.3' '1.2.3-beta.1') -eq 1) 'release newer than prerelease'
+  Assert-True ((Compare-Version '1.2.3-beta.1' '1.2.3-beta.2') -eq -1) 'beta.1 older than beta.2'
   Assert-True ((Get-SemVer 'v1.2.3-beta') -eq '1.2.3') 'extract semver'
 }
 
