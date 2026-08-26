@@ -42,13 +42,13 @@ require_npm() {
   return 1
 }
 
-# Tool registry: id|title|package|spec|commands(comma)
+# Tool registry: id|title|package|spec|commands(comma)|allowed install scripts(comma)
 TOOL_DEFS=(
-  "claude|Claude Code|@anthropic-ai/claude-code|@anthropic-ai/claude-code@latest|claude,claude-code"
-  "codex|OpenAI Codex|@openai/codex|@openai/codex@latest|codex"
-  "gemini|Gemini CLI|@google/gemini-cli|@google/gemini-cli@latest|gemini"
-  "grok|Grok Build|@xai-official/grok|@xai-official/grok@latest|grok"
-  "opencode|OpenCode|opencode-ai|opencode-ai@latest|opencode"
+  "claude|Claude Code|@anthropic-ai/claude-code|@anthropic-ai/claude-code@latest|claude,claude-code|@anthropic-ai/claude-code"
+  "codex|OpenAI Codex|@openai/codex|@openai/codex@latest|codex|"
+  "gemini|Gemini CLI|@google/gemini-cli|@google/gemini-cli@latest|gemini|@github/keytar,node-pty"
+  "grok|Grok Build|@xai-official/grok|@xai-official/grok@latest|grok|@xai-official/grok"
+  "opencode|OpenCode|opencode-ai|opencode-ai@latest|opencode|opencode-ai"
 )
 
 tool_field() {
@@ -65,6 +65,7 @@ NPM_MIRROR_TENCENT="https://mirrors.cloud.tencent.com/npm/"
 NPM_MIRROR_HUAWEI="https://repo.huaweicloud.com/repository/npm/"
 NPM_MIRROR_DEFAULT="https://registry.npmjs.org"
 NPM_BEST_MIRROR=""
+NPM_REGISTRY_CANDIDATES=()
 NETWORK_REGION=""
 
 get_env_proxy() {
@@ -121,39 +122,57 @@ detect_network() {
   log_info "Effective region for npm: $NETWORK_REGION"
 }
 
-get_best_npm_mirror() {
-  if [ -n "$NPM_BEST_MIRROR" ]; then
-    printf '%s' "$NPM_BEST_MIRROR"
-    return 0
-  fi
+append_registry_candidate() {
+  local candidate="$1" existing
+  for existing in "${NPM_REGISTRY_CANDIDATES[@]}"; do
+    [ "$existing" = "$candidate" ] && return 0
+  done
+  NPM_REGISTRY_CANDIDATES+=("$candidate")
+}
+
+build_registry_candidates() {
+  local url
+  local preferred=() secondary=()
+  NPM_REGISTRY_CANDIDATES=()
   if [ -z "$NETWORK_REGION" ]; then detect_network; fi
-  case "$NETWORK_REGION" in
-    china)
-      if test_url_ok "$NPM_MIRROR_TAOBAO" 4; then
-        log_info "Using China npm mirror: npmmirror (taobao)"
-        NPM_BEST_MIRROR="$NPM_MIRROR_TAOBAO"
-      elif test_url_ok "$NPM_MIRROR_TENCENT" 4; then
-        log_info "Using China npm mirror: tencent"
-        NPM_BEST_MIRROR="$NPM_MIRROR_TENCENT"
-      elif test_url_ok "$NPM_MIRROR_HUAWEI" 4; then
-        log_info "Using China npm mirror: huawei"
-        NPM_BEST_MIRROR="$NPM_MIRROR_HUAWEI"
-      else
-        log_info "Using China npm mirror: npmmirror (taobao) [fallback]"
-        NPM_BEST_MIRROR="$NPM_MIRROR_TAOBAO"
-      fi
-      ;;
-    *)
-      log_info "Using official npm registry"
-      NPM_BEST_MIRROR="$NPM_MIRROR_DEFAULT"
-      ;;
+
+  if [ "$NETWORK_REGION" = 'china' ]; then
+    preferred=("$NPM_MIRROR_TAOBAO" "$NPM_MIRROR_TENCENT" "$NPM_MIRROR_HUAWEI")
+    secondary=("$NPM_MIRROR_DEFAULT")
+  else
+    preferred=("$NPM_MIRROR_DEFAULT")
+    secondary=("$NPM_MIRROR_TAOBAO" "$NPM_MIRROR_TENCENT" "$NPM_MIRROR_HUAWEI")
+  fi
+
+  for url in "${preferred[@]}" "${secondary[@]}"; do
+    test_url_ok "$url" 4 && append_registry_candidate "$url"
+  done
+  for url in "${preferred[@]}" "${secondary[@]}"; do
+    append_registry_candidate "$url"
+  done
+
+  NPM_BEST_MIRROR="${NPM_REGISTRY_CANDIDATES[0]}"
+  case "$NPM_BEST_MIRROR" in
+    "$NPM_MIRROR_DEFAULT") log_info "Using official npm registry" ;;
+    "$NPM_MIRROR_TAOBAO") log_info "Using China npm mirror: npmmirror (taobao)" ;;
+    "$NPM_MIRROR_TENCENT") log_info "Using China npm mirror: tencent" ;;
+    "$NPM_MIRROR_HUAWEI") log_info "Using China npm mirror: huawei" ;;
   esac
-  printf '%s' "$NPM_BEST_MIRROR"
 }
 
 select_best_npm_mirror() {
-  [ -n "$NPM_BEST_MIRROR" ] && return 0
-  NPM_BEST_MIRROR="$(get_best_npm_mirror)"
+  [ -n "$NPM_BEST_MIRROR" ] && [ "${#NPM_REGISTRY_CANDIDATES[@]}" -gt 0 ] && return 0
+  build_registry_candidates
+}
+
+get_best_npm_mirror() {
+  select_best_npm_mirror
+  printf '%s' "$NPM_BEST_MIRROR"
+}
+
+registry_candidates() {
+  select_best_npm_mirror
+  printf '%s\n' "${NPM_REGISTRY_CANDIDATES[@]}"
 }
 
 official_registry() { printf '%s' "$NPM_MIRROR_DEFAULT"; }
@@ -342,45 +361,88 @@ npm_registry_latest_url() {
 }
 
 get_npm_latest_version() {
-  local package="$1" reg url text ver official
+  local package="$1" reg url text ver official fallback_ver="" fallback_reg="" cmp
+  local registries=()
   select_best_npm_mirror
   official="$(official_registry)"
   # npmjs.org is authoritative for dist-tags. Mirrors are fallback metadata
   # only; stale mirror data must never suppress a real update.
-  for reg in "$official" "$NPM_BEST_MIRROR"; do
-    [ -n "$reg" ] || continue
+  url="$(npm_registry_latest_url "$official" "$package")"
+  text="$(fetch_text "$url" || true)"
+  if [ -n "$text" ]; then
+    ver="$(printf '%s' "$text" | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)"
+    ver="$(extract_semver "$ver")"
+    if [ -n "$ver" ]; then printf '%s' "$ver"; return 0; fi
+  fi
+
+  while IFS= read -r reg; do
+    [ -n "$reg" ] && registries+=("$reg")
+  done < <(registry_candidates)
+  for reg in "${registries[@]}"; do
+    [ "${reg%/}" = "${official%/}" ] && continue
     url="$(npm_registry_latest_url "$reg" "$package")"
     text="$(fetch_text "$url" || true)"
-    if [ -n "$text" ]; then
-      ver="$(printf '%s' "$text" | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)"
-      ver="$(extract_semver "$ver")"
-      if [ -n "$ver" ]; then
-        if [ "$reg" != "$official" ]; then
-          log_warn "Official npm registry unavailable; using fallback metadata from $reg"
-        fi
-        printf '%s' "$ver"
-        return 0
-      fi
+    [ -n "$text" ] || continue
+    ver="$(printf '%s' "$text" | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)"
+    ver="$(extract_semver "$ver")"
+    [ -n "$ver" ] || continue
+    if [ -z "$fallback_ver" ]; then
+      fallback_ver="$ver"
+      fallback_reg="$reg"
+    else
+      cmp="$(compare_semver "$fallback_ver" "$ver" || true)"
+      if [ "$cmp" = '-1' ]; then fallback_ver="$ver"; fallback_reg="$reg"; fi
     fi
-    [ "$NPM_BEST_MIRROR" = "$official" ] && break
   done
+  if [ -n "$fallback_ver" ]; then
+    log_warn "Official npm registry unavailable; using newest fallback metadata v$fallback_ver from $fallback_reg"
+    printf '%s' "$fallback_ver"
+    return 0
+  fi
   return 1
 }
 
 npm_install_global() {
-  local spec="$1" registry="${2:-}"
-  select_best_npm_mirror
-  if [ -z "$registry" ]; then registry="$NPM_BEST_MIRROR"; fi
-  npm install -g "$spec" --registry "$registry"
+  local spec="$1" registry="${2:-}" allow_scripts="${3:-}"
+  if [ -z "$registry" ]; then
+    select_best_npm_mirror
+    registry="$NPM_BEST_MIRROR"
+  fi
+  if [ -n "$allow_scripts" ]; then
+    npm install -g "--allow-scripts=$allow_scripts" "$spec" --registry "$registry"
+  else
+    npm install -g "$spec" --registry "$registry"
+  fi
+}
+
+grok_npm_canonical_path() {
+  local grok_home="${GROK_HOME:-}"
+  if [ -z "$grok_home" ]; then
+    [ -n "${HOME:-}" ] || return 1
+    grok_home="${HOME%/}/.grok"
+  fi
+  printf '%s/bin/grok' "${grok_home%/}"
+}
+
+is_grok_npm_migration_candidate() {
+  local id="$1" source="$2" canonical
+  [ "$id" = 'grok' ] || return 1
+  [ -n "$source" ] || return 1
+  canonical="$(grok_npm_canonical_path || true)"
+  [ -n "$canonical" ] || return 1
+  [ "$source" = "$canonical" ] || [ "$source" = "${canonical}.exe" ]
 }
 
 update_tool_via_npm() {
   local def="$1"
-  local title package spec cmds target install_spec reg installed=0 last_err="" localv cmp command_path
+  local id title package spec cmds allow_scripts target install_spec reg installed=0 last_err="" localv cmp command_path
+  local registries=()
+  id="$(tool_field "$def" 1)"
   title="$(tool_field "$def" 2)"
   package="$(tool_field "$def" 3)"
   spec="$(tool_field "$def" 4)"
   cmds="$(tool_field "$def" 5)"
+  allow_scripts="$(tool_field "$def" 6)"
 
   log_info "Updating $title..."
   require_npm || return 1
@@ -392,8 +454,12 @@ update_tool_via_npm() {
     for command_name in "${command_arr[@]}"; do
       if command_exists "$command_name"; then command_path="$(command -v "$command_name")"; break; fi
     done
-    log_err "$title is installed outside npm at ${command_path:-unknown path}. Automatic npm update was blocked to avoid a conflicting installation. To manage via this tool, remove the external binary and run: npm install -g $spec"
-    return 1
+    if is_grok_npm_migration_candidate "$id" "$command_path"; then
+      log_info "Detected the canonical Grok installer layout. The official npm package will migrate this binary in place."
+    else
+      log_err "$title is installed outside npm at ${command_path:-unknown path}. Automatic npm update was blocked to avoid a conflicting installation. To manage via this tool, move the external command out of PATH and run: npm install -g $spec"
+      return 1
+    fi
   fi
 
   target="$(get_npm_latest_version "$package" || true)"
@@ -403,35 +469,39 @@ update_tool_via_npm() {
     install_spec="${package}@${target}"
   fi
   select_best_npm_mirror
+  while IFS= read -r reg; do
+    [ -n "$reg" ] && registries+=("$reg")
+  done < <(registry_candidates)
 
-  for reg in "$NPM_BEST_MIRROR" "$(official_registry)"; do
+  for reg in "${registries[@]}"; do
     log_info "Trying: npm install ($reg)"
-    if npm_install_global "$install_spec" "$reg"; then
+    if npm_install_global "$install_spec" "$reg" "$allow_scripts"; then
+      repair_tool_path >/dev/null 2>&1 || true
+      localv="$(get_local_tool_version "$def" || true)"
+      if [ -z "$localv" ]; then
+        last_err="installed command is not runnable via $reg"
+        log_warn "$last_err; trying next source"
+        continue
+      fi
+      if [ -n "$target" ]; then
+        cmp="$(compare_semver "$localv" "$target" || true)"
+        if [ "$cmp" != '0' ]; then
+          last_err="installed v$localv via $reg, expected v$target"
+          log_warn "$last_err; trying next source"
+          continue
+        fi
+      fi
       installed=1
       break
     else
       last_err="npm install failed via $reg"
       log_warn "$last_err"
     fi
-    if [ "$NPM_BEST_MIRROR" = "$(official_registry)" ]; then break; fi
-    if [ "$reg" = "$(official_registry)" ]; then break; fi
   done
 
   if [ "$installed" -ne 1 ]; then
     log_err "npm install failed for $install_spec. $last_err"
     return 1
-  fi
-
-  repair_tool_path >/dev/null 2>&1 || true
-  localv="$(get_local_tool_version "$def" || true)"
-  if [ -z "$localv" ]; then
-    # optional/native binary missing: force official retry once
-    if [ "$NPM_BEST_MIRROR" != "$(official_registry)" ]; then
-      log_warn "Installed package not runnable; retrying official npm registry"
-      npm_install_global "$install_spec" "$(official_registry)" || true
-      repair_tool_path >/dev/null 2>&1 || true
-      localv="$(get_local_tool_version "$def" || true)"
-    fi
   fi
 
   if [ -z "$localv" ]; then

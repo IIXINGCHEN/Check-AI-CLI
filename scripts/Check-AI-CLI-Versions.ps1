@@ -22,6 +22,7 @@ function Get-AutoMode() {
 $script:AutoMode = Get-AutoMode
 $script:UpdateFailed = $false
 $script:BestNpmMirror = $null
+$script:NpmRegistryCandidates = $null
 $script:EffectiveProxyUrl = $null
 $script:EffectiveNoProxy = $null
 $script:NetworkInfo = $null
@@ -60,6 +61,7 @@ function Get-AiCliTools() {
       Spec = '@anthropic-ai/claude-code@latest'
       Commands = @('claude', 'claude-code')
       Kind = 'npm'
+      AllowScripts = @('@anthropic-ai/claude-code')
     },
     @{
       Id = 'codex'
@@ -68,6 +70,7 @@ function Get-AiCliTools() {
       Spec = '@openai/codex@latest'
       Commands = @('codex')
       Kind = 'npm'
+      AllowScripts = @()
       NeedsOptionalProbe = $true
     },
     @{
@@ -77,6 +80,7 @@ function Get-AiCliTools() {
       Spec = '@google/gemini-cli@latest'
       Commands = @('gemini')
       Kind = 'npm'
+      AllowScripts = @('@github/keytar', 'node-pty')
     },
     @{
       Id = 'grok'
@@ -85,6 +89,7 @@ function Get-AiCliTools() {
       Spec = '@xai-official/grok@latest'
       Commands = @('grok')
       Kind = 'npm'
+      AllowScripts = @('@xai-official/grok')
       NeedsOptionalProbe = $true
     },
     @{
@@ -94,6 +99,7 @@ function Get-AiCliTools() {
       Spec = 'opencode-ai@latest'
       Commands = @('opencode')
       Kind = 'npm'
+      AllowScripts = @('opencode-ai')
     }
   )
 }
@@ -266,11 +272,17 @@ function Test-ActualConnectivity() {
   $result = @{
     NpmjsOK = $false; NpmjsTime = -1
     NpmmirrorOK = $false; NpmmirrorTime = -1
+    TencentOK = $false; TencentTime = -1
+    HuaweiOK = $false; HuaweiTime = -1
   }
-  $npmjs = Test-UrlTiming 'https://registry.npmjs.org' 5
+  $npmjs = Test-UrlTiming $script:NpmMirrors.default 5
   if ($npmjs -ge 0) { $result.NpmjsOK = $true; $result.NpmjsTime = $npmjs }
-  $mirror = Test-UrlTiming 'https://registry.npmmirror.com' 5
+  $mirror = Test-UrlTiming $script:NpmMirrors.taobao 5
   if ($mirror -ge 0) { $result.NpmmirrorOK = $true; $result.NpmmirrorTime = $mirror }
+  $tencent = Test-UrlTiming $script:NpmMirrors.tencent 5
+  if ($tencent -ge 0) { $result.TencentOK = $true; $result.TencentTime = $tencent }
+  $huawei = Test-UrlTiming $script:NpmMirrors.huawei 5
+  if ($huawei -ge 0) { $result.HuaweiOK = $true; $result.HuaweiTime = $huawei }
   return $result
 }
 
@@ -282,11 +294,19 @@ function Get-EffectiveRegion([hashtable]$Connectivity) {
       { $_ -in @('global', 'intl') } { return 'global' }
     }
   }
-  if ($Connectivity.NpmmirrorOK -and (-not $Connectivity.NpmjsOK -or ($Connectivity.NpmmirrorTime -ge 0 -and $Connectivity.NpmjsTime -ge 0 -and $Connectivity.NpmmirrorTime -lt $Connectivity.NpmjsTime))) {
+  $domesticTimes = @()
+  foreach ($prefix in @('Npmmirror', 'Tencent', 'Huawei')) {
+    if ($Connectivity["${prefix}OK"] -and [int]$Connectivity["${prefix}Time"] -ge 0) {
+      $domesticTimes += [int]$Connectivity["${prefix}Time"]
+    }
+  }
+  $domesticOK = $domesticTimes.Count -gt 0
+  $domesticBestTime = if ($domesticOK) { [int](($domesticTimes | Measure-Object -Minimum).Minimum) } else { -1 }
+  if ($domesticOK -and (-not $Connectivity.NpmjsOK -or ($Connectivity.NpmjsTime -ge 0 -and $domesticBestTime -lt $Connectivity.NpmjsTime))) {
     return 'china'
   }
   if ($Connectivity.NpmjsOK) { return 'global' }
-  if ($Connectivity.NpmmirrorOK) { return 'china' }
+  if ($domesticOK) { return 'china' }
   return 'unknown'
 }
 
@@ -314,42 +334,36 @@ function Initialize-NetworkDetection() {
 
 function Get-BestNpmMirror() {
   if ($script:BestNpmMirror) { return $script:BestNpmMirror }
-  $region = 'unknown'
-  $conn = $null
-  if ($script:NetworkInfo) {
-    $region = $script:NetworkInfo.Region
-    $conn = $script:NetworkInfo.Connectivity
-  }
-  if ($region -eq 'china') {
-    if ($conn -and $conn.NpmmirrorOK) {
-      Write-Info 'Using China npm mirror: npmmirror (taobao)'
-      $script:BestNpmMirror = $script:NpmMirrors['taobao']
-      return $script:BestNpmMirror
-    }
-    foreach ($name in @('tencent', 'huawei')) {
-      $url = $script:NpmMirrors[$name]
-      if ((Test-UrlTiming $url 4) -ge 0) {
-        Write-Info "Using China npm mirror: $name"
-        $script:BestNpmMirror = $url
-        return $script:BestNpmMirror
-      }
-    }
-    Write-Info 'Using China npm mirror: npmmirror (taobao) [fallback]'
-    $script:BestNpmMirror = $script:NpmMirrors['taobao']
-    return $script:BestNpmMirror
-  }
-  Write-Info 'Using official npm registry'
-  $script:BestNpmMirror = $script:NpmMirrors['default']
+  $candidates = @(Get-RegistryCandidates)
+  $script:BestNpmMirror = $candidates[0]
+  $name = @($script:NpmMirrors.Keys | Where-Object { $script:NpmMirrors[$_] -eq $script:BestNpmMirror })[0]
+  if ($name -eq 'default') { Write-Info 'Using official npm registry' }
+  else { Write-Info "Using China npm mirror: $name" }
   return $script:BestNpmMirror
 }
 
 function Get-OfficialNpmRegistry() { return $script:NpmMirrors['default'] }
 
 function Get-RegistryCandidates() {
-  $mirror = Get-BestNpmMirror
-  $official = Get-OfficialNpmRegistry
-  if ($mirror -eq $official) { return @($official) }
-  return @($mirror, $official)
+  if ($script:NpmRegistryCandidates) { return @($script:NpmRegistryCandidates) }
+  if (-not $script:NetworkInfo) { [void](Initialize-NetworkDetection) }
+
+  $region = $script:NetworkInfo.Region
+  $conn = $script:NetworkInfo.Connectivity
+  $preferDomestic = $region -eq 'china'
+  $entries = @(
+    @{ Url = $script:NpmMirrors.default; Domestic = $false; Reachable = [bool]$conn.NpmjsOK; Time = [int]$conn.NpmjsTime; Order = 0 },
+    @{ Url = $script:NpmMirrors.taobao; Domestic = $true; Reachable = [bool]$conn.NpmmirrorOK; Time = [int]$conn.NpmmirrorTime; Order = 1 },
+    @{ Url = $script:NpmMirrors.tencent; Domestic = $true; Reachable = [bool]$conn.TencentOK; Time = [int]$conn.TencentTime; Order = 2 },
+    @{ Url = $script:NpmMirrors.huawei; Domestic = $true; Reachable = [bool]$conn.HuaweiOK; Time = [int]$conn.HuaweiTime; Order = 3 }
+  )
+  $ordered = $entries | Sort-Object `
+    @{ Expression = { if ($_.Reachable) { 0 } else { 1 } } }, `
+    @{ Expression = { if ($_.Domestic -eq $preferDomestic) { 0 } else { 1 } } }, `
+    @{ Expression = { if ($_.Time -ge 0) { $_.Time } else { [int]::MaxValue } } }, `
+    @{ Expression = { $_.Order } }
+  $script:NpmRegistryCandidates = @($ordered | ForEach-Object { $_.Url } | Select-Object -Unique)
+  return @($script:NpmRegistryCandidates)
 }
 
 # ---------------------------------------------------------------------------
@@ -599,6 +613,28 @@ function Get-InstalledToolCandidate([string]$ToolId, [string[]]$CommandNames) {
   }
 }
 
+function Get-GrokNpmCanonicalPath() {
+  $grokHome = $env:GROK_HOME
+  if ([string]::IsNullOrWhiteSpace($grokHome)) {
+    if ([string]::IsNullOrWhiteSpace($env:USERPROFILE)) { return $null }
+    $grokHome = Join-Path $env:USERPROFILE '.grok'
+  }
+  return (Join-Path (Join-Path $grokHome 'bin') 'grok.exe')
+}
+
+function Test-GrokNpmMigrationCandidate([hashtable]$Tool, [hashtable]$Candidate) {
+  if (-not $Tool -or $Tool.Id -ne 'grok' -or -not $Candidate -or -not $Candidate.Source) { return $false }
+  $canonical = Get-GrokNpmCanonicalPath
+  if (-not $canonical) { return $false }
+  try {
+    $sourcePath = [IO.Path]::GetFullPath([string]$Candidate.Source)
+    $canonicalPath = [IO.Path]::GetFullPath($canonical)
+    return $sourcePath.Equals($canonicalPath, [StringComparison]::OrdinalIgnoreCase)
+  } catch {
+    return $false
+  }
+}
+
 function Get-LocalToolVersion([hashtable]$Tool) {
   [void](Repair-ToolUserPath $Tool.Id)
   $candidate = Get-InstalledToolCandidate $Tool.Id $Tool.Commands
@@ -609,18 +645,29 @@ function Get-LocalToolVersion([hashtable]$Tool) {
 # npm install / latest
 # ---------------------------------------------------------------------------
 
-function Invoke-NpmInstallGlobal([string]$PackageSpec, [string]$RegistryOverride = $null) {
+function Get-NpmInstallArguments([string]$PackageSpec, [string]$Registry, [string[]]$AllowScripts = @()) {
+  $arguments = @('install', '-g')
+  $approved = @($AllowScripts | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)
+  if ($approved.Count -gt 0) {
+    $arguments += "--allow-scripts=$($approved -join ',')"
+  }
+  $arguments += @($PackageSpec, '--registry', $Registry)
+  return $arguments
+}
+
+function Invoke-NpmInstallGlobal([string]$PackageSpec, [string]$RegistryOverride = $null, [string[]]$AllowScripts = @()) {
   if ([string]::IsNullOrWhiteSpace($RegistryOverride) -and $null -eq $script:BestNpmMirror) {
     $script:BestNpmMirror = Get-BestNpmMirror
   }
   $registry = if ([string]::IsNullOrWhiteSpace($RegistryOverride)) { $script:BestNpmMirror } else { $RegistryOverride }
   $npmPath = Get-NpmCommandPath
   if (-not $npmPath) { throw 'npm not found. Install Node.js first.' }
+  $npmArguments = @(Get-NpmInstallArguments $PackageSpec $registry $AllowScripts)
 
   if ($npmPath -like '*.ps1') {
-    & powershell -NoProfile -ExecutionPolicy Bypass -File $npmPath install -g $PackageSpec --registry $registry
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $npmPath @npmArguments
   } else {
-    & $npmPath install -g $PackageSpec --registry $registry
+    & $npmPath @npmArguments
   }
   if ($LASTEXITCODE -ne 0) { throw "npm install failed with exit code $LASTEXITCODE" }
 }
@@ -650,13 +697,19 @@ function Get-NpmLatestVersion([string]$PackageName, [string]$Registry = $null) {
   $version = Get-NpmVersionFromRegistry $PackageName $official
   if ($version) { return $version }
 
+  $fallbackVersion = $null
+  $fallbackRegistry = $null
   foreach ($reg in (Get-RegistryCandidates)) {
     if ($reg.TrimEnd('/') -eq $official.TrimEnd('/')) { continue }
     $version = Get-NpmVersionFromRegistry $PackageName $reg
-    if ($version) {
-      Write-Warn "Official npm registry unavailable; using fallback metadata from $reg"
-      return $version
+    if ($version -and (-not $fallbackVersion -or (Compare-Version $fallbackVersion $version) -eq -1)) {
+      $fallbackVersion = $version
+      $fallbackRegistry = $reg
     }
+  }
+  if ($fallbackVersion) {
+    Write-Warn "Official npm registry unavailable; using newest fallback metadata v$fallbackVersion from $fallbackRegistry"
+    return $fallbackVersion
   }
   return $null
 }
@@ -704,7 +757,11 @@ function Update-ToolViaNpm([hashtable]$Tool) {
 
   $candidate = Get-InstalledToolCandidate $Tool.Id $Tool.Commands
   if ($candidate.Source -and $candidate.Kind -ne 'npm') {
-    throw "$($Tool.Title) is installed outside npm at $($candidate.Source). Automatic npm update was blocked to avoid a conflicting installation. To manage via this tool, remove the external binary and run: npm install -g $($Tool.Spec)"
+    if (Test-GrokNpmMigrationCandidate $Tool $candidate) {
+      Write-Info 'Detected the canonical Grok installer layout. The official npm package will migrate this binary in place.'
+    } else {
+      throw "$($Tool.Title) is installed outside npm at $($candidate.Source). Automatic npm update was blocked to avoid a conflicting installation. To manage via this tool, move the external command out of PATH and run: npm install -g $($Tool.Spec)"
+    }
   }
 
   $target = Get-LatestToolVersion $Tool
@@ -714,15 +771,29 @@ function Update-ToolViaNpm([hashtable]$Tool) {
     # npmjs.org instead of silently installing its older local "latest" tag.
     $installSpec = "$($Tool.Package)@$target"
   }
-  $official = Get-OfficialNpmRegistry
-  $registries = Get-RegistryCandidates
+  $registries = @(Get-RegistryCandidates)
 
   $installed = $false
   $lastError = $null
+  $probe = $null
   foreach ($reg in $registries) {
     try {
       Write-Info "Trying: npm install ($reg)"
-      Invoke-NpmInstallGlobal $installSpec $reg
+      Invoke-NpmInstallGlobal $installSpec $reg $Tool.AllowScripts
+      [void](Repair-ToolUserPath $Tool.Id)
+      $candidateProbe = Invoke-VersionProbe $Tool.Commands
+      if (-not $candidateProbe.Version) {
+        $missing = if ($Tool.NeedsOptionalProbe) { Get-MissingOptionalPackageName $candidateProbe.Output } else { $null }
+        $lastError = if ($missing) { "missing optional package $missing" } else { 'installed command is not runnable' }
+        Write-Warn "npm install via $reg was unusable: $lastError; trying next source"
+        continue
+      }
+      if ($target -and (Compare-Version $candidateProbe.Version $target) -ne 0) {
+        $lastError = "installed v$($candidateProbe.Version), expected v$target"
+        Write-Warn "npm install via $reg returned the wrong version: $lastError; trying next source"
+        continue
+      }
+      $probe = $candidateProbe
       $installed = $true
       break
     } catch {
@@ -732,24 +803,6 @@ function Update-ToolViaNpm([hashtable]$Tool) {
   }
   if (-not $installed) {
     throw "npm install failed for $installSpec. Last error: $lastError"
-  }
-
-  [void](Repair-ToolUserPath $Tool.Id)
-  $probe = Invoke-VersionProbe $Tool.Commands
-
-  if (-not $probe.Version -and $Tool.NeedsOptionalProbe) {
-    $missing = Get-MissingOptionalPackageName $probe.Output
-    if ($missing) {
-      Write-Warn "Install may be missing optional package $missing; retrying official npm registry"
-      Invoke-NpmInstallGlobal $Tool.Spec $official
-      [void](Repair-ToolUserPath $Tool.Id)
-      $probe = Invoke-VersionProbe $Tool.Commands
-    } elseif ($registries[0] -ne $official) {
-      Write-Warn 'Installed package is not runnable; retrying official npm registry'
-      Invoke-NpmInstallGlobal $Tool.Spec $official
-      [void](Repair-ToolUserPath $Tool.Id)
-      $probe = Invoke-VersionProbe $Tool.Commands
-    }
   }
 
   if (-not $probe.Version) {

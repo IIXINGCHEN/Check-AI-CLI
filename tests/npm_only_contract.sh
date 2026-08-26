@@ -14,7 +14,7 @@ assert_equal() {
 
 assert_contains() {
   local haystack="$1" needle="$2" message="$3"
-  if ! printf '%s' "$haystack" | grep -F "$needle" >/dev/null 2>&1; then
+  if ! printf '%s' "$haystack" | grep -F -- "$needle" >/dev/null 2>&1; then
     printf '[FAIL] %s (missing: %s)\n' "$message" "$needle" >&2
     exit 1
   fi
@@ -22,7 +22,7 @@ assert_contains() {
 
 assert_not_contains() {
   local haystack="$1" needle="$2" message="$3"
-  if printf '%s' "$haystack" | grep -F "$needle" >/dev/null 2>&1; then
+  if printf '%s' "$haystack" | grep -F -- "$needle" >/dev/null 2>&1; then
     printf '[FAIL] %s (found forbidden: %s)\n' "$message" "$needle" >&2
     exit 1
   fi
@@ -41,6 +41,8 @@ assert_contains "$text" 'opencode-ai' 'opencode package'
 assert_contains "$text" 'update_tool_via_npm' 'npm-only updater'
 assert_contains "$text" 'npmjs.org is authoritative for dist-tags' 'official metadata authority'
 assert_contains "$text" 'install_spec="${package}@${target}"' 'authoritative version pin'
+assert_contains "$text" '--allow-scripts=' 'one-shot lifecycle-script approvals'
+assert_contains "$text" 'is_grok_npm_migration_candidate' 'canonical Grok npm migration gate'
 assert_contains "$text" 'Automatic npm update was blocked to avoid a conflicting installation.' 'mixed-install guard'
 assert_contains "$text" 'npm-only' 'banner npm-only'
 

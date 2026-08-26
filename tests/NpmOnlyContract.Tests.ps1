@@ -36,6 +36,15 @@ Run-Test 'Tool registry is exactly five npm packages' {
     Assert-True ($t.Spec -like '*@latest') "Spec must be @latest: $($t.Spec)"
     Assert-True ($t.Kind -eq 'npm') "Kind must be npm: $($t.Id)"
   }
+  $allowScripts = @{}
+  foreach ($t in $tools) {
+    $allowScripts[$t.Id] = @($t.AllowScripts) -join ','
+  }
+  Assert-True ($allowScripts.claude -eq '@anthropic-ai/claude-code') 'Unexpected Claude lifecycle-script allowlist'
+  Assert-True ($allowScripts.codex -eq '') 'Codex must not approve lifecycle scripts it does not use'
+  Assert-True ($allowScripts.gemini -eq '@github/keytar,node-pty') 'Unexpected Gemini lifecycle-script allowlist'
+  Assert-True ($allowScripts.grok -eq '@xai-official/grok') 'Unexpected Grok lifecycle-script allowlist'
+  Assert-True ($allowScripts.opencode -eq 'opencode-ai') 'Unexpected OpenCode lifecycle-script allowlist'
 }
 
 Run-Test 'No Factory tool in registry' {
@@ -88,6 +97,101 @@ Run-Test 'Installed resolver read does not permanently require PATH mutation API
   }
 }
 
+Run-Test 'Global npm install arguments use one-shot reviewed script approvals' {
+  $withApprovals = @(Get-NpmInstallArguments '@google/gemini-cli@0.57.0' 'https://registry.npmjs.org' @('@github/keytar', 'node-pty'))
+  Assert-True (($withApprovals -join '|') -eq 'install|-g|--allow-scripts=@github/keytar,node-pty|@google/gemini-cli@0.57.0|--registry|https://registry.npmjs.org') 'Expected reviewed one-shot --allow-scripts argument'
+
+  $withoutApprovals = @(Get-NpmInstallArguments '@openai/codex@0.149.1' 'https://registry.npmjs.org' @())
+  Assert-True (($withoutApprovals -join '|') -eq 'install|-g|@openai/codex@0.149.1|--registry|https://registry.npmjs.org') 'Packages without install scripts must not receive --allow-scripts'
+}
+
+Run-Test 'Registry candidates automatically fail over between global and China sources' {
+  $oldNetworkInfo = $script:NetworkInfo
+  $oldBestMirror = $script:BestNpmMirror
+  $oldCandidates = $script:NpmRegistryCandidates
+  try {
+    $script:NetworkInfo = @{
+      Region = 'global'
+      Connectivity = @{
+        NpmjsOK = $false; NpmjsTime = -1
+        NpmmirrorOK = $false; NpmmirrorTime = -1
+        TencentOK = $true; TencentTime = 20
+        HuaweiOK = $false; HuaweiTime = -1
+      }
+    }
+    $script:BestNpmMirror = $null
+    $script:NpmRegistryCandidates = $null
+    $globalFallback = @(Get-RegistryCandidates)
+    Assert-True ($globalFallback[0] -eq $script:NpmMirrors.tencent) 'Reachable China source must lead when the official source is unavailable'
+    Assert-True (($globalFallback | Select-Object -Unique).Count -eq 4) 'Expected four unique registry failover candidates'
+    Assert-True ($globalFallback -contains $script:NpmMirrors.default) 'Official registry must remain a retry candidate'
+
+    $script:NetworkInfo = @{
+      Region = 'china'
+      Connectivity = @{
+        NpmjsOK = $true; NpmjsTime = 80
+        NpmmirrorOK = $true; NpmmirrorTime = 10
+        TencentOK = $true; TencentTime = 20
+        HuaweiOK = $true; HuaweiTime = 30
+      }
+    }
+    $script:BestNpmMirror = $null
+    $script:NpmRegistryCandidates = $null
+    $chinaPreferred = @(Get-RegistryCandidates)
+    Assert-True ($chinaPreferred[0] -eq $script:NpmMirrors.taobao) 'Fastest reachable China source must lead in China mode'
+    Assert-True ($chinaPreferred[-1] -eq $script:NpmMirrors.default) 'Official registry must remain the final China-mode fallback'
+  } finally {
+    $script:NetworkInfo = $oldNetworkInfo
+    $script:BestNpmMirror = $oldBestMirror
+    $script:NpmRegistryCandidates = $oldCandidates
+  }
+}
+
+Run-Test 'Fallback metadata selects the newest reachable mirror version' {
+  $oldNetworkInfo = $script:NetworkInfo
+  $oldBestMirror = $script:BestNpmMirror
+  $oldCandidates = $script:NpmRegistryCandidates
+  try {
+    $script:NetworkInfo = @{
+      Region = 'china'
+      Connectivity = @{
+        NpmjsOK = $false; NpmjsTime = -1
+        NpmmirrorOK = $true; NpmmirrorTime = 10
+        TencentOK = $true; TencentTime = 20
+        HuaweiOK = $true; HuaweiTime = 30
+      }
+    }
+    $script:BestNpmMirror = $null
+    $script:NpmRegistryCandidates = $null
+    function Get-NpmVersionFromRegistry([string]$PackageName, [string]$Registry) {
+      if ($Registry -eq $script:NpmMirrors.default) { return $null }
+      if ($Registry -eq $script:NpmMirrors.taobao) { return '0.1.4' }
+      if ($Registry -eq $script:NpmMirrors.tencent) { return '1.0.5' }
+      if ($Registry -eq $script:NpmMirrors.huawei) { return '1.0.4' }
+      return $null
+    }
+    Assert-True ((Get-NpmLatestVersion '@xai-official/grok') -eq '1.0.5') 'Expected the newest reachable fallback metadata, not the first stale mirror result'
+  } finally {
+    $script:NetworkInfo = $oldNetworkInfo
+    $script:BestNpmMirror = $oldBestMirror
+    $script:NpmRegistryCandidates = $oldCandidates
+  }
+}
+
+Run-Test 'Only the canonical Grok layout can migrate to npm management' {
+  $oldGrokHome = $env:GROK_HOME
+  try {
+    $env:GROK_HOME = Join-Path $repoRoot 'tests\fixture-grok-home'
+    $tool = Get-AiCliToolById 'grok'
+    $canonical = Join-Path (Join-Path $env:GROK_HOME 'bin') 'grok.exe'
+    Assert-True (Test-GrokNpmMigrationCandidate $tool @{ Source = $canonical; Kind = 'external' }) 'Canonical Grok binary should be migratable'
+    Assert-False (Test-GrokNpmMigrationCandidate $tool @{ Source = (Join-Path $repoRoot 'other\grok.exe'); Kind = 'external' }) 'Unknown external Grok binary must remain blocked'
+    Assert-False (Test-GrokNpmMigrationCandidate (Get-AiCliToolById 'codex') @{ Source = $canonical; Kind = 'external' }) 'Migration exception must be Grok-only'
+  } finally {
+    $env:GROK_HOME = $oldGrokHome
+  }
+}
+
 Run-Test 'Lifecycle adapter verifies post-update version' {
   $oldAuto = $script:AutoMode
   $script:AutoMode = $true
@@ -131,12 +235,14 @@ Run-Test 'Failed update does not trigger a misleading post-update check' {
   }
 }
 
-Run-Test 'Official npm metadata is authoritative and external installs are blocked' {
+Run-Test 'Official metadata is authoritative and unknown external installs are blocked' {
   $text = [IO.File]::ReadAllText($main)
   Assert-True ($text.Contains('$version = Get-NpmVersionFromRegistry $PackageName $official')) 'Expected official npm metadata lookup first'
   Assert-True ($text.Contains('stale mirror metadata must never suppress a real update')) 'Expected mirror freshness safety invariant'
   Assert-True ($text.Contains('$installSpec = "$($Tool.Package)@$target"')) 'Expected authoritative target version pin during install'
   Assert-True ($text.Contains("$kind = 'external'")) 'Expected non-npm command classification'
+  Assert-True ($text.Contains('Test-GrokNpmMigrationCandidate')) 'Expected canonical Grok npm migration gate'
+  Assert-True ($text.Contains('--allow-scripts=')) 'Expected one-shot lifecycle-script approvals'
   Assert-True ($text.Contains('Automatic npm update was blocked to avoid a conflicting installation.')) 'Expected fail-closed mixed-install guard'
 }
 

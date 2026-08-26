@@ -45,12 +45,59 @@ test_select_best_npm_mirror_returns_url_only() {
   local registry
   registry="$(
     NPM_BEST_MIRROR=""
+    NPM_REGISTRY_CANDIDATES=()
     NETWORK_REGION="global"
-    detect_network() { NETWORK_REGION="global"; }
+    test_url_ok() { [ "$1" = "$NPM_MIRROR_DEFAULT" ]; }
     select_best_npm_mirror
     printf '%s' "$NPM_BEST_MIRROR"
   )"
   assert_eq "$registry" 'https://registry.npmjs.org' 'Expected npm mirror cache to contain only the registry URL.'
+}
+
+test_registry_candidates_fail_over_between_global_and_china_sources() {
+  local registries
+  registries="$(
+    NPM_BEST_MIRROR=""
+    NPM_REGISTRY_CANDIDATES=()
+    NETWORK_REGION="global"
+    test_url_ok() { [ "$1" = "$NPM_MIRROR_TENCENT" ]; }
+    select_best_npm_mirror
+    registry_candidates
+  )"
+  assert_eq "$(printf '%s\n' "$registries" | head -n 1)" "$NPM_MIRROR_TENCENT" 'Expected a reachable China source when the official source is unavailable.'
+  assert_contains "$registries" "$NPM_MIRROR_DEFAULT" 'Expected the official source to remain a retry candidate.'
+
+  registries="$(
+    NPM_BEST_MIRROR=""
+    NPM_REGISTRY_CANDIDATES=()
+    NETWORK_REGION="china"
+    test_url_ok() { return 0; }
+    select_best_npm_mirror
+    registry_candidates
+  )"
+  assert_eq "$(printf '%s\n' "$registries" | head -n 1)" "$NPM_MIRROR_TAOBAO" 'Expected the preferred China source first in China mode.'
+  assert_eq "$(printf '%s\n' "$registries" | tail -n 1)" "$NPM_MIRROR_DEFAULT" 'Expected the official source as the final China-mode fallback.'
+}
+
+test_fallback_metadata_uses_newest_reachable_mirror() {
+  local version
+  version="$(
+    official_registry() { printf '%s' "$NPM_MIRROR_DEFAULT"; }
+    select_best_npm_mirror() { :; }
+    registry_candidates() {
+      printf '%s\n' "$NPM_MIRROR_TAOBAO" "$NPM_MIRROR_TENCENT" "$NPM_MIRROR_HUAWEI" "$NPM_MIRROR_DEFAULT"
+    }
+    fetch_text() {
+      case "$1" in
+        *registry.npmjs.org*) return 1 ;;
+        *registry.npmmirror.com*) printf '{"version":"0.1.4"}' ;;
+        *mirrors.cloud.tencent.com*) printf '{"version":"1.0.5"}' ;;
+        *repo.huaweicloud.com*) printf '{"version":"1.0.4"}' ;;
+      esac
+    }
+    get_npm_latest_version '@xai-official/grok'
+  )"
+  assert_eq "$version" '1.0.5' 'Expected the newest reachable mirror metadata when the official source is unavailable.'
 }
 
 test_untrusted_mirror_resolution_returns_url_only() {
@@ -148,11 +195,96 @@ test_banner_is_npm_only_five_tools() {
   assert_not_contains "$text" 'Trying: claude update' 'no native claude updater path'
 }
 
+test_npm_install_uses_reviewed_script_approvals() {
+  local output
+  output="$(
+    NPM_BEST_MIRROR='https://registry.npmjs.org'
+    npm() { printf '%s\n' "$*"; }
+    npm_install_global '@google/gemini-cli@0.57.0' 'https://registry.npmjs.org' '@github/keytar,node-pty'
+  )"
+  assert_eq "$output" 'install -g --allow-scripts=@github/keytar,node-pty @google/gemini-cli@0.57.0 --registry https://registry.npmjs.org' 'Expected a one-shot reviewed --allow-scripts policy.'
+}
+
+test_only_canonical_grok_layout_is_migratable() {
+  local old_home="${HOME:-}" old_grok_home="${GROK_HOME:-}" canonical
+  HOME='/tmp/check-ai-cli-grok-home'
+  unset GROK_HOME
+  canonical="$HOME/.grok/bin/grok"
+
+  if ! is_grok_npm_migration_candidate 'grok' "$canonical"; then
+    printf '[FAIL] Expected canonical Grok layout to be migratable.\n' >&2
+    exit 1
+  fi
+  if is_grok_npm_migration_candidate 'grok' '/tmp/unrelated/grok'; then
+    printf '[FAIL] Unknown external Grok path must remain blocked.\n' >&2
+    exit 1
+  fi
+  if is_grok_npm_migration_candidate 'codex' "$canonical"; then
+    printf '[FAIL] Migration exception must be Grok-only.\n' >&2
+    exit 1
+  fi
+
+  HOME="$old_home"
+  if [ -n "$old_grok_home" ]; then GROK_HOME="$old_grok_home"; else unset GROK_HOME; fi
+}
+
+test_canonical_grok_update_reaches_npm() {
+  local temp_root rc install_calls
+  temp_root="$(mktemp -d)"
+
+  set +e
+  (
+    HOME="$temp_root"
+    unset GROK_HOME
+    mkdir -p "$HOME/.grok/bin"
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$HOME/.grok/bin/grok"
+    chmod +x "$HOME/.grok/bin/grok"
+    PATH="$HOME/.grok/bin:$PATH"
+    NPM_BEST_MIRROR='https://registry.npmmirror.com'
+    fixture_version='0.2.111'
+
+    require_npm() { return 0; }
+    get_local_tool_version() { printf '%s' "$fixture_version"; }
+    npm() { [ "${1:-}" != 'list' ]; }
+    get_npm_latest_version() { printf '1.0.5'; }
+    select_best_npm_mirror() { :; }
+    registry_candidates() {
+      printf '%s\n' 'https://registry.npmmirror.com' 'https://mirrors.cloud.tencent.com/npm/' 'https://registry.npmjs.org'
+    }
+    official_registry() { printf 'https://registry.npmjs.org'; }
+    npm_install_global() {
+      printf '%s|%s|%s\n' "$1" "$2" "$3" >> "$temp_root/install-calls"
+      if [ "$2" = 'https://registry.npmmirror.com' ]; then
+        fixture_version='0.1.4'
+      else
+        fixture_version='1.0.5'
+      fi
+      return 0
+    }
+    repair_tool_path() { return 0; }
+
+    update_tool_via_npm "${TOOL_DEFS[3]}"
+  ) >/dev/null 2>&1
+  rc=$?
+  set -e
+
+  install_calls="$(cat "$temp_root/install-calls" 2>/dev/null || true)"
+  rm -rf "$temp_root"
+  assert_eq "$rc" '0' 'Expected canonical Grok migration to complete through the npm updater.'
+  assert_contains "$install_calls" '@xai-official/grok@1.0.5|https://registry.npmmirror.com|@xai-official/grok' 'Expected the stale preferred mirror to be attempted first.'
+  assert_contains "$install_calls" '@xai-official/grok@1.0.5|https://mirrors.cloud.tencent.com/npm/|@xai-official/grok' 'Expected an unusable mirror result to fail over to the next reachable source.'
+}
+
 run_test 'select_best_npm_mirror returns only the URL' test_select_best_npm_mirror_returns_url_only
+run_test 'registry candidates fail over between global and China sources' test_registry_candidates_fail_over_between_global_and_china_sources
+run_test 'fallback metadata uses newest reachable mirror' test_fallback_metadata_uses_newest_reachable_mirror
 run_test 'install.sh resolve_base returns only the URL' test_untrusted_mirror_resolution_returns_url_only
 run_test 'run_tool_lifecycle propagates install failure' test_lifecycle_propagates_update_failure
 run_test 'main returns non-zero for selected update failure' test_main_returns_nonzero_for_selected_update_failure
 run_test 'proxy logs hide credentials' test_proxy_logs_hide_credentials
 run_test 'uninstaller refuses unmarked directory' test_uninstaller_refuses_unmarked_directory
 run_test 'banner is npm-only five tools' test_banner_is_npm_only_five_tools
+run_test 'npm install uses reviewed script approvals' test_npm_install_uses_reviewed_script_approvals
+run_test 'only canonical Grok layout is migratable' test_only_canonical_grok_layout_is_migratable
+run_test 'canonical Grok update reaches npm' test_canonical_grok_update_reaches_npm
 printf '[PASS] All shell output contract tests passed.\n'
