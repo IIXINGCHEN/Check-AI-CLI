@@ -19,7 +19,9 @@
 1. 从 Git 索引中的已提交文件计算摘要；
 2. 自动生成 `checksums.sha256`；
 3. 再次执行 `-Check`；
-4. 由 `github-actions[bot]` 提交更新后的清单。
+4. 清单有变化时，通过 GitHub Contents API 直接在服务端创建提交（作者为 `github-actions[bot]`）。
+
+该提交由 GitHub 服务端使用 web-flow 密钥签名，在提交页显示为 **“This commit was created on GitHub.com and signed with GitHub's verified signature.”**。本地 `git push` 推送的提交无法获得此签名，因此 bot 落库路径已弃用本地提交。若远端 `main` 在生成期间被其他推送前移，工作流会失败退出并要求重跑，避免基于过期 HEAD 盖写清单。
 
 仓库启用分支保护时，需要允许 GitHub Actions 写入 `main`，或将该工作流调整为自动创建 PR。
 

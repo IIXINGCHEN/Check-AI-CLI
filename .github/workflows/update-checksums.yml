@@ -38,17 +38,49 @@ jobs:
           ./tools/Update-Checksums.ps1
           ./tools/Update-Checksums.ps1 -Check
 
-      - name: Commit updated manifest
+      # Commits created by a local git push can never carry GitHub's web-flow
+      # signature badge. Creating the manifest commit through the Contents API
+      # makes GitHub itself create the commit server-side, so it shows up as
+      # "This commit was created on GitHub.com and signed with GitHub's
+      # verified signature".
+      - name: Commit manifest via Contents API (web-flow signed)
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          git diff --quiet -- checksums.sha256
-          $manifestChanged = $LASTEXITCODE -ne 0
-          if ($manifestChanged) {
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add checksums.sha256
-            git commit -m "chore: update distribution checksums"
-            git push origin HEAD:main
-          } else {
-            Write-Host "checksums.sha256 is already current."
+          $ErrorActionPreference = 'Stop'
+
+          # Checkout may apply EOL translation, while the Contents API stores bytes
+          # verbatim: normalize to the LF form that .gitattributes enforces here.
+          $text = [Text.Encoding]::UTF8.GetString([IO.File]::ReadAllBytes('checksums.sha256')).Replace("`r`n", "`n")
+          $contentB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($text))
+
+          $remote = $null
+          $raw = @(& gh api "repos/$env:GITHUB_REPOSITORY/contents/checksums.sha256?ref=main" 2>$null)
+          if ($LASTEXITCODE -eq 0 -and $raw.Count -gt 0) {
+            $remote = (($raw -join "`n") | ConvertFrom-Json)
+            $remoteText = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String(($remote.content -replace '\s', '')))
+            if ($remoteText.Replace("`r`n", "`n") -eq $text) {
+              Write-Host 'checksums.sha256 is already current.'
+              exit 0
+            }
           }
+
+          # Refuse to stamp a manifest derived from a stale head.
+          $localHead = (git rev-parse HEAD).Trim()
+          $remoteHead = (& gh api "repos/$env:GITHUB_REPOSITORY/commits/main" --jq .sha).Trim()
+          if ($remoteHead -ne $localHead) {
+            throw "main advanced to $remoteHead during generation; rerun the workflow."
+          }
+
+          $payload = [ordered]@{
+            message = 'chore: update distribution checksums'
+            content = $contentB64
+            branch  = 'main'
+          }
+          if ($remote -and $remote.sha) { $payload.sha = $remote.sha }
+          $payloadPath = Join-Path $env:RUNNER_TEMP 'checksums-payload.json'
+          [IO.File]::WriteAllText($payloadPath, ($payload | ConvertTo-Json))
+          & gh api --method PUT "repos/$env:GITHUB_REPOSITORY/contents/checksums.sha256" --input $payloadPath
+          if ($LASTEXITCODE -ne 0) { throw "Contents API update failed with exit code $LASTEXITCODE" }
+          Write-Host 'Manifest commit created on GitHub.com (web-flow signed).'
