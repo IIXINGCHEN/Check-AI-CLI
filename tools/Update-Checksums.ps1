@@ -22,7 +22,15 @@ function Require-Git() {
 }
 
 function Get-RepoRoot() {
-  $root = (git rev-parse --show-toplevel 2>$null)
+  # PS 5.1 turns redirected native stderr into a terminating error under EAP
+  # Stop; relax it so git's own error text reaches the diagnostic below.
+  $prevEap = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  try {
+    $root = (git rev-parse --show-toplevel 2>$null)
+  } finally {
+    $ErrorActionPreference = $prevEap
+  }
   if ([string]::IsNullOrWhiteSpace($root)) { throw "Not a git repository." }
   return $root.Trim()
 }
@@ -33,7 +41,14 @@ function Get-TargetPaths() {
 
 function Get-UnstagedTargetChanges([string[]]$Paths) {
   if (-not $Paths -or $Paths.Count -eq 0) { return @() }
-  $changed = (& git diff --name-only -- @Paths 2>$null)
+  # Same PS 5.1 hazard: git warnings must not abort the stale-index check.
+  $prevEap = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  try {
+    $changed = (& git diff --name-only -- @Paths 2>$null)
+  } finally {
+    $ErrorActionPreference = $prevEap
+  }
   return @($changed | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object)
 }
 
@@ -45,7 +60,15 @@ function Assert-NoUnstagedTargetChanges([string[]]$Paths) {
 }
 
 function Get-BlobSha([string]$Path) {
-  $sha = (git rev-parse ":$Path" 2>$null)
+  # Same PS 5.1 hazard: git's own stderr must not abort here, so an empty
+  # result reaches the explicit "Missing in index" diagnostic below.
+  $prevEap = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  try {
+    $sha = (git rev-parse ":$Path" 2>$null)
+  } finally {
+    $ErrorActionPreference = $prevEap
+  }
   if ([string]::IsNullOrWhiteSpace($sha)) { throw "Missing in index: $Path" }
   return $sha.Trim()
 }
