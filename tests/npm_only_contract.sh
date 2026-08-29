@@ -62,6 +62,10 @@ assert_equal "$(compare_semver 2.0.0 1.9.9)" "1" 'semver newer'
 assert_equal "$(compare_semver 1.2.3-beta.1 1.2.3)" "-1" 'prerelease older than release'
 assert_equal "$(compare_semver 1.2.3 1.2.3-beta.1)" "1" 'release newer than prerelease'
 assert_equal "$(compare_semver 1.2.3-beta.1 1.2.3-beta.2)" "-1" 'beta.1 older than beta.2'
+assert_equal "$(compare_semver 1.2.3-beta.2 1.2.3-beta.10)" "-1" 'numeric prerelease identifiers compare numerically'
+assert_equal "$(compare_semver 1.2.3-1 1.2.3-alpha)" "-1" 'numeric prerelease identifier is lower than alphanumeric'
+assert_equal "$(compare_semver 1.2.3-beta 1.2.3-beta.1)" "-1" 'fewer prerelease identifiers is lower'
+assert_equal "$(compare_semver 1.2.3-alpha.1 1.2.3-beta.1)" "-1" 'alphanumeric prerelease identifiers compare in ASCII order'
 assert_equal "$(extract_semver 'v1.4.5 (build)')" "1.4.5" 'extract semver'
 
 # tool defs count

@@ -24,7 +24,6 @@ $script:UpdateFailed = $false
 $script:BestNpmMirror = $null
 $script:NpmRegistryCandidates = $null
 $script:EffectiveProxyUrl = $null
-$script:EffectiveNoProxy = $null
 $script:NetworkInfo = $null
 
 function Write-Info([string]$Message) { Write-Host "[INFO] $Message" -ForegroundColor Cyan }
@@ -226,7 +225,6 @@ function Get-NormalizedProxy([hashtable]$SystemProxy, [hashtable]$EnvProxy) {
 
 function Set-EffectiveProxyEnvironment($Proxy) {
   $script:EffectiveProxyUrl = $null
-  $script:EffectiveNoProxy = $null
   if (-not $Proxy -or [string]::IsNullOrWhiteSpace($Proxy.Url)) { return $Proxy }
 
   $url = [string]$Proxy.Url
@@ -241,7 +239,6 @@ function Set-EffectiveProxyEnvironment($Proxy) {
   }
   if (-not [string]::IsNullOrWhiteSpace($noProxy)) {
     $env:NO_PROXY = $noProxy; $env:no_proxy = $noProxy
-    $script:EffectiveNoProxy = $noProxy
   }
   return $Proxy
 }
@@ -421,6 +418,40 @@ function Test-IsPrereleaseVersion([string]$Text) {
   return [bool](Get-PrereleaseTag $Text)
 }
 
+function Compare-PrereleaseTag([string]$A, [string]$B) {
+  # semver 11.4: dot-separated identifiers compare numerically when both are
+  # numeric, numeric identifiers always rank lower than alphanumeric ones, and
+  # the remaining identifiers compare in ASCII sort order. Absurdly large
+  # numeric identifiers fall back to ordinal comparison.
+  $aIds = @($A.Split('.'))
+  $bIds = @($B.Split('.'))
+  $len = [Math]::Max($aIds.Count, $bIds.Count)
+  for ($i = 0; $i -lt $len; $i++) {
+    if ($i -ge $aIds.Count) { return -1 }
+    if ($i -ge $bIds.Count) { return 1 }
+    $a = $aIds[$i]
+    $b = $bIds[$i]
+    $aNum = $a -match '^[0-9]+$'
+    $bNum = $b -match '^[0-9]+$'
+    if ($aNum -and $bNum) {
+      $av = [long]0; $bv = [long]0
+      if ([long]::TryParse($a, [ref]$av) -and [long]::TryParse($b, [ref]$bv)) {
+        if ($av -lt $bv) { return -1 }
+        if ($av -gt $bv) { return 1 }
+        continue
+      }
+    }
+    if ($aNum -ne $bNum) {
+      if ($aNum) { return -1 }
+      return 1
+    }
+    $c = [string]::CompareOrdinal($a, $b)
+    if ($c -lt 0) { return -1 }
+    if ($c -gt 0) { return 1 }
+  }
+  return 0
+}
+
 function Compare-Version([string]$Current, [string]$Latest) {
   $a = Get-VersionParts $Current
   $b = Get-VersionParts $Latest
@@ -435,8 +466,7 @@ function Compare-Version([string]$Current, [string]$Latest) {
   if (-not $curTag -and $latTag) { return 1 }
   if ($curTag -and $latTag) {
     if ($curTag -eq $latTag) { return 0 }
-    if ([string]::CompareOrdinal($curTag, $latTag) -lt 0) { return -1 }
-    return 1
+    return (Compare-PrereleaseTag $curTag $latTag)
   }
   return 0
 }
@@ -551,7 +581,15 @@ function Get-NpmGlobalBinDir() {
   $npmPath = Get-NpmCommandPath
   if (-not $npmPath) { return $null }
   try {
-    $prefix = (& $npmPath config get prefix 2>$null | Out-String).Trim()
+    # PS 5.1 turns redirected native stderr into a terminating error under EAP
+    # Stop; relax it so npm warnings cannot break prefix detection.
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+      $prefix = (& $npmPath config get prefix 2>$null | Out-String).Trim()
+    } finally {
+      $ErrorActionPreference = $prevEap
+    }
   } catch { return $null }
   if ([string]::IsNullOrWhiteSpace($prefix)) { return $null }
   # Windows npm prefix is typically the global bin dir itself.
@@ -572,6 +610,10 @@ function Get-CommandVersionInfo([string]$CommandName) {
   if (-not $cmd) { return @{ Name = $CommandName; Source = $null; Version = $null } }
   $source = Get-CommandSourcePath $cmd
   $version = $null
+  # Same PS 5.1 redirected-stderr hazard: CLI update notices on stderr must not
+  # abort the probe or skip the -v fallback.
+  $prevEap = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
   try {
     $out = & $source '--version' 2>&1 | Out-String
     $version = Get-SemVer $out
@@ -579,7 +621,9 @@ function Get-CommandVersionInfo([string]$CommandName) {
       $out2 = & $source '-v' 2>&1 | Out-String
       $version = Get-SemVer $out2
     }
-  } catch { }
+  } catch { } finally {
+    $ErrorActionPreference = $prevEap
+  }
   return @{ Name = $CommandName; Source = $source; Version = $version }
 }
 
@@ -723,12 +767,18 @@ function Invoke-VersionProbe([string[]]$CommandNames) {
     $cmd = Resolve-ApplicationCommand -Name @($name)
     if (-not $cmd) { continue }
     $source = Get-CommandSourcePath $cmd
+    # PS 5.1: redirected native stderr must not become a terminating error, or
+    # the probe output that feeds Get-MissingOptionalPackageName is lost.
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
     try {
       $out = & $source '--version' 2>&1 | Out-String
       $ver = Get-SemVer $out
       return @{ Version = $ver; Output = $out; Source = $source }
     } catch {
       return @{ Version = $null; Output = $_.Exception.Message; Source = $source }
+    } finally {
+      $ErrorActionPreference = $prevEap
     }
   }
   return @{ Version = $null; Output = ''; Source = $null }
@@ -742,11 +792,6 @@ function Get-MissingOptionalPackageName([string]$Text) {
   $m2 = [regex]::Match($Text, "missing optional dependency[:\s]+(@?[A-Za-z0-9_@/.-]+)", 'IgnoreCase')
   if ($m2.Success) { return $m2.Groups[1].Value }
   return $null
-}
-
-function Test-ToolRunnable([hashtable]$Tool) {
-  $probe = Invoke-VersionProbe $Tool.Commands
-  return [bool]$probe.Version
 }
 
 function Update-ToolViaNpm([hashtable]$Tool) {

@@ -453,14 +453,6 @@ function Ensure-ParentDirectory([string]$Path) {
   Ensure-Directory $parent
 }
 
-function Install-OneFile([string]$Base, [string]$InstallDir, [hashtable]$Entry) {
-  $url = "$Base/$($Entry.Remote)"
-  $out = Join-Path $InstallDir $Entry.Local
-  Ensure-ParentDirectory $out
-  Write-Info "Downloading: $($Entry.Remote)"
-  Download-FileWithRetry $url $out
-}
-
 function Download-Text([string]$Url) {
   $headers = @{ 'User-Agent' = 'check-ai-cli-installer' }
   $response = $null
@@ -723,7 +715,10 @@ function Add-ToPath([string]$Dir, [string]$Scope) {
   }
   $newPath = if ([string]::IsNullOrWhiteSpace($current)) { $normalized } else { "$current;$normalized" }
   Set-EnvValue 'Path' $newPath $Scope
-  $env:Path = $newPath
+  # Keep the rest of the current process PATH: replacing it with the persisted
+  # scope value would drop Machine entries (npm, node) that CHECK_AI_CLI_RUN=1
+  # needs right after install.
+  $env:Path = "$normalized;$env:Path"
 }
 
 function Get-InstallCommandCandidates() {

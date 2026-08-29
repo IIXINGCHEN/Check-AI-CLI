@@ -124,7 +124,9 @@ detect_network() {
 
 append_registry_candidate() {
   local candidate="$1" existing
-  for existing in "${NPM_REGISTRY_CANDIDATES[@]}"; do
+  # ${arr[@]+...} guard: expanding an empty array is a fatal unbound-variable
+  # error under set -u on bash 3.2-4.3 (e.g. macOS stock /usr/bin/bash).
+  for existing in ${NPM_REGISTRY_CANDIDATES[@]+"${NPM_REGISTRY_CANDIDATES[@]}"}; do
     [ "$existing" = "$candidate" ] && return 0
   done
   NPM_REGISTRY_CANDIDATES+=("$candidate")
@@ -172,7 +174,7 @@ get_best_npm_mirror() {
 
 registry_candidates() {
   select_best_npm_mirror
-  printf '%s\n' "${NPM_REGISTRY_CANDIDATES[@]}"
+  printf '%s\n' ${NPM_REGISTRY_CANDIDATES[@]+"${NPM_REGISTRY_CANDIDATES[@]}"}
 }
 
 official_registry() { printf '%s' "$NPM_MIRROR_DEFAULT"; }
@@ -206,6 +208,42 @@ is_prerelease() {
   [ -n "$(extract_prerelease_tag "$*")" ]
 }
 
+# semver 11.4: dot-separated identifiers compare numerically when both are
+# numeric, numeric identifiers always rank lower than alphanumeric ones, and
+# the remaining identifiers compare in ASCII sort order.
+prerelease_identifier_cmp() {
+  local a="$1" b="$2" a_num=0 b_num=0 first
+  [[ "$a" =~ ^[0-9]+$ ]] && a_num=1
+  [[ "$b" =~ ^[0-9]+$ ]] && b_num=1
+  if [ "$a_num" -eq 1 ] && [ "$b_num" -eq 1 ]; then
+    if [ $((10#$a)) -lt $((10#$b)) ]; then echo -1; return 0; fi
+    if [ $((10#$a)) -gt $((10#$b)) ]; then echo 1; return 0; fi
+    echo 0
+    return 0
+  fi
+  if [ "$a_num" -ne "$b_num" ]; then
+    if [ "$a_num" -eq 1 ]; then echo -1; else echo 1; fi
+    return 0
+  fi
+  if [ "$a" = "$b" ]; then echo 0; return 0; fi
+  first="$(printf '%s\n%s\n' "$a" "$b" | LC_ALL=C sort | head -n 1)"
+  [ "$first" = "$a" ] && echo -1 || echo 1
+}
+
+compare_prerelease_tag() {
+  local a_ids=() b_ids=() i len cmp
+  IFS='.' read -r -a a_ids <<< "$1"
+  IFS='.' read -r -a b_ids <<< "$2"
+  len=$(( ${#a_ids[@]} > ${#b_ids[@]} ? ${#a_ids[@]} : ${#b_ids[@]} ))
+  for ((i = 0; i < len; i++)); do
+    if [ "$i" -ge "${#a_ids[@]}" ]; then echo -1; return 0; fi
+    if [ "$i" -ge "${#b_ids[@]}" ]; then echo 1; return 0; fi
+    cmp="$(prerelease_identifier_cmp "${a_ids[$i]}" "${b_ids[$i]}")"
+    if [ "$cmp" != "0" ]; then echo "$cmp"; return 0; fi
+  done
+  echo 0
+}
+
 compare_semver() {
   local a b a1 a2 a3 b1 b2 b3 tag_a tag_b
   a="$(extract_semver "$1")"
@@ -223,7 +261,7 @@ compare_semver() {
   if [ -z "$tag_a" ] && [ -n "$tag_b" ]; then echo 1; return 0; fi
   if [ -n "$tag_a" ] && [ -n "$tag_b" ]; then
     if [ "$tag_a" = "$tag_b" ]; then echo 0; return 0; fi
-    if [ "$tag_a" \< "$tag_b" ]; then echo -1; else echo 1; fi
+    compare_prerelease_tag "$tag_a" "$tag_b"
     return 0
   fi
   echo 0
@@ -378,7 +416,7 @@ get_npm_latest_version() {
   while IFS= read -r reg; do
     [ -n "$reg" ] && registries+=("$reg")
   done < <(registry_candidates)
-  for reg in "${registries[@]}"; do
+  for reg in ${registries[@]+"${registries[@]}"}; do
     [ "${reg%/}" = "${official%/}" ] && continue
     url="$(npm_registry_latest_url "$reg" "$package")"
     text="$(fetch_text "$url" || true)"
@@ -473,7 +511,7 @@ update_tool_via_npm() {
     [ -n "$reg" ] && registries+=("$reg")
   done < <(registry_candidates)
 
-  for reg in "${registries[@]}"; do
+  for reg in ${registries[@]+"${registries[@]}"}; do
     log_info "Trying: npm install ($reg)"
     if npm_install_global "$install_spec" "$reg" "$allow_scripts"; then
       repair_tool_path >/dev/null 2>&1 || true
