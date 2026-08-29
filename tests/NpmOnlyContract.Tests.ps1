@@ -86,6 +86,14 @@ Run-Test 'SemVer compare basic ordering' {
   Assert-True ((Get-SemVer 'v1.2.3-beta') -eq '1.2.3') 'extract semver'
 }
 
+Run-Test 'SemVer prerelease identifiers follow semver 11.4' {
+  Assert-True ((Compare-Version '1.2.3-beta.2' '1.2.3-beta.10') -eq -1) 'numeric prerelease identifiers compare numerically'
+  Assert-True ((Compare-Version '1.2.3-1' '1.2.3-alpha') -eq -1) 'numeric prerelease identifier is lower than alphanumeric'
+  Assert-True ((Compare-Version '1.2.3-beta' '1.2.3-beta.1') -eq -1) 'fewer prerelease identifiers is lower'
+  Assert-True ((Compare-Version '1.2.3-alpha.1' '1.2.3-beta.1') -eq -1) 'alphanumeric prerelease identifiers compare in ASCII order'
+  Assert-True ((Compare-Version '1.2.3-beta.10' '1.2.3-beta.2') -eq 1) 'numeric prerelease ordering is antisymmetric'
+}
+
 Run-Test 'Installed resolver read does not permanently require PATH mutation API' {
   $oldPath = $env:PATH
   try {
