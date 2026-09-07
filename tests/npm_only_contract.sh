@@ -71,4 +71,13 @@ assert_equal "$(extract_semver 'v1.4.5 (build)')" "1.4.5" 'extract semver'
 # tool defs count
 assert_equal "${#TOOL_DEFS[@]}" "5" 'five tools'
 
+# socket timeouts: stalled metadata/payload fetches must fail into retry or
+# failover paths instead of hanging the run (regression for review-1 W3)
+assert_contains "$text" 'curl -fsSL --max-time 30' 'checker fetch_text bounds curl by max-time'
+assert_contains "$text" 'wget -qO- --timeout=30' 'checker fetch_text bounds wget by timeout'
+install_text="$(cat "$ROOT_DIR/install.sh")"
+assert_contains "$install_text" 'curl -fsSL --max-time 30' 'installer fetch_text bounds curl by max-time'
+assert_contains "$install_text" '--timeout=30' 'installer fetches bound wget by timeout'
+assert_contains "$install_text" 'curl -fSL --progress-bar --max-time 30' 'installer payload download bounds curl by max-time'
+
 printf '[PASS] npm_only_contract.sh\n'

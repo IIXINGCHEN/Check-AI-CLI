@@ -298,4 +298,21 @@ Run-Test 'Factory wrapper exits unsupported' {
   Assert-True ($p.ExitCode -eq 2) "Expected exit 2 from Factory wrapper, got $($p.ExitCode)"
 }
 
+Run-Test 'PATH write failure during local probe must not abort the run' {
+  # Function overrides shadow the dot-sourced implementations only inside this
+  # test scope, so no explicit restore is needed.
+  function Get-NpmGlobalBinDir { return (Join-Path $repoRoot 'tests') }
+  function Set-UserPathValue([string]$PathValue) {
+    $script:FixturePathWriteThrew = $true
+    throw 'registry denied fixture'
+  }
+  $script:FixturePathWriteThrew = $false
+  try {
+    $null = Get-LocalToolVersion (Get-AiCliToolById 'claude')
+  } catch {
+    throw "Get-LocalToolVersion must survive a PATH write failure: $($_.Exception.Message)"
+  }
+  Assert-True $script:FixturePathWriteThrew 'Fixture PATH write must actually throw for this test to be meaningful.'
+}
+
 Write-Host 'All NpmOnlyContract tests passed.' -ForegroundColor Green

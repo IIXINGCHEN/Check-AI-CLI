@@ -185,12 +185,14 @@ official_registry() { printf '%s' "$NPM_MIRROR_DEFAULT"; }
 
 fetch_text() {
   local url="$1"
+  # Socket timeouts route stalled connections into the registry failover path
+  # instead of hanging the whole run (parity with the PowerShell 30s cap).
   if command_exists curl; then
-    curl -fsSL "$url" 2>/dev/null || return 1
+    curl -fsSL --max-time 30 "$url" 2>/dev/null || return 1
     return 0
   fi
   if command_exists wget; then
-    wget -qO- "$url" 2>/dev/null || return 1
+    wget -qO- --timeout=30 "$url" 2>/dev/null || return 1
     return 0
   fi
   return 1

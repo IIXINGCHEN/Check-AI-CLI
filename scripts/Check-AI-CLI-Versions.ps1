@@ -685,7 +685,9 @@ function Test-GrokNpmMigrationCandidate([hashtable]$Tool, [hashtable]$Candidate)
 }
 
 function Get-LocalToolVersion([hashtable]$Tool) {
-  [void](Repair-ToolUserPath $Tool.Id)
+  # PATH preference repair is best-effort here (parity with the bash checker):
+  # a User-hive PATH write failure must not abort the whole multi-tool run.
+  try { [void](Repair-ToolUserPath $Tool.Id) } catch { }
   $candidate = Get-InstalledToolCandidate $Tool.Id $Tool.Commands
   return $candidate.Version
 }

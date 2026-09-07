@@ -57,8 +57,10 @@ get_latest_main_ref_api_url() {
 
 fetch_text() {
   local url="$1"
-  if command_exists curl; then curl -fsSL "$url"; return 0; fi
-  if command_exists wget; then wget -qO- "$url"; return 0; fi
+  # Metadata fetches must time out into the fail-closed ref resolution instead
+  # of hanging (parity with the PowerShell installer's 30s cap).
+  if command_exists curl; then curl -fsSL --max-time 30 "$url"; return 0; fi
+  if command_exists wget; then wget -qO- --timeout=30 "$url"; return 0; fi
   return 1
 }
 
@@ -175,12 +177,13 @@ ensure_parent_dir() {
 
 fetch_to_temp() {
   local url="$1" tmp="$2"
+  # Retry handles failed transfers; the timeout handles hung ones.
   if command_exists curl; then
-    curl -fSL --progress-bar "$url" -o "$tmp"
+    curl -fSL --progress-bar --max-time 30 "$url" -o "$tmp"
     return 0
   fi
   if command_exists wget; then
-    wget --progress=bar:force:noscroll -O "$tmp" "$url" || wget -O "$tmp" "$url"
+    wget --progress=bar:force:noscroll --timeout=30 -O "$tmp" "$url" || wget --timeout=30 -O "$tmp" "$url"
     return 0
   fi
   return 1

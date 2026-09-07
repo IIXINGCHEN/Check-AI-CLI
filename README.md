@@ -42,7 +42,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Machine
 
 ### macOS / Linux：一键安装
 
-默认安装至 `~/.local/share/tools/check-ai-cli` 并自动写入 Shell 配置文件（`~/.profile`、`~/.bashrc` 或 `~/.zshrc`）的 PATH：
+默认安装至**当前目录**（建议通过 `CHECK_AI_CLI_INSTALL_DIR` 显式指定目录，例如 `~/.local/share/tools/check-ai-cli`），并自动写入 Shell 配置文件（`~/.profile`、`~/.bashrc` 或 `~/.zshrc`）的 PATH：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main/install.sh | bash

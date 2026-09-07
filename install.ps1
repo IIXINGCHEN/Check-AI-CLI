@@ -70,7 +70,7 @@ function Get-GitHubApiHeaders() {
 
 function Get-LatestStableRef() {
   try {
-    $json = Invoke-RestMethod -Uri (Get-LatestReleaseApiUrl) -Headers (Get-GitHubApiHeaders) -ErrorAction Stop
+    $json = Invoke-RestMethod -Uri (Get-LatestReleaseApiUrl) -Headers (Get-GitHubApiHeaders) -TimeoutSec 30 -ErrorAction Stop
     $tag = [string]$json.tag_name
     if (-not (Test-IsReleaseTag $tag)) { return $null }
     return $tag.Trim()
@@ -81,7 +81,7 @@ function Get-LatestStableRef() {
 
 function Get-LatestMainCommitRef() {
   try {
-    $json = Invoke-RestMethod -Uri (Get-LatestMainRefApiUrl) -Headers (Get-GitHubApiHeaders) -ErrorAction Stop
+    $json = Invoke-RestMethod -Uri (Get-LatestMainRefApiUrl) -Headers (Get-GitHubApiHeaders) -TimeoutSec 30 -ErrorAction Stop
     $sha = [string]$json.object.sha
     if ([string]::IsNullOrWhiteSpace($sha)) { return $null }
     return $sha.Trim()
@@ -381,6 +381,71 @@ function Test-NonEmptyFile([string]$Path) {
   if (-not (Test-Path -LiteralPath $Path)) { return $false }
   $len = (Get-Item -LiteralPath $Path).Length
   return $len -gt 0
+}
+
+function Download-ToFile([string]$Url, [string]$OutFile) {
+  $headers = @{ 'User-Agent' = 'check-ai-cli-installer' }
+  # Let PowerShell render its native Write-Progress while downloading.
+  # -TimeoutSec makes hung sockets retryable instead of freezing the install.
+  Invoke-WebRequest -Uri $Url -Headers $headers -UseBasicParsing -TimeoutSec 30 -OutFile $OutFile | Out-Null
+}
+
+function Download-FileWithRetry([string]$Url, [string]$OutFile) {
+  $tries = Get-RetryCount
+  $tmp = Get-TempFilePath $OutFile
+  for ($i = 1; $i -le $tries; $i++) {
+    try {
+      if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
+      Download-ToFile $Url $tmp
+      if (-not (Test-NonEmptyFile $tmp)) { throw "Downloaded file is empty." }
+      Move-Item -LiteralPath $tmp -Destination $OutFile -Force
+      return
+    } catch {
+      if ($i -eq $tries) { throw }
+      Start-Sleep -Seconds 2
+    }
+  }
+}
+
+function Get-ManifestRemotePath() { return 'checksums.sha256' }
+
+function Get-DistributionListRemotePath() { return 'distribution-files.txt' }
+
+function Get-ExpectedManifestSha256() {
+  $value = $env:CHECK_AI_CLI_EXPECTED_MANIFEST_SHA256
+  if ([string]::IsNullOrWhiteSpace($value)) { return $null }
+  $normalized = $value.Trim().ToLowerInvariant()
+  if ($normalized -notmatch '^[a-f0-9]{64}$') {
+    throw 'CHECK_AI_CLI_EXPECTED_MANIFEST_SHA256 must contain exactly 64 hexadecimal characters.'
+  }
+  return $normalized
+}
+
+function Assert-ManifestAnchor([string]$ManifestFile) {
+  $expected = Get-ExpectedManifestSha256
+  if (-not $expected) { return }
+  $actual = Get-Sha256 $ManifestFile
+  if ($actual -ne $expected) { throw 'checksums.sha256 does not match CHECK_AI_CLI_EXPECTED_MANIFEST_SHA256.' }
+  Write-Success 'Manifest SHA-256 pin verified.'
+}
+
+function Assert-SafeDistributionPath([string]$Path) {
+  if ([string]::IsNullOrWhiteSpace($Path)) { throw 'Distribution path is empty.' }
+  if ([IO.Path]::IsPathRooted($Path) -or $Path.Contains('\') -or $Path.Contains(':')) {
+    throw "Invalid distribution path: $Path"
+  }
+  foreach ($segment in @($Path -split '/')) {
+    if ([string]::IsNullOrWhiteSpace($segment) -or $segment -eq '.' -or $segment -eq '..') {
+      throw "Invalid distribution path: $Path"
+    }
+  }
+  return $Path
+}
+
+function Ensure-ParentDirectory([string]$Path) {
+  $parent = Split-Path -Parent $Path
+  if ([string]::IsNullOrWhiteSpace($parent)) { return }
+  Ensure-Directory $parent
 }
 
 function Read-Manifest([string]$Text) {
