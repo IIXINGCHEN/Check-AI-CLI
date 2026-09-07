@@ -42,6 +42,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Machine
 
 ### macOS / Linux：一键安装
 
+默认安装至 `~/.local/share/tools/check-ai-cli` 并自动写入 Shell 配置文件（`~/.profile`、`~/.bashrc` 或 `~/.zshrc`）的 PATH：
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/IIXINGCHEN/Check-AI-CLI/main/install.sh | bash
 ```
@@ -74,25 +76,27 @@ check-ai-cli
 
 运行命令后提供交互菜单：单个检查、全部检查、全部检查并更新（`U`）、退出。
 
-```powershell
-.\Check-AI-CLI-Versions.ps1
+```bash
+check-ai-cli
 ```
 
-```bash
-bash ./check-ai-cli-versions.sh
-```
+*(若直接通过源码运行：Windows 执行 `.\scripts\Check-AI-CLI-Versions.ps1`，POSIX 执行 `bash ./scripts/check-ai-cli-versions.sh`)*
 
 ### 自动模式 (CI / 定时任务)
 
-```powershell
-.\Check-AI-CLI-Versions.ps1 -Auto
-```
+跳过交互确认，直接检查并自动执行必要更新：
 
 ```bash
-CHECK_AI_CLI_AUTO=1 ./check-ai-cli-versions.sh --yes
+# 全局命令
+check-ai-cli --yes
+
+# 也可以通过环境变量指定
+CHECK_AI_CLI_AUTO=1 check-ai-cli
 ```
 
-- **前置依赖**：Node.js / npm（更新 CLI 所需）。
+*(若直接通过源码运行：Windows 执行 `.\scripts\Check-AI-CLI-Versions.ps1 -Auto`，POSIX 执行 `bash ./scripts/check-ai-cli-versions.sh --yes`)*
+
+- **前置依赖**：Node.js / npm（推荐 npm 11+；`--allow-scripts` 策略需要 npm 11+，旧版 npm 会收到升级提醒）。
 - **验证机制**：更新完成后自动重新读取本地版本，验证版本一致后方报告成功。
 - **源自动切换**：自动探测官方 npm、npmmirror、腾讯和华为 registry；按可达性、区域偏好与响应时间排序。任一源安装失败、缺少目标版本、命令不可运行或版本不匹配时，会自动继续尝试下一源。
 - **版本正确性**：官方 npm 的 dist-tag 是首选权威来源；官方 metadata 不可达时，会比较所有可达国内源并选择其中最新的有效 SemVer，再以精确版本安装，避免单个镜像的陈旧 `latest` 阻止更新。
@@ -121,7 +125,7 @@ CHECK_AI_CLI_AUTO=1 ./check-ai-cli-versions.sh --yes
 | `CHECK_AI_CLI_REF` | 安装本工具时锁定 tag / commit | `v1.3.0` |
 | `CHECK_AI_CLI_RAW_BASE` | 自定义原始分发源 | `https://mirror.example/repo` |
 | `CHECK_AI_CLI_ALLOW_UNTRUSTED_MIRROR` | 允许非官方 raw 源 | `1` |
-| `CHECK_AI_CLI_INSTALL_DIR` | 自定义安装目录 | `E:\Tools\Check-AI-CLI` |
+| `CHECK_AI_CLI_INSTALL_DIR` | 自定义安装目录 | `~/.local/share/tools/check-ai-cli` / `%LOCALAPPDATA%\Programs\Tools\Check-AI-CLI` |
 | `CHECK_AI_CLI_PATH_SCOPE` | PATH 写入范围 | `CurrentUser` / `Machine` |
 | `CHECK_AI_CLI_RUN` | 安装完成后立即启动 checker | `1` |
 
