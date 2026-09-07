@@ -74,7 +74,7 @@ get_latest_stable_ref() {
   local text tag
   text="$(fetch_text "$(get_latest_release_api_url)" 2>/dev/null || true)"
   tag="$(printf '%s' "$text" | extract_release_tag)"
-  [ -n "$tag" ] || return 1
+  is_release_tag "$tag" || return 1
   printf '%s' "$tag"
 }
 

@@ -528,7 +528,12 @@ function Remove-PathEntry([string]$PathValue, [string]$Dir) {
   $target = Normalize-Dir $Dir
   $kept = New-Object System.Collections.Generic.List[string]
   foreach ($part in @($PathValue -split ';')) {
-    if (-not (Test-ValidPathEntry $part)) { continue }
+    if (-not (Test-ValidPathEntry $part)) {
+      # Unrecognized entries (wildcards, empty) must survive the rewrite; only
+      # the exact normalized target is removed.
+      if ($part) { $null = $kept.Add($part) }
+      continue
+    }
     $n = Normalize-Dir $part
     if ($n -and $target -and $n.Equals($target, [StringComparison]::OrdinalIgnoreCase)) { continue }
     if ($part) { $null = $kept.Add($part) }
@@ -794,11 +799,43 @@ function Get-MissingOptionalPackageName([string]$Text) {
   return $null
 }
 
+function Get-NpmMajorVersion() {
+  $npmPath = Get-NpmCommandPath
+  if (-not $npmPath) { return $null }
+  try {
+    # PS 5.1: redirected native stderr must not become a terminating error here.
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+      $out = (& $npmPath --version 2>$null | Out-String).Trim()
+    } finally {
+      $ErrorActionPreference = $prevEap
+    }
+    if ($out -match '([0-9]+)\.') { return [int]$Matches[1] }
+  } catch { }
+  return $null
+}
+
+$script:NpmMajorVersionWarned = $false
+
+function Warn-WhenNpmCannotEnforceScriptAllowlist([string[]]$AllowScripts) {
+  # --allow-scripts (reviewed lifecycle-script approvals) needs npm 11+.
+  # Warn once per run; never drop the flag silently and never block the attempt.
+  if ($script:NpmMajorVersionWarned) { return }
+  if (-not $AllowScripts -or $AllowScripts.Count -eq 0) { return }
+  $major = Get-NpmMajorVersion
+  if ($null -eq $major) { return }
+  if ($major -ge 11) { return }
+  $script:NpmMajorVersionWarned = $true
+  Write-Warn ("npm $major detected: --allow-scripts requires npm 11+. The reviewed lifecycle-script policy may be rejected by this npm; upgrade Node.js/npm if installs fail.")
+}
+
 function Update-ToolViaNpm([hashtable]$Tool) {
   Write-Info "Updating $($Tool.Title)..."
   if (-not (Get-NpmCommandPath)) {
     throw 'No installer found. Install Node.js (npm) first. This checker only supports: npm i -g <package>@latest'
   }
+  Warn-WhenNpmCannotEnforceScriptAllowlist @($Tool.AllowScripts)
 
   $candidate = Get-InstalledToolCandidate $Tool.Id $Tool.Commands
   if ($candidate.Source -and $candidate.Kind -ne 'npm') {

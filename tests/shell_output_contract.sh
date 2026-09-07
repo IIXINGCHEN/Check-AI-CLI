@@ -115,6 +115,34 @@ test_untrusted_mirror_resolution_returns_url_only() {
   assert_eq "$base" 'https://mirror.example/repo' 'Expected resolve_base stdout to contain only the resolved base URL.'
 }
 
+test_latest_stable_ref_rejects_non_semver_tag_names() {
+  local tag
+  # Note: assignment-from-substitution triggers errexit when the substitution
+  # fails on bash 5.2+, so the inner script must exit 0; rejection is asserted
+  # via empty output, not via the child exit code.
+  tag="$(
+    CHECK_AI_CLI_SKIP_MAIN=1 \
+    bash --noprofile --norc -c '
+      source "$1"
+      get_latest_release_api_url() { printf "%s" "unused://fixture"; }
+      fetch_text() { printf "%s" "{\"tag_name\":\"nightly-2026.09.07\"}"; }
+      get_latest_stable_ref || true
+    ' _ "$REPO_ROOT/install.sh" 2>/dev/null
+  )"
+  assert_eq "$tag" '' 'Expected a non-semver latest release tag to be rejected (fail closed to the main commit SHA).'
+
+  tag="$(
+    CHECK_AI_CLI_SKIP_MAIN=1 \
+    bash --noprofile --norc -c '
+      source "$1"
+      get_latest_release_api_url() { printf "%s" "unused://fixture"; }
+      fetch_text() { printf "%s" "{\"tag_name\":\"v1.4.0\"}"; }
+      get_latest_stable_ref
+    ' _ "$REPO_ROOT/install.sh" 2>/dev/null
+  )"
+  assert_eq "$tag" 'v1.4.0' 'Expected a semver latest release tag to pass through.'
+}
+
 test_lifecycle_propagates_update_failure() {
   local rc
   AUTO_MODE=1
@@ -279,6 +307,7 @@ run_test 'select_best_npm_mirror returns only the URL' test_select_best_npm_mirr
 run_test 'registry candidates fail over between global and China sources' test_registry_candidates_fail_over_between_global_and_china_sources
 run_test 'fallback metadata uses newest reachable mirror' test_fallback_metadata_uses_newest_reachable_mirror
 run_test 'install.sh resolve_base returns only the URL' test_untrusted_mirror_resolution_returns_url_only
+run_test 'latest stable ref rejects non-semver tag names' test_latest_stable_ref_rejects_non_semver_tag_names
 run_test 'run_tool_lifecycle propagates install failure' test_lifecycle_propagates_update_failure
 run_test 'main returns non-zero for selected update failure' test_main_returns_nonzero_for_selected_update_failure
 run_test 'proxy logs hide credentials' test_proxy_logs_hide_credentials

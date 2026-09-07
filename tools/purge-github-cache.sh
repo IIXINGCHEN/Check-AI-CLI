@@ -4,6 +4,12 @@
 #
 # GitHub CDN caches raw files for ~5 minutes. This script helps purge the cache
 # by making requests with cache-busting headers.
+#
+# Note: raw.githubusercontent.com's CDN does not honor client-side
+# Cache-Control/Pragma purge requests; the curl calls below are best-effort
+# cache refreshes and the cache expires on its own (~5 min). Only the jsDelivr
+# leg performs a real purge via purge.jsdelivr.net. Do not treat a "purged"
+# raw URL as guaranteed-fresh; use -v/--verify to confirm content hashes.
 
 set -e
 

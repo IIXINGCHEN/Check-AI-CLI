@@ -17,7 +17,6 @@ function Run-Test([string]$Name, [scriptblock]$Body) {
 }
 
 # Dot-source without running main
-$oldSkip = $env:CHECK_AI_CLI_SKIP_MAIN
 # Main uses InvocationName -ne '.' guard; dot-source is safe.
 . $main
 
@@ -111,6 +110,37 @@ Run-Test 'Global npm install arguments use one-shot reviewed script approvals' {
 
   $withoutApprovals = @(Get-NpmInstallArguments '@openai/codex@0.149.1' 'https://registry.npmjs.org' @())
   Assert-True (($withoutApprovals -join '|') -eq 'install|-g|@openai/codex@0.149.1|--registry|https://registry.npmjs.org') 'Packages without install scripts must not receive --allow-scripts'
+}
+
+Run-Test 'Old npm gets one actionable allow-scripts warning, never a silent flag drop' {
+  $oldWarned = $script:NpmMajorVersionWarned
+  try {
+    $script:NpmMajorVersionWarned = $false
+    function Get-NpmMajorVersion() { return 10 }
+    Warn-WhenNpmCannotEnforceScriptAllowlist @('@xai-official/grok')
+    Assert-True ($script:NpmMajorVersionWarned -eq $true) 'Expected a single warning on npm 10 with approved lifecycle scripts'
+
+    $script:NpmMajorVersionWarned = $false
+    Warn-WhenNpmCannotEnforceScriptAllowlist @()
+    Assert-True ($script:NpmMajorVersionWarned -eq $false) 'Packages without approved scripts must not warn'
+
+    $script:NpmMajorVersionWarned = $false
+    function Get-NpmMajorVersion() { return 11 }
+    Warn-WhenNpmCannotEnforceScriptAllowlist @('@xai-official/grok')
+    Assert-True ($script:NpmMajorVersionWarned -eq $false) 'npm 11+ must not warn'
+  } finally {
+    $script:NpmMajorVersionWarned = $oldWarned
+  }
+}
+
+Run-Test 'Remove-PathEntry preserves unrecognized entries and removes only the target' {
+  $base = [IO.Path]::GetTempPath().TrimEnd('\')
+  $targetDir = [IO.Path]::Combine($base, 'npm')
+  $wildcardEntry = [IO.Path]::Combine($base, 'tools', '?')
+  $otherDir = [IO.Path]::Combine($base, 'other')
+  $path = "$targetDir;$wildcardEntry;$otherDir;$targetDir"
+  $next = Remove-PathEntry $path $targetDir
+  Assert-True ($next -eq "$wildcardEntry;$otherDir") "Wildcard entry must survive the rewrite and both target copies must be removed. Got: $next"
 }
 
 Run-Test 'Registry candidates automatically fail over between global and China sources' {

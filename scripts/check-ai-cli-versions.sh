@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# npm-only AI CLI checker (POSIX):
+# npm-only AI CLI checker (bash 3.2+, macOS stock shell compatible):
 #   @anthropic-ai/claude-code@latest
 #   @openai/codex@latest
 #   @google/gemini-cli@latest
@@ -440,6 +440,26 @@ get_npm_latest_version() {
   return 1
 }
 
+NPM_MAJOR_VERSION_WARNED=0
+
+get_npm_major_version() {
+  command_exists npm || return 1
+  npm --version 2>/dev/null | grep -Eo '^[0-9]+' | head -n 1
+}
+
+warn_when_npm_cannot_enforce_script_allowlist() {
+  # --allow-scripts (reviewed lifecycle-script approvals) needs npm 11+.
+  # Warn once per run; never drop the flag silently and never block the attempt.
+  [ "$NPM_MAJOR_VERSION_WARNED" -eq 0 ] || return 0
+  [ -n "${1:-}" ] || return 0
+  local major
+  major="$(get_npm_major_version || true)"
+  [ -n "$major" ] || return 0
+  [ "$major" -lt 11 ] || return 0
+  NPM_MAJOR_VERSION_WARNED=1
+  log_warn "npm $major detected: --allow-scripts requires npm 11+. The reviewed lifecycle-script policy may be rejected by this npm; upgrade Node.js/npm if installs fail."
+}
+
 npm_install_global() {
   local spec="$1" registry="${2:-}" allow_scripts="${3:-}"
   if [ -z "$registry" ]; then
@@ -447,6 +467,7 @@ npm_install_global() {
     registry="$NPM_BEST_MIRROR"
   fi
   if [ -n "$allow_scripts" ]; then
+    warn_when_npm_cannot_enforce_script_allowlist "$allow_scripts"
     npm install -g "--allow-scripts=$allow_scripts" "$spec" --registry "$registry"
   else
     npm install -g "$spec" --registry "$registry"
