@@ -32,3 +32,17 @@ test-output.txt
 /.tmp/
 /AGENTS.md
 /tasks/
+
+# 本地流水线产物（审查/交付状态与报告，均为未交付的工作文档）
+/.mimosa/
+/.scratch/
+/specs/
+
+# 发布生成产物（tools/Get-ReleaseAssets.ps1 与 release workflow 输出）
+/release-assets.txt
+/release-intro.md
+/release-body.md
+
+# Windows 资源文件
+Thumbs.db
+Desktop.ini
