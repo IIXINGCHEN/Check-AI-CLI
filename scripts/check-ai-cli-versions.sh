@@ -198,6 +198,24 @@ fetch_text() {
   return 1
 }
 
+http_status_code() {
+  # Status-only request used to prove a registry carries a pinned version; the
+  # body is irrelevant and must stay off stdout.
+  local url="$1" code
+  if command_exists curl; then
+    code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 30 "$url" 2>/dev/null || true)"
+    printf '%s' "$code"
+    return 0
+  fi
+  if command_exists wget; then
+    # wget has no status-only mode; -S still prints the response headers.
+    code="$(wget -S -q -O /dev/null --timeout=30 "$url" 2>&1 | sed -n 's#.*HTTP/[0-9.]*[[:space:]]\([0-9]\{3\}\).*#\1#p' | tail -n 1)"
+    printf '%s' "$code"
+    return 0
+  fi
+  return 1
+}
+
 extract_semver() {
   echo "$*" | grep -Eo '(^|[^0-9.])([0-9]+\.[0-9]+\.[0-9]+)([^0-9.]|$)' | head -n 1 | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1
 }
@@ -400,6 +418,35 @@ npm_registry_latest_url() {
   fi
 }
 
+npm_registry_version_url() {
+  local registry="$1" package="$2" version="$3" base encoded
+  base="${registry%/}"
+  if [[ "$package" == @*/* ]]; then
+    # @scope/name -> @scope%2Fname
+    encoded="$(printf '%s' "$package" | sed 's#/#%2F#')"
+    printf '%s/%s/%s' "$base" "$encoded" "$version"
+  else
+    printf '%s/%s/%s' "$base" "$package" "$version"
+  fi
+}
+
+npm_registry_version_state() {
+  # present = the source serves this version, absent = it answered 404 for a
+  # version the authoritative registry published (mirror sync lag, where npm
+  # would only abort with ETARGET), unknown = indeterminate, because a transport
+  # error must never discard a source that is actually usable. Reported as a
+  # state string rather than an exit code so a bare call cannot trip `set -e`.
+  local package="$1" version="$2" registry="$3" code url
+  [ -n "$package" ] && [ -n "$version" ] && [ -n "$registry" ] || { printf 'unknown'; return 0; }
+  url="$(npm_registry_version_url "$registry" "$package" "$version")"
+  code="$(http_status_code "$url" || true)"
+  case "$code" in
+    2??) printf 'present' ;;
+    404) printf 'absent' ;;
+    *) printf 'unknown' ;;
+  esac
+}
+
 get_npm_latest_version() {
   local package="$1" reg url text ver official fallback_ver="" fallback_reg="" cmp
   local registries=()
@@ -535,6 +582,16 @@ update_tool_via_npm() {
   done < <(registry_candidates)
 
   for reg in ${registries[@]+"${registries[@]}"}; do
+    if [ -n "$target" ]; then
+      version_state="$(npm_registry_version_state "$package" "$target" "$reg")"
+      if [ "$version_state" = "absent" ]; then
+        # Mirror sync lag, not a failed install: npm can only abort this pinned
+        # version with ETARGET, so skip the source without that noise.
+        log_info "$reg has not published v$target yet; skipping this source"
+        last_err="no candidate registry publishes v$target"
+        continue
+      fi
+    fi
     log_info "Trying: npm install ($reg)"
     if npm_install_global "$install_spec" "$reg" "$allow_scripts"; then
       repair_tool_path >/dev/null 2>&1 || true
@@ -578,6 +635,98 @@ update_tool_via_npm() {
     fi
   fi
   return 0
+}
+
+# ---------------------------------------------------------------------------
+# npm global reinstall staging leftovers
+# ---------------------------------------------------------------------------
+
+# A global reinstall swaps a package in place: npm renames the outgoing package
+# directory to a sibling staging name (.claude-code-QiOifoBj) and removes it once
+# the new tree is in place. When the CLI it replaced is still running, that
+# unlink is refused and the backup is stranded (the npm "warn cleanup" line) —
+# one copy per affected update, hundreds of MB for a CLI that bundles its own
+# binary. Only npm's staging name for a tracked package whose live directory
+# still exists is ever considered, so no unrelated directory can match, and a
+# directory still held open cannot be removed at all.
+npm_global_node_modules_root() {
+  command_exists npm || return 1
+  local root
+  root="$(npm root -g 2>/dev/null || true)"
+  [ -n "$root" ] && [ -d "$root" ] || return 1
+  printf '%s' "${root%/}"
+}
+
+npm_package_dir_name() {
+  [ -n "${1:-}" ] || return 1
+  printf '%s' "${1##*/}"
+}
+
+npm_staging_name_regex() {
+  # Observed npm shape: '.' + package directory name + '-' + 8 random
+  # alphanumerics (.claude-code-QiOifoBj). The length is matched exactly so a
+  # user's own .<package>-<word> directory cannot be mistaken for npm's staging
+  # name. If npm ever changes that suffix, the leftover is simply left alone —
+  # cleanup never deletes anything it cannot positively attribute to npm
+  # (parity with the PowerShell checker).
+  local escaped
+  escaped="$(printf '%s' "$1" | sed 's/[.[\*^$]/\\&/g')"
+  printf '^\\.%s-[A-Za-z0-9]{8}$' "$escaped"
+}
+
+npm_staging_dirs() {
+  # Stranded staging directories for one tracked package. A candidate must be a
+  # real directory (never a symlink) that still carries its own node_modules and
+  # sits next to the live package directory, which is what proves a newer
+  # install already replaced it.
+  local root="${1:-}" package="${2:-}" dir_name scope_dir candidate regex
+  [ -n "$root" ] && [ -n "$package" ] || return 0
+  dir_name="$(npm_package_dir_name "$package")" || return 0
+  case "$package" in
+    @*/*) scope_dir="${root%/}/${package%%/*}" ;;
+    *) scope_dir="${root%/}" ;;
+  esac
+  [ -d "$scope_dir" ] || return 0
+  [ -d "${scope_dir%/}/${dir_name}" ] || return 0
+  regex="$(npm_staging_name_regex "$dir_name")"
+  for candidate in "${scope_dir%/}/.${dir_name}-"*; do
+    [ -d "$candidate" ] || continue
+    [ -L "$candidate" ] && continue
+    [ -d "${candidate%/}/node_modules" ] || continue
+    printf '%s' "${candidate##*/}" | grep -Eq "$regex" || continue
+    printf '%s\n' "$candidate"
+  done
+}
+
+remove_npm_staging_dir() {
+  # Removal keeps failing while the replaced binary is still running, so a
+  # failed attempt is reported to the user and never aborts the run.
+  local dir="$1"
+  rm -rf -- "$dir" 2>/dev/null || true
+  [ ! -e "$dir" ]
+}
+
+invoke_npm_staging_cleanup() {
+  local def="${1:-}" root_override="${2:-}" title package root dir
+  [ -n "$def" ] || return 0
+  package="$(tool_field "$def" 3)"
+  title="$(tool_field "$def" 2)"
+  [ -n "$package" ] || return 0
+  if [ -n "$root_override" ]; then
+    root="$root_override"
+  else
+    root="$(npm_global_node_modules_root || true)"
+  fi
+  [ -n "$root" ] || return 0
+  while IFS= read -r dir; do
+    [ -n "$dir" ] || continue
+    if remove_npm_staging_dir "$dir"; then
+      log_info "Reclaimed leftover npm backup from an earlier update: $dir"
+    else
+      log_warn "Leftover npm backup is still in use by a running process and was kept: $dir"
+      log_warn "Close every $title process, then run this checker again to reclaim it."
+    fi
+  done < <(npm_staging_dirs "$root" "$package")
 }
 
 # ---------------------------------------------------------------------------
@@ -680,7 +829,11 @@ get_local_opencode() { get_local_tool_version "${TOOL_DEFS[4]}"; }
 update_opencode() { update_tool_via_npm "${TOOL_DEFS[4]}"; }
 
 check_tool() {
-  run_tool_lifecycle "$@"
+  local rc=0
+  run_tool_lifecycle "$@" || rc=$?
+  # Last, so a backup stranded by the update above is covered in the same run.
+  invoke_npm_staging_cleanup "${5:-}"
+  return "$rc"
 }
 
 show_banner() {
@@ -718,19 +871,19 @@ main() {
   if [ "$sel" = "U" ]; then AUTO_MODE="1"; fi
 
   if [ "$sel" = "1" ] || [ "$sel" = "A" ] || [ "$sel" = "U" ]; then
-    check_tool "Claude Code" get_latest_claude get_local_claude update_claude || status=$?
+    check_tool "Claude Code" get_latest_claude get_local_claude update_claude "${TOOL_DEFS[0]}" || status=$?
   fi
   if [ "$sel" = "2" ] || [ "$sel" = "A" ] || [ "$sel" = "U" ]; then
-    check_tool "OpenAI Codex" get_latest_codex get_local_codex update_codex || status=$?
+    check_tool "OpenAI Codex" get_latest_codex get_local_codex update_codex "${TOOL_DEFS[1]}" || status=$?
   fi
   if [ "$sel" = "3" ] || [ "$sel" = "A" ] || [ "$sel" = "U" ]; then
-    check_tool "Gemini CLI" get_latest_gemini get_local_gemini update_gemini || status=$?
+    check_tool "Gemini CLI" get_latest_gemini get_local_gemini update_gemini "${TOOL_DEFS[2]}" || status=$?
   fi
   if [ "$sel" = "4" ] || [ "$sel" = "A" ] || [ "$sel" = "U" ]; then
-    check_tool "Grok Build" get_latest_grok get_local_grok update_grok || status=$?
+    check_tool "Grok Build" get_latest_grok get_local_grok update_grok "${TOOL_DEFS[3]}" || status=$?
   fi
   if [ "$sel" = "5" ] || [ "$sel" = "A" ] || [ "$sel" = "U" ]; then
-    check_tool "OpenCode" get_latest_opencode get_local_opencode update_opencode || status=$?
+    check_tool "OpenCode" get_latest_opencode get_local_opencode update_opencode "${TOOL_DEFS[4]}" || status=$?
   fi
   return "$status"
 }

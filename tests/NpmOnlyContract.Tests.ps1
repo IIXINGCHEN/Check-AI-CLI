@@ -315,4 +315,117 @@ Run-Test 'PATH write failure during local probe must not abort the run' {
   Assert-True $script:FixturePathWriteThrew 'Fixture PATH write must actually throw for this test to be meaningful.'
 }
 
+Run-Test 'npm staging leftovers are matched by name, live sibling, and payload shape' {
+  $root = Join-Path ([IO.Path]::GetTempPath()) ('check-ai-cli-staging-' + [Guid]::NewGuid().ToString('N'))
+  try {
+    $scopedScope = Join-Path $root '@anthropic-ai'
+    $scopedResidue = Join-Path $scopedScope '.claude-code-QiOifoBj'
+    $null = New-Item -ItemType Directory -Path (Join-Path $scopedResidue 'node_modules') -Force
+    # Named like a staging leftover but not the npm shape (suffix is not random).
+    $lookAlike = Join-Path $scopedScope '.claude-code-backup'
+    $null = New-Item -ItemType Directory -Path (Join-Path $lookAlike 'node_modules') -Force
+    # No live package directory: nothing proves a newer install replaced it.
+    $orphanOnly = Join-Path $root 'opencode-ai-orphan'
+    $null = New-Item -ItemType Directory -Path (Join-Path $orphanOnly 'node_modules') -Force
+
+    Assert-True (@(Get-NpmStagingDirs $root '@anthropic-ai/claude-code').Count -eq 0) 'A staging leftover without its live package directory must not match'
+
+    $null = New-Item -ItemType Directory -Path (Join-Path $scopedScope 'claude-code') -Force
+    $scoped = @(Get-NpmStagingDirs $root '@anthropic-ai/claude-code')
+    Assert-True ($scoped.Count -eq 1) "Expected exactly one scoped staging leftover, got $($scoped.Count)"
+    Assert-True ($scoped[0] -eq $scopedResidue) "Unexpected scoped staging leftover: $($scoped[0])"
+
+    $plainResidue = Join-Path $root '.opencode-ai-Ab12Cd34'
+    $null = New-Item -ItemType Directory -Path (Join-Path $plainResidue 'node_modules') -Force
+    $null = New-Item -ItemType Directory -Path (Join-Path $root 'opencode-ai') -Force
+    $plain = @(Get-NpmStagingDirs $root 'opencode-ai')
+    Assert-True ($plain.Count -eq 1) "Expected exactly one unscoped staging leftover, got $($plain.Count)"
+    Assert-True ($plain[0] -eq $plainResidue) "Unexpected unscoped staging leftover: $($plain[0])"
+
+    $pattern = Get-NpmStagingNamePattern 'claude-code'
+    Assert-True ([regex]::IsMatch('.claude-code-QiOifoBj', $pattern)) 'Expected the observed npm staging name to match'
+    Assert-True ([regex]::IsMatch('.claude-code-Ab12Cd34', $pattern)) 'Expected an 8-character random suffix to match'
+    Assert-False ([regex]::IsMatch('.claude-code-backup', $pattern)) 'A 6-character suffix must not match'
+    Assert-False ([regex]::IsMatch('.claude-code-backupx12', $pattern)) 'A 9-character suffix must not match'
+    Assert-False ([regex]::IsMatch('.claude-code-QiOifoBj-', $pattern)) 'A trailing separator must not match'
+    Assert-False ([regex]::IsMatch('claude-code-QiOifoBj', $pattern)) 'A live package directory must never match'
+  } finally {
+    if (Test-Path -LiteralPath $root) { Remove-Item -LiteralPath $root -Recurse -Force }
+  }
+}
+
+Run-Test 'Staging cleanup reclaims matched leftovers and leaves everything else' {
+  $root = Join-Path ([IO.Path]::GetTempPath()) ('check-ai-cli-staging-' + [Guid]::NewGuid().ToString('N'))
+  try {
+    $residue = Join-Path $root '.opencode-ai-Ab12Cd34'
+    $null = New-Item -ItemType Directory -Path (Join-Path $residue 'node_modules') -Force
+    $null = New-Item -ItemType Directory -Path (Join-Path $root 'opencode-ai') -Force
+    $lookAlike = Join-Path $root '.opencode-ai-backup'
+    $null = New-Item -ItemType Directory -Path (Join-Path $lookAlike 'node_modules') -Force
+    $unrelated = Join-Path $root 'some-other-package'
+    $null = New-Item -ItemType Directory -Path $unrelated -Force
+
+    Invoke-NpmStagingCleanup @{ Package = 'opencode-ai'; Title = 'OpenCode' } $root
+
+    Assert-False (Test-Path -LiteralPath $residue) 'Expected the matched staging leftover to be reclaimed'
+    Assert-True (Test-Path -LiteralPath $lookAlike) 'A directory outside the npm staging shape must survive'
+    Assert-True (Test-Path -LiteralPath $unrelated) 'An unrelated package directory must survive'
+    Assert-True (Test-Path -LiteralPath (Join-Path $root 'opencode-ai')) 'The live package directory must survive'
+  } finally {
+    if (Test-Path -LiteralPath $root) { Remove-Item -LiteralPath $root -Recurse -Force }
+  }
+}
+
+Run-Test 'A source that has not published the pinned version is skipped, not failed' {
+  $oldNetworkInfo = $script:NetworkInfo
+  $oldBestMirror = $script:BestNpmMirror
+  $oldCandidates = $script:NpmRegistryCandidates
+  try {
+    $script:NetworkInfo = @{
+      Region = 'china'
+      Connectivity = @{
+        NpmjsOK = $true; NpmjsTime = 80
+        NpmmirrorOK = $true; NpmmirrorTime = 10
+        TencentOK = $false; TencentTime = -1
+        HuaweiOK = $true; HuaweiTime = 30
+      }
+    }
+    $script:BestNpmMirror = $null
+    $script:NpmRegistryCandidates = $null
+
+    $script:FixtureProbeState = $false
+    $script:FixtureInstalls = @()
+    function Get-InstalledToolCandidate([string]$ToolId, [string[]]$Commands) { return @{ Source = $null; Kind = 'npm'; Version = $null } }
+    function Get-LatestToolVersion([hashtable]$Tool) { return '1.0.34' }
+    function Get-NpmCommandPath() { return 'npm' }
+    function Warn-WhenNpmCannotEnforceScriptAllowlist([string[]]$AllowScripts) { }
+    function Repair-ToolUserPath([string]$ToolId) { return $true }
+    function Invoke-VersionProbe([string[]]$CommandNames) { return @{ Version = '1.0.34'; Output = ''; Source = $null } }
+    function Test-NpmRegistryHasVersion([string]$PackageName, [string]$Version, [string]$Registry) {
+      if ($Registry -eq $script:NpmMirrors.taobao) { return $script:FixtureProbeState }
+      return $true
+    }
+    function Invoke-NpmInstallGlobal([string]$PackageSpec, [string]$RegistryOverride = $null, [string[]]$AllowScripts = @()) {
+      $script:FixtureInstalls += $RegistryOverride
+    }
+
+    # $false is npm's mirror-sync lag: the source answered 404 for the pinned
+    # version, so npm could only abort it with ETARGET.
+    Update-ToolViaNpm (Get-AiCliToolById 'grok')
+    Assert-True ($script:FixtureInstalls.Count -eq 1) "Expected one install attempt, got $($script:FixtureInstalls.Count)"
+    Assert-True ($script:FixtureInstalls[0] -eq $script:NpmMirrors.huawei) "Expected the next source to install, got $($script:FixtureInstalls[0])"
+
+    # $null is indeterminate: a transport error must never discard a source.
+    $script:FixtureProbeState = $null
+    $script:FixtureInstalls = @()
+    Update-ToolViaNpm (Get-AiCliToolById 'grok')
+    Assert-True ($script:FixtureInstalls.Count -eq 1) "Expected one install attempt, got $($script:FixtureInstalls.Count)"
+    Assert-True ($script:FixtureInstalls[0] -eq $script:NpmMirrors.taobao) "An indeterminate probe must leave the source in the rotation, got $($script:FixtureInstalls[0])"
+  } finally {
+    $script:NetworkInfo = $oldNetworkInfo
+    $script:BestNpmMirror = $oldBestMirror
+    $script:NpmRegistryCandidates = $oldCandidates
+  }
+}
+
 Write-Host 'All NpmOnlyContract tests passed.' -ForegroundColor Green

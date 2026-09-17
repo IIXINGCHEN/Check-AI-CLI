@@ -280,6 +280,9 @@ test_canonical_grok_update_reaches_npm() {
       printf '%s\n' 'https://registry.npmmirror.com' 'https://mirrors.cloud.tencent.com/npm/' 'https://registry.npmjs.org'
     }
     official_registry() { printf 'https://registry.npmjs.org'; }
+    # Keep the stale-mirror failover hermetic: the version probe would otherwise
+    # hit the network for a fixture-only version.
+    npm_registry_version_state() { printf 'present'; }
     npm_install_global() {
       printf '%s|%s|%s\n' "$1" "$2" "$3" >> "$temp_root/install-calls"
       if [ "$2" = 'https://registry.npmmirror.com' ]; then
@@ -303,6 +306,84 @@ test_canonical_grok_update_reaches_npm() {
   assert_contains "$install_calls" '@xai-official/grok@1.0.5|https://mirrors.cloud.tencent.com/npm/|@xai-official/grok' 'Expected an unusable mirror result to fail over to the next reachable source.'
 }
 
+test_staging_cleanup_reclaims_only_npm_leftovers() {
+  local root residue lookalike scoped_residue
+
+  root="$(mktemp -d)"
+  residue="$root/.opencode-ai-Ab12Cd34"
+  lookalike="$root/.opencode-ai-backup"
+  scoped_residue="$root/@anthropic-ai/.claude-code-QiOifoBj"
+  mkdir -p "$residue/node_modules" "$lookalike/node_modules" "$scoped_residue/node_modules"
+
+  # A staging leftover alone proves nothing: its live package directory is what
+  # shows a newer install has already replaced it.
+  assert_eq "$(npm_staging_dirs "$root" 'opencode-ai')" '' 'A staged leftover without its live sibling must not match'
+  assert_eq "$(npm_staging_dirs "$root" '@anthropic-ai/claude-code')" '' 'A staged leftover without its live sibling must not match (scoped)'
+
+  mkdir -p "$root/opencode-ai" "$root/@anthropic-ai/claude-code"
+  assert_eq "$(npm_staging_dirs "$root" 'opencode-ai')" "$residue" 'Expected the unscoped staging leftover to match'
+  assert_eq "$(npm_staging_dirs "$root" '@anthropic-ai/claude-code')" "$scoped_residue" 'Expected the scoped staging leftover to match'
+
+  invoke_npm_staging_cleanup 'opencode|OpenCode|opencode-ai|opencode-ai@latest|opencode|opencode-ai' "$root" >/dev/null 2>&1
+  assert_eq "$([ -e "$residue" ] && echo present || echo gone)" 'gone' 'Expected the matched staging leftover to be reclaimed'
+  assert_eq "$([ -d "$lookalike" ] && echo present || echo gone)" 'present' 'A directory outside the npm staging shape must survive'
+  assert_eq "$([ -d "$root/opencode-ai" ] && echo present || echo gone)" 'present' 'The live package directory must survive'
+
+  rm -rf "$root"
+}
+
+test_lagging_mirror_is_skipped_without_an_install_attempt() {
+  # A mirror that has not synced the authoritative pinned version can only make
+  # npm abort with ETARGET. It must be skipped with an informational line — no
+  # install attempt, no [WARNING] — while the next reachable source installs it.
+  local temp_root rc install_calls log_text
+  temp_root="$(mktemp -d)"
+
+  set +e
+  (
+    HOME="$temp_root"
+    unset GROK_HOME
+    mkdir -p "$HOME/.grok/bin"
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$HOME/.grok/bin/grok"
+    chmod +x "$HOME/.grok/bin/grok"
+    PATH="$HOME/.grok/bin:$PATH"
+    fixture_version='0.2.111'
+
+    require_npm() { return 0; }
+    get_local_tool_version() { printf '%s' "$fixture_version"; }
+    npm() { [ "${1:-}" != 'list' ]; }
+    get_npm_latest_version() { printf '1.0.34'; }
+    select_best_npm_mirror() { :; }
+    registry_candidates() {
+      printf '%s\n' 'https://registry.npmmirror.com' 'https://repo.huaweicloud.com/repository/npm/' 'https://registry.npmjs.org'
+    }
+    official_registry() { printf 'https://registry.npmjs.org'; }
+    npm_registry_version_state() {
+      if [ "$3" = 'https://registry.npmmirror.com' ]; then printf 'absent'; else printf 'present'; fi
+    }
+    npm_install_global() {
+      printf '%s|%s|%s\n' "$1" "$2" "$3" >> "$temp_root/install-calls"
+      fixture_version='1.0.34'
+      return 0
+    }
+    repair_tool_path() { return 0; }
+
+    update_tool_via_npm "${TOOL_DEFS[3]}"
+  ) >"$temp_root/log" 2>&1
+  rc=$?
+  set -e
+
+  install_calls="$(cat "$temp_root/install-calls" 2>/dev/null || true)"
+  log_text="$(cat "$temp_root/log" 2>/dev/null || true)"
+  rm -rf "$temp_root"
+
+  assert_eq "$rc" '0' 'Expected the update to succeed through the next source.'
+  assert_not_contains "$install_calls" 'https://registry.npmmirror.com' 'A lagging mirror must not receive an install attempt.'
+  assert_contains "$install_calls" '@xai-official/grok@1.0.34|https://repo.huaweicloud.com/repository/npm/|@xai-official/grok' 'Expected the pinned version to install from the next source.'
+  assert_contains "$log_text" 'has not published v1.0.34 yet; skipping this source' 'Expected an informational skip line for mirror sync lag.'
+  assert_not_contains "$log_text" '[WARNING]' 'Mirror sync lag must not be reported as a warning.'
+}
+
 run_test 'select_best_npm_mirror returns only the URL' test_select_best_npm_mirror_returns_url_only
 run_test 'registry candidates fail over between global and China sources' test_registry_candidates_fail_over_between_global_and_china_sources
 run_test 'fallback metadata uses newest reachable mirror' test_fallback_metadata_uses_newest_reachable_mirror
@@ -316,4 +397,6 @@ run_test 'banner is npm-only five tools' test_banner_is_npm_only_five_tools
 run_test 'npm install uses reviewed script approvals' test_npm_install_uses_reviewed_script_approvals
 run_test 'only canonical Grok layout is migratable' test_only_canonical_grok_layout_is_migratable
 run_test 'canonical Grok update reaches npm' test_canonical_grok_update_reaches_npm
+run_test 'lagging mirror is skipped without an install attempt' test_lagging_mirror_is_skipped_without_an_install_attempt
+run_test 'staging cleanup reclaims only npm leftovers' test_staging_cleanup_reclaims_only_npm_leftovers
 printf '[PASS] All shell output contract tests passed.\n'

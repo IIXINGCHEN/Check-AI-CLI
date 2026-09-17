@@ -765,6 +765,39 @@ function Get-NpmLatestVersion([string]$PackageName, [string]$Registry = $null) {
   return $null
 }
 
+function Get-HttpErrorStatusCode($ErrorRecord) {
+  try {
+    $response = $ErrorRecord.Exception.Response
+    if (-not $response) { return $null }
+    $status = $response.StatusCode
+    if ($null -eq $status) { return $null }
+    return [int]$status
+  } catch { return $null }
+}
+
+function Test-NpmRegistryHasVersion([string]$PackageName, [string]$Version, [string]$Registry) {
+  # Tri-state on purpose: $true the source serves this version, $false it
+  # answered 404 for a version the authoritative registry published (mirror sync
+  # lag, where npm would only abort with ETARGET), $null indeterminate - a
+  # transport error must never discard a source that is actually usable.
+  if ([string]::IsNullOrWhiteSpace($PackageName) -or [string]::IsNullOrWhiteSpace($Version) -or [string]::IsNullOrWhiteSpace($Registry)) { return $null }
+  $base = $Registry.TrimEnd('/')
+  $encodedName = if ($PackageName.StartsWith('@')) { $PackageName -replace '/', '%2F' } else { $PackageName }
+  $px = Get-WebRequestProxyParameters
+  $prev = $ProgressPreference
+  $ProgressPreference = 'SilentlyContinue'
+  try {
+    $resp = Invoke-WebRequest @px -Uri "$base/$encodedName/$Version" -Headers @{ 'User-Agent' = 'ai-cli-version-checker' } -UseBasicParsing -TimeoutSec 30 -ErrorAction Stop
+    if ($resp.StatusCode -ge 200 -and $resp.StatusCode -lt 300) { return $true }
+    return $null
+  } catch {
+    if ((Get-HttpErrorStatusCode $_) -eq 404) { return $false }
+    return $null
+  } finally {
+    $ProgressPreference = $prev
+  }
+}
+
 function Get-LatestToolVersion([hashtable]$Tool) {
   return (Get-NpmLatestVersion $Tool.Package)
 }
@@ -862,6 +895,13 @@ function Update-ToolViaNpm([hashtable]$Tool) {
   $probe = $null
   foreach ($reg in $registries) {
     try {
+      if ($target -and (Test-NpmRegistryHasVersion $Tool.Package $target $reg) -eq $false) {
+        # Mirror sync lag, not a failed install: npm can only abort this pinned
+        # version with ETARGET, so skip the source without that noise.
+        Write-Info "$reg has not published v$target yet; skipping this source"
+        $lastError = "no candidate registry publishes v$target"
+        continue
+      }
       Write-Info "Trying: npm install ($reg)"
       Invoke-NpmInstallGlobal $installSpec $reg $Tool.AllowScripts
       [void](Repair-ToolUserPath $Tool.Id)
@@ -900,6 +940,107 @@ function Update-ToolViaNpm([hashtable]$Tool) {
     $cmp = Compare-Version $probe.Version $target
     if ($cmp -eq -1) {
       throw "$($Tool.Title) installed v$($probe.Version) but target is v$target"
+    }
+  }
+}
+
+# ---------------------------------------------------------------------------
+# npm global reinstall staging leftovers
+# ---------------------------------------------------------------------------
+
+# A global reinstall swaps a package in place: npm renames the outgoing package
+# directory to a sibling staging name (.claude-code-QiOifoBj) and removes it
+# once the new tree is in place. When the CLI it replaced is still running,
+# Windows refuses that unlink (EPERM, the "npm warn cleanup" line) and the
+# backup is stranded — one copy per affected update, 200MB+ for a CLI that
+# bundles its own binary. Only npm's staging name for a tracked package whose
+# live directory still exists is ever considered, so no unrelated directory can
+# match, and a directory still held open cannot be removed at all.
+function Get-NpmGlobalNodeModulesRoot {
+  $npmPath = Get-NpmCommandPath
+  if ($npmPath -and $npmPath -notlike '*.ps1') {
+    try {
+      # Same PS 5.1 redirected-stderr hazard as the other npm probes.
+      $prevEap = $ErrorActionPreference
+      $ErrorActionPreference = 'Continue'
+      try { $root = (& $npmPath 'root' '-g' 2>$null | Out-String).Trim() } finally { $ErrorActionPreference = $prevEap }
+      if (-not [string]::IsNullOrWhiteSpace($root) -and (Test-Path -LiteralPath $root)) { return $root }
+    } catch { }
+  }
+  # Documented Windows layout used when npm itself is unavailable; elsewhere the
+  # cleanup is skipped rather than guessed at.
+  if ([string]::IsNullOrWhiteSpace($env:APPDATA)) { return $null }
+  $fallback = Join-Path $env:APPDATA 'npm\node_modules'
+  if (Test-Path -LiteralPath $fallback) { return $fallback }
+  return $null
+}
+
+function Get-NpmPackageDirName([string]$PackageName) {
+  if ([string]::IsNullOrWhiteSpace($PackageName)) { return $null }
+  $slash = $PackageName.LastIndexOf('/')
+  if ($slash -ge 0) { return $PackageName.Substring($slash + 1) }
+  return $PackageName
+}
+
+function Get-NpmStagingNamePattern([string]$PackageDirName) {
+  # Observed npm shape: '.' + package directory name + '-' + random
+  # alphanumerics. The anchored package prefix is what proves ownership, and the
+  # suffix length is matched exactly so a user's own .<package>-<word> directory
+  # cannot be mistaken for npm's staging name. If npm ever changes that suffix,
+  # the leftover is simply left alone: cleanup never deletes anything it cannot
+  # positively attribute to npm.
+  return ('^\.' + [regex]::Escape($PackageDirName) + '-[A-Za-z0-9]{8}$')
+}
+
+function Get-NpmStagingDirs([string]$Root, [string]$PackageName) {
+  # Stranded staging directories for one tracked package. A candidate must be a
+  # plain directory (never a reparse point) that still carries its own
+  # node_modules and sits next to the live package directory, which is what
+  # proves a newer install already replaced it.
+  if ([string]::IsNullOrWhiteSpace($Root) -or [string]::IsNullOrWhiteSpace($PackageName)) { return @() }
+  $dirName = Get-NpmPackageDirName $PackageName
+  $scopeDir = $Root
+  if ($PackageName.StartsWith('@') -and $PackageName.Contains('/')) {
+    $scopeDir = Join-Path $Root $PackageName.Substring(0, $PackageName.IndexOf('/'))
+  }
+  if (-not (Test-Path -LiteralPath $scopeDir -PathType Container)) { return @() }
+  if (-not (Test-Path -LiteralPath (Join-Path $scopeDir $dirName) -PathType Container)) { return @() }
+
+  $pattern = Get-NpmStagingNamePattern $dirName
+  $found = New-Object System.Collections.Generic.List[string]
+  foreach ($entry in @(Get-ChildItem -LiteralPath $scopeDir -Force -ErrorAction SilentlyContinue)) {
+    if (-not $entry.PSIsContainer) { continue }
+    if (-not [regex]::IsMatch($entry.Name, $pattern)) { continue }
+    try {
+      if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { continue }
+    } catch { continue }
+    if (-not (Test-Path -LiteralPath (Join-Path $entry.FullName 'node_modules') -PathType Container)) { continue }
+    $null = $found.Add($entry.FullName)
+  }
+  return @($found)
+}
+
+function Remove-NpmStagingDir([string]$Dir) {
+  # Removal keeps failing while the replaced binary is still running, so a
+  # failed attempt is reported to the user and never aborts the run.
+  try {
+    Remove-Item -LiteralPath $Dir -Recurse -Force -ErrorAction Stop
+  } catch {
+    return $false
+  }
+  return (-not (Test-Path -LiteralPath $Dir))
+}
+
+function Invoke-NpmStagingCleanup([hashtable]$Tool, [string]$Root = $null) {
+  if (-not $Tool -or [string]::IsNullOrWhiteSpace($Tool.Package)) { return }
+  $resolvedRoot = if ([string]::IsNullOrWhiteSpace($Root)) { Get-NpmGlobalNodeModulesRoot } else { $Root }
+  if ([string]::IsNullOrWhiteSpace($resolvedRoot)) { return }
+  foreach ($dir in @(Get-NpmStagingDirs $resolvedRoot $Tool.Package)) {
+    if (Remove-NpmStagingDir $dir) {
+      Write-Info "Reclaimed leftover npm backup from an earlier update: $dir"
+    } else {
+      Write-Warn "Leftover npm backup is still in use by a running process and was kept: $dir"
+      Write-Warn "Close every $($Tool.Title) process, then run this checker again to reclaim it."
     }
   }
 }
@@ -1002,6 +1143,8 @@ function Check-OneTool([hashtable]$Tool) {
     GetLocal = { Get-LocalToolVersion $Tool }
     Update = { Update-ToolViaNpm $Tool }
   })
+  # Last, so a backup stranded by the update above is covered in the same run.
+  Invoke-NpmStagingCleanup $Tool
 }
 
 function Show-Banner() {
